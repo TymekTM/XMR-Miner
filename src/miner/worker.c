@@ -160,6 +160,15 @@ void worker_run(worker_t *w) {
     memset(&job_copy, 0, sizeof(job_copy));
 
     while (!w->should_stop) {
+        {
+            rx_vm *refreshed = (rx_vm *)w->vm;
+            if (refreshed != vm) {
+                vm = refreshed;
+                need_first = 1;
+            }
+        }
+        if (!vm) { Sleep(10); continue; }
+
         stratum_free_job_copy(&job_copy);
         stratum_copy_job(stratum, &job_copy);
         stratum_job_t *job = &job_copy;

@@ -41,7 +41,7 @@ static void fill_block(const u64 *prev, const u64 *ref, u64 *next, int with_xor)
         _mm_prefetch((const char *)(prev + i), _MM_HINT_T0);
         _mm_prefetch((const char *)(ref + i), _MM_HINT_T0);
     }
-    u64 R[QWORDS];
+    __declspec(align(64)) u64 R[QWORDS];
     for (int i = 0; i < QWORDS; i++)
         R[i] = prev[i] ^ ref[i];
 

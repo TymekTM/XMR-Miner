@@ -48,6 +48,9 @@ static int ensure_se_lock_memory_privilege(void) {
 }
 
 void *memory_alloc_huge_pages(size_t size) {
+    if (huge_page_privilege_checked && !huge_page_privilege_available)
+        return memory_alloc_large(size);
+
     SIZE_T huge_page_min = GetLargePageMinimum();
     if (huge_page_min == 0) {
         LOG_WARN("Huge pages not supported by system");

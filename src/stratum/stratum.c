@@ -35,12 +35,18 @@ static int send_line(stratum_ctx_t *ctx, const char *msg) {
     memcpy(ctx->send_buf, msg, len);
     ctx->send_buf[len] = '\n';
     ctx->send_buf[len + 1] = '\0';
-    int sent = send(ctx->sock, ctx->send_buf, len + 1, 0);
-    LeaveCriticalSection(&ctx->lock);
-    if (sent != len + 1) {
-        LOG_ERR("[STRATUM] send failed: %d", WSAGetLastError());
-        return -1;
+    int total = len + 1;
+    int sent = 0;
+    while (sent < total) {
+        int n = send(ctx->sock, ctx->send_buf + sent, total - sent, 0);
+        if (n <= 0) {
+            LeaveCriticalSection(&ctx->lock);
+            LOG_ERR("[STRATUM] send failed: %d", WSAGetLastError());
+            return -1;
+        }
+        sent += n;
     }
+    LeaveCriticalSection(&ctx->lock);
     return 0;
 }
 
