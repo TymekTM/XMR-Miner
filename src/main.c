@@ -5,6 +5,8 @@
 #include "miner/miner.h"
 #include <windows.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <signal.h>
 
 static volatile int g_running = 1;
@@ -77,7 +79,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    if (miner_start(miner) != 0) {
+    uint8_t initial_seed[32] = {0};
+    int initial_seed_len = 0;
+    stratum_job_t *init_job = stratum_get_job(stratum);
+    if (init_job && init_job->seed_hash && strlen(init_job->seed_hash) == 64) {
+        for (int i = 0; i < 32; i++) {
+            char h[3] = { init_job->seed_hash[i * 2], init_job->seed_hash[i * 2 + 1], 0 };
+            initial_seed[i] = (uint8_t)strtoul(h, NULL, 16);
+        }
+        initial_seed_len = 32;
+        LOG_INFO("Using pool seed_hash: %.16s...", init_job->seed_hash);
+    }
+
+    if (miner_start(miner, initial_seed_len > 0 ? initial_seed : NULL, initial_seed_len) != 0) {
         LOG_ERR("Failed to start miner");
         miner_destroy(miner);
         stratum_destroy(stratum);

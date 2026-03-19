@@ -12,6 +12,12 @@
 #include <immintrin.h>
 #include <xmmintrin.h>
 
+#ifdef __cplusplus
+#define RX_ALIGNAS(x) alignas(x)
+#else
+#define RX_ALIGNAS(x) _Alignas(x)
+#endif
+
 #define RX_ARGON_MEMORY       262144
 #define RX_ARGON_ITERATIONS   3
 #define RX_ARGON_LANES        1
@@ -26,6 +32,7 @@
 #define RX_DATASET_EXTRA_SIZE 33554368ULL
 #define RX_DATASET_SIZE       (RX_DATASET_BASE_SIZE + RX_DATASET_EXTRA_SIZE)
 #define RX_DATASET_EXTRA_ITEMS (RX_DATASET_EXTRA_SIZE / RX_CACHE_LINE_SIZE)
+#define RX_DATASET_ITEMS      (RX_DATASET_BASE_SIZE / RX_CACHE_LINE_SIZE)
 
 #define RX_PROGRAM_SIZE       256
 #define RX_PROGRAM_ITERATIONS 2048
@@ -356,6 +363,8 @@ typedef struct rx_dataset {
     int large_pages;
 } rx_dataset;
 
+typedef struct rx_jit rx_jit;
+
 typedef struct rx_vm {
     rx_program program;
     rx_register_file reg;
@@ -367,10 +376,16 @@ typedef struct rx_vm {
     uint64_t datasetOffset;
     int fullMem;
     int lightClient;
+    int useJit;
+    rx_jit *jit;
     uint8_t datasetItem[64];
-    _Alignas(16) uint64_t tempHash[8];
-    _Alignas(16) uint64_t fillState[8];
+    RX_ALIGNAS(16) uint64_t tempHash[8];
+    RX_ALIGNAS(16) uint64_t fillState[8];
 } rx_vm;
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 uint64_t rx_reciprocal(uint32_t divisor);
 
@@ -389,5 +404,9 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash);
 void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer);
 void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer);
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif

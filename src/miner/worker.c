@@ -146,6 +146,7 @@ void worker_run(worker_t *w) {
     uint64_t current_target = 0;
     int got_job = 0;
     char current_seed[65] = {0};
+    strncpy(current_seed, w->initial_seed, sizeof(current_seed) - 1);
     int is_monero_proto = 0;
     char saved_ntime[64] = {0};
     int saved_en2_size = 4;
@@ -269,6 +270,10 @@ void worker_run(worker_t *w) {
         }
 
         if (!got_job) { Sleep(10); continue; }
+
+        if (w->hashes == 0) {
+            LOG_INFO("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
+        }
 
         memcpy(blob + NONCE_OFFSET, &nonce, 4);
 

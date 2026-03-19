@@ -13,6 +13,7 @@ typedef struct {
     u64 hashes;
     u64 start_time;
     int should_stop;
+    char initial_seed[65];
 } worker_t;
 
 void worker_run(worker_t *w);

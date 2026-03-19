@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <excpt.h>
 
 static int check_u64(const char *label, uint64_t actual, uint64_t expected) {
     if (actual == expected) {
@@ -118,7 +119,7 @@ int main(void) {
     memcpy(&val33554431, cacheMem + 33554431 * 8, 8);
     failures += check_u64("Cache offset 33554431", val33554431, 0x1f47f056d05cd99bULL);
 
-    rx_vm *vm = rx_create_vm(0, cache, NULL);
+    rx_vm *vm = rx_create_vm(0, 0, cache, NULL);
     if (!vm) {
         printf("[FAIL] Failed to create VM\n");
         rx_free_cache(cache);
@@ -150,6 +151,41 @@ int main(void) {
 
     rx_destroy_vm(vm);
     rx_free_cache(cache);
+
+    printf("[I] === JIT Compilation Test ===\n");
+    fflush(stdout);
+    {
+        uint8_t test_seed[32] = {0x01};
+        rx_cache *jit_cache = rx_alloc_cache(0);
+        if (!jit_cache) { printf("[FAIL] JIT test: cache alloc failed\n"); }
+        else {
+            rx_init_cache(jit_cache, test_seed, 32);
+            rx_vm *jit_vm = rx_create_vm(1, 1, jit_cache, NULL);
+            if (!jit_vm) { printf("[FAIL] JIT test: VM alloc failed\n"); }
+            else {
+                printf("[I] Testing JIT compilation only (no dataset for execution)...\n");
+                fflush(stdout);
+                __try {
+                    extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*);
+                    extern rx_jit *rx_jit_create(void);
+                    extern void rx_jit_destroy(rx_jit *jit);
+                    rx_jit *jit = rx_jit_create();
+                    if (jit) {
+                        rx_jit_generate_program(jit, &jit_vm->program, &jit_vm->config);
+                        printf("[PASS] JIT compilation succeeded\n");
+                        rx_jit_destroy(jit);
+                    } else {
+                        printf("[FAIL] JIT alloc failed\n");
+                    }
+                } __except(EXCEPTION_EXECUTE_HANDLER) {
+                    printf("[FAIL] JIT crashed with exception 0x%08lx\n", GetExceptionCode());
+                }
+                fflush(stdout);
+                rx_destroy_vm(jit_vm);
+            }
+            rx_free_cache(jit_cache);
+        }
+    }
 
     printf("[I] === Keccak-256 Tests ===\n");
     fflush(stdout);

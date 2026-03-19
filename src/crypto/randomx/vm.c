@@ -1,5 +1,7 @@
 #include "randomx_internal.h"
+#include "common/log.h"
 #include <string.h>
+#include <excpt.h>
 
 static inline uint32_t load32_le(const void *p) {
     uint32_t v;
@@ -410,6 +412,31 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
+    if (vm->useJit && vm->jit) {
+        static int jit_call_count = 0;
+        jit_call_count++;
+        __try {
+            extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*);
+            extern void* rx_jit_get_program_func(rx_jit*);
+            rx_jit_generate_program(vm->jit, &vm->program, &vm->config);
+            typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
+            ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
+            rx_memory_regs memRegs;
+            memRegs.mx = vm->mem.mx;
+            memRegs.ma = vm->mem.ma;
+            memRegs.memory = vm->mem.memory;
+            printf("[VM] JIT call #%d mx=%u ma=%u mem=%p sp=%p\n", jit_call_count, memRegs.mx, memRegs.ma, memRegs.memory, vm->scratchpad); fflush(stdout);
+            func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+            printf("[VM] JIT call #%d returned OK\n", jit_call_count); fflush(stdout);
+            vm->mem.mx = memRegs.mx;
+            vm->mem.ma = memRegs.ma;
+        } __except(EXCEPTION_EXECUTE_HANDLER) {
+            printf("[VM] JIT crashed with exception 0x%08lx\n", GetExceptionCode()); fflush(stdout);
+            vm->useJit = 0;
+        }
+        if (vm->useJit) return;
+    }
+
     uint64_t r[RX_REGISTERS_COUNT];
     rx_vec_f128 f[RX_REG_FLT_COUNT];
     rx_vec_f128 e[RX_REG_FLT_COUNT];
@@ -715,10 +742,11 @@ void rx_free_dataset(rx_dataset *ds) {
     free(ds);
 }
 
-rx_vm *rx_create_vm(int full_mem, rx_cache *cache, rx_dataset *dataset) {
+rx_vm *rx_create_vm(int full_mem, int use_jit, rx_cache *cache, rx_dataset *dataset) {
     rx_vm *vm = (rx_vm *)calloc(1, sizeof(rx_vm));
     if (!vm) return NULL;
     vm->fullMem = full_mem;
+    vm->useJit = use_jit;
     vm->lightClient = (!dataset && cache) ? 1 : 0;
     vm->cachePtr = cache;
     vm->datasetPtr = dataset;
@@ -726,11 +754,19 @@ rx_vm *rx_create_vm(int full_mem, rx_cache *cache, rx_dataset *dataset) {
     else if (cache) vm->mem.memory = cache->memory;
     vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
     if (!vm->scratchpad) { free(vm); return NULL; }
+    if (use_jit) {
+        extern rx_jit *rx_jit_create(void);
+        vm->jit = rx_jit_create();
+    }
     return vm;
 }
 
 void rx_destroy_vm(rx_vm *vm) {
     if (!vm) return;
     if (vm->scratchpad) _aligned_free(vm->scratchpad);
+    if (vm->jit) {
+        extern void rx_jit_destroy(rx_jit *jit);
+        rx_jit_destroy(vm->jit);
+    }
     free(vm);
 }

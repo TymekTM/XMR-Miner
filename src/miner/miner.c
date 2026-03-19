@@ -15,6 +15,7 @@ struct miner_ctx {
     HANDLE *thread_handles;
     int running;
     rx_cache *cache;
+    rx_dataset *dataset;
     CRITICAL_SECTION cache_lock;
     char current_seed_hex[65];
     int cache_initialized;
@@ -35,6 +36,10 @@ void miner_destroy(miner_ctx_t *ctx) {
     if (!ctx) return;
     miner_stop(ctx);
     DeleteCriticalSection(&ctx->cache_lock);
+    if (ctx->dataset) {
+        rx_free_dataset(ctx->dataset);
+        ctx->dataset = NULL;
+    }
     if (ctx->cache) {
         rx_free_cache(ctx->cache);
         ctx->cache = NULL;
@@ -56,15 +61,18 @@ static void seed_to_hex(const uint8_t *seed, int seed_len, char *out) {
 }
 
 void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
-    EnterCriticalSection(&ctx->cache_lock);
-
     char new_hex[65] = {0};
     seed_to_hex(seed, seed_len, new_hex);
 
-    if (strcmp(new_hex, ctx->current_seed_hex) == 0) {
-        LeaveCriticalSection(&ctx->cache_lock);
-        return;
+    int need_reinit = 0;
+    EnterCriticalSection(&ctx->cache_lock);
+    if (strcmp(new_hex, ctx->current_seed_hex) != 0) {
+        need_reinit = 1;
+        strncpy(ctx->current_seed_hex, new_hex, sizeof(ctx->current_seed_hex) - 1);
     }
+    LeaveCriticalSection(&ctx->cache_lock);
+
+    if (!need_reinit) return;
 
     LOG_INFO("[MINER] Initializing cache with new seed: %.16s...", new_hex);
 
@@ -72,25 +80,30 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
         ctx->cache = rx_alloc_cache(0);
         if (!ctx->cache) {
             LOG_ERR("[MINER] Failed to allocate cache");
-            LeaveCriticalSection(&ctx->cache_lock);
             return;
         }
     }
 
     rx_init_cache(ctx->cache, seed, (size_t)seed_len);
-    strncpy(ctx->current_seed_hex, new_hex, sizeof(ctx->current_seed_hex) - 1);
     ctx->cache_initialized = 1;
 
+    if (ctx->dataset) {
+        LOG_INFO("[MINER] Reinitializing dataset with new seed...");
+        rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432);
+        LOG_INFO("[MINER] Dataset reinitialized");
+    }
+
+    EnterCriticalSection(&ctx->cache_lock);
     for (int i = 0; i < ctx->num_threads; i++) {
         if (ctx->workers[i].vm) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
             ctx->workers[i].vm = NULL;
         }
-        ctx->workers[i].vm = rx_create_vm(0, ctx->cache, NULL);
+        ctx->workers[i].vm = rx_create_vm(1, 1, ctx->cache, ctx->dataset);
     }
+    LeaveCriticalSection(&ctx->cache_lock);
 
     LOG_INFO("[MINER] Cache reinitialized with seed: %.16s...", new_hex);
-    LeaveCriticalSection(&ctx->cache_lock);
 }
 
 void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
@@ -98,12 +111,20 @@ void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
     return ctx->workers[worker_id].vm;
 }
 
-int miner_start(miner_ctx_t *ctx) {
+int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_len) {
     ctx->running = 1;
     stratum_set_running(ctx->stratum, 1);
 
     ctx->workers = (worker_t *)calloc(ctx->num_threads, sizeof(worker_t));
     ctx->thread_handles = (HANDLE *)calloc(ctx->num_threads, sizeof(HANDLE));
+
+    const uint8_t *cache_seed = initial_seed;
+    int cache_seed_len = initial_seed_len;
+    uint8_t zero_seed[32] = {0};
+    if (!cache_seed || cache_seed_len == 0) {
+        cache_seed = zero_seed;
+        cache_seed_len = 32;
+    }
 
     LOG_INFO("[MINER] Initializing RandomX cache (this takes ~30 seconds)...");
 
@@ -113,21 +134,33 @@ int miner_start(miner_ctx_t *ctx) {
         return -1;
     }
 
-    uint8_t default_seed[32] = {0};
-    rx_init_cache(ctx->cache, default_seed, 32);
-    seed_to_hex(default_seed, 32, ctx->current_seed_hex);
+    rx_init_cache(ctx->cache, cache_seed, (size_t)cache_seed_len);
+    seed_to_hex(cache_seed, cache_seed_len, ctx->current_seed_hex);
     ctx->cache_initialized = 1;
 
-    LOG_INFO("[MINER] Cache initialized (will reinit on first seed_hash from pool)");
+    LOG_INFO("[MINER] Cache initialized with seed: %.16s...", ctx->current_seed_hex);
+
+    extern rx_dataset *rx_alloc_dataset(int large_pages);
+    extern void rx_init_dataset(rx_dataset *, rx_cache *, uint32_t, uint32_t);
+    LOG_INFO("[MINER] Initializing dataset (2 GB, this takes ~60 seconds)...");
+    ctx->dataset = rx_alloc_dataset(0);
+    if (!ctx->dataset) {
+        LOG_ERR("[MINER] Failed to allocate dataset");
+        return -1;
+    }
+    LOG_INFO("[MINER] Dataset allocated, initializing items...");
+    rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432);
+    LOG_INFO("[MINER] Dataset initialized");
 
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].id = i;
-        ctx->workers[i].vm = rx_create_vm(0, ctx->cache, NULL);
+        ctx->workers[i].vm = rx_create_vm(1, 1, ctx->cache, ctx->dataset);
         ctx->workers[i].stratum = ctx->stratum;
         ctx->workers[i].miner = ctx;
         ctx->workers[i].hashes = 0;
         ctx->workers[i].start_time = 0;
         ctx->workers[i].should_stop = 0;
+        strncpy(ctx->workers[i].initial_seed, ctx->current_seed_hex, sizeof(ctx->workers[i].initial_seed) - 1);
     }
 
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
