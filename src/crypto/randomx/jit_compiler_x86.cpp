@@ -322,9 +322,7 @@ struct JitCompiler {
 
         generateProgramEpilogue(prog, pcfg);
 
-        if (pos > EPILOGUE_OFFSET) {
-            printf("[JIT ERROR] Code overflow: pos=%d epilogueOffset=%d\n", pos, EPILOGUE_OFFSET);
-        }
+        printf("[JIT] codeSize=%d epilogueOffset=%d\n", pos, EPILOGUE_OFFSET); fflush(stdout);
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
@@ -341,12 +339,28 @@ struct JitCompiler {
         } else if (opcode == RX_SS_IROR_C) {
             emitByte(0x49); emitByte(0xC1); emitByte(0xC8 | instr->dst);
             emitByte(getImm32(instr) & 63);
-        } else if (opcode == RX_SS_IADD_C7 || opcode == RX_SS_IADD_C8 || opcode == RX_SS_IADD_C9) {
+        } else if (opcode == RX_SS_IADD_C7) {
             emitByte(0x49); emitByte(0x81); emitByte(0xC0 | instr->dst);
             emit32((uint32_t)getImm32(instr));
-        } else if (opcode == RX_SS_IXOR_C7 || opcode == RX_SS_IXOR_C8 || opcode == RX_SS_IXOR_C9) {
+        } else if (opcode == RX_SS_IADD_C8) {
+            emitByte(0x49); emitByte(0x81); emitByte(0xC0 | instr->dst);
+            emit32((uint32_t)getImm32(instr));
+            emitByte(0x90);
+        } else if (opcode == RX_SS_IADD_C9) {
+            emitByte(0x49); emitByte(0x81); emitByte(0xC0 | instr->dst);
+            emit32((uint32_t)getImm32(instr));
+            emitByte(0x90); emitByte(0x90);
+        } else if (opcode == RX_SS_IXOR_C7) {
             emitByte(0x49); emitByte(0x81); emitByte(0xF0 | instr->dst);
             emit32((uint32_t)getImm32(instr));
+        } else if (opcode == RX_SS_IXOR_C8) {
+            emitByte(0x49); emitByte(0x81); emitByte(0xF0 | instr->dst);
+            emit32((uint32_t)getImm32(instr));
+            emitByte(0x90);
+        } else if (opcode == RX_SS_IXOR_C9) {
+            emitByte(0x49); emitByte(0x81); emitByte(0xF0 | instr->dst);
+            emit32((uint32_t)getImm32(instr));
+            emitByte(0x90); emitByte(0x90);
         } else if (opcode == RX_SS_IMULH_R) {
             emitMov64RM(instr->dst, instr->dst);
             emitByte(0x49); emitByte(0xF7); emitByte(0xE0 | instr->src);
@@ -363,7 +377,7 @@ struct JitCompiler {
             } else {
                 rcp_val = rx_reciprocal(rcp_index);
             }
-            emitByte(0xB8); emit64(rcp_val);
+            emitByte(0x48); emitByte(0xB8); emit64(rcp_val);
             emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst));
         }
     }
@@ -825,7 +839,7 @@ rx_jit* rx_jit_create(void) {
     rx_jit* jit = (rx_jit*)calloc(1, sizeof(rx_jit));
     jit->compiler = new JitCompiler();
     jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
-        MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (!jit->compiler->code) { delete jit->compiler; free(jit); return NULL; }
     return jit;
 }
@@ -838,15 +852,21 @@ void rx_jit_destroy(rx_jit* jit) {
 }
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg) {
+    DWORD oldProtect;
+    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_READWRITE, &oldProtect);
     jit->compiler->cache = nullptr;
     jit->compiler->generateProgram(prog, pcfg);
+    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_EXECUTE_READ, &oldProtect);
 }
 
 void rx_jit_generate_program_light(rx_jit* jit, rx_program* prog, rx_program_config* pcfg,
                                      rx_cache* cache, uint32_t datasetOffset) {
+    DWORD oldProtect;
+    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_READWRITE, &oldProtect);
     jit->compiler->cache = cache;
     jit->compiler->generateSuperscalarHash(cache);
     jit->compiler->generateProgramLight(prog, pcfg, datasetOffset);
+    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_EXECUTE_READ, &oldProtect);
 }
 
 void* rx_jit_get_program_func(rx_jit* jit) {

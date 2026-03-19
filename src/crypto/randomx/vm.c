@@ -413,8 +413,6 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     vm_initialize(vm);
 
     if (vm->useJit && vm->jit) {
-        static int jit_call_count = 0;
-        jit_call_count++;
         __try {
             extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*);
             extern void* rx_jit_get_program_func(rx_jit*);
@@ -424,10 +422,10 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             rx_memory_regs memRegs;
             memRegs.mx = vm->mem.mx;
             memRegs.ma = vm->mem.ma;
-            memRegs.memory = vm->mem.memory;
-            printf("[VM] JIT call #%d mx=%u ma=%u mem=%p sp=%p\n", jit_call_count, memRegs.mx, memRegs.ma, memRegs.memory, vm->scratchpad); fflush(stdout);
+            memRegs.memory = vm->mem.memory + vm->datasetOffset;
+            printf("[VM] JIT call mx=%u ma=%u mem=%p sp=%p\n", memRegs.mx, memRegs.ma, memRegs.memory, vm->scratchpad); fflush(stdout);
             func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
-            printf("[VM] JIT call #%d returned OK\n", jit_call_count); fflush(stdout);
+            printf("[VM] JIT call returned OK\n"); fflush(stdout);
             vm->mem.mx = memRegs.mx;
             vm->mem.ma = memRegs.ma;
         } __except(EXCEPTION_EXECUTE_HANDLER) {
@@ -633,6 +631,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
 
 void rx_vm_init_scratchpad(rx_vm *vm, void *seed) {
     rx_fill_aes1rx4(seed, RX_SCRATCHPAD_L3, vm->scratchpad);
+    _mm_sfence();
 }
 
 void rx_vm_get_final_result(rx_vm *vm, void *out) {
@@ -655,11 +654,14 @@ void rx_calculate_hash(rx_vm *vm, const void *input, size_t input_size, void *ou
 }
 
 void rx_calculate_hash_first(rx_vm *vm, const void *input, size_t input_size) {
+    uint32_t saved_mxcsr = _mm_getcsr();
     blake2b(vm->tempHash, sizeof(vm->tempHash), input, input_size, NULL, 0);
     rx_vm_init_scratchpad(vm, vm->tempHash);
+    _mm_setcsr(saved_mxcsr);
 }
 
 void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input_size, void *output) {
+    uint32_t saved_mxcsr = _mm_getcsr();
     rx_reset_float_state();
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run(vm, vm->tempHash);
@@ -669,9 +671,11 @@ void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input
     blake2b(vm->tempHash, sizeof(vm->tempHash), next_input, next_input_size, NULL, 0);
     rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
     blake2b(output, RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+    _mm_setcsr(saved_mxcsr);
 }
 
 void rx_calculate_hash_last(rx_vm *vm, void *output) {
+    uint32_t saved_mxcsr = _mm_getcsr();
     rx_reset_float_state();
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run(vm, vm->tempHash);
@@ -679,6 +683,7 @@ void rx_calculate_hash_last(rx_vm *vm, void *output) {
     }
     rx_vm_run(vm, vm->tempHash);
     rx_vm_get_final_result(vm, output);
+    _mm_setcsr(saved_mxcsr);
 }
 
 rx_cache *rx_alloc_cache(int large_pages) {
@@ -687,6 +692,7 @@ rx_cache *rx_alloc_cache(int large_pages) {
     c->large_pages = large_pages;
     if (large_pages) {
         c->memory = (uint8_t *)VirtualAlloc(NULL, RX_CACHE_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+        if (!c->memory) c->large_pages = 0;
     }
     if (!c->memory)
         c->memory = (uint8_t *)calloc(1, RX_CACHE_SIZE);
@@ -718,6 +724,7 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
     ds->large_pages = large_pages;
     if (large_pages) {
         ds->memory = (uint8_t *)VirtualAlloc(NULL, (size_t)RX_DATASET_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+        if (!ds->memory) ds->large_pages = 0;
     }
     if (!ds->memory)
         ds->memory = (uint8_t *)calloc(1, (size_t)RX_DATASET_SIZE);

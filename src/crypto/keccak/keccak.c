@@ -50,10 +50,8 @@ void keccakf1600(uint64_t *state) {
     }
 }
 
-void keccak1600(const uint64_t *state) {
-    uint64_t s[KECCAK_STATE_SIZE];
-    memcpy(s, state, sizeof(s));
-    keccakf1600(s);
+void keccak1600(uint64_t *state) {
+    keccakf1600(state);
 }
 
 static void keccak_absorb(uint64_t *state, const uint8_t *data, size_t len) {

@@ -10,6 +10,8 @@
 
 struct miner_ctx {
     int num_threads;
+    int huge_pages;
+    int physical_cores;
     stratum_ctx_t *stratum;
     worker_t *workers;
     HANDLE *thread_handles;
@@ -21,10 +23,12 @@ struct miner_ctx {
     int cache_initialized;
 };
 
-miner_ctx_t *miner_create(int num_threads, stratum_ctx_t *stratum) {
+miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores, stratum_ctx_t *stratum) {
     miner_ctx_t *ctx = (miner_ctx_t *)calloc(1, sizeof(miner_ctx_t));
     if (!ctx) return NULL;
     ctx->num_threads = num_threads;
+    ctx->huge_pages = huge_pages;
+    ctx->physical_cores = physical_cores;
     ctx->stratum = stratum;
     ctx->running = 0;
     ctx->cache_initialized = 0;
@@ -77,7 +81,7 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
     LOG_INFO("[MINER] Initializing cache with new seed: %.16s...", new_hex);
 
     if (!ctx->cache) {
-        ctx->cache = rx_alloc_cache(0);
+        ctx->cache = rx_alloc_cache(ctx->huge_pages);
         if (!ctx->cache) {
             LOG_ERR("[MINER] Failed to allocate cache");
             return;
@@ -128,7 +132,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     LOG_INFO("[MINER] Initializing RandomX cache (this takes ~30 seconds)...");
 
-    ctx->cache = rx_alloc_cache(0);
+    ctx->cache = rx_alloc_cache(ctx->huge_pages);
     if (!ctx->cache) {
         LOG_ERR("[MINER] Failed to allocate cache");
         return -1;
@@ -143,7 +147,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     extern rx_dataset *rx_alloc_dataset(int large_pages);
     extern void rx_init_dataset(rx_dataset *, rx_cache *, uint32_t, uint32_t);
     LOG_INFO("[MINER] Initializing dataset (2 GB, this takes ~60 seconds)...");
-    ctx->dataset = rx_alloc_dataset(0);
+    ctx->dataset = rx_alloc_dataset(ctx->huge_pages);
     if (!ctx->dataset) {
         LOG_ERR("[MINER] Failed to allocate dataset");
         return -1;
@@ -160,6 +164,8 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         ctx->workers[i].hashes = 0;
         ctx->workers[i].start_time = 0;
         ctx->workers[i].should_stop = 0;
+        ctx->workers[i].nonce_offset = (uint32_t)i;
+        ctx->workers[i].loop_count = 0;
         strncpy(ctx->workers[i].initial_seed, ctx->current_seed_hex, sizeof(ctx->workers[i].initial_seed) - 1);
     }
 
@@ -169,6 +175,12 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         ctx->thread_handles[i] = CreateThread(NULL, 0, thread_entry, &ctx->workers[i], 0, NULL);
         if (!ctx->thread_handles[i]) {
             LOG_ERR("[MINER] Failed to create thread %d", i);
+            continue;
+        }
+        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_HIGHEST);
+        if (i < ctx->physical_cores) {
+            DWORD_PTR mask = 1ULL << i;
+            SetThreadAffinityMask(ctx->thread_handles[i], mask);
         }
     }
 

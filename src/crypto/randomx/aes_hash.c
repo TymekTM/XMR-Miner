@@ -31,6 +31,7 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash) {
     rx_vec_i128 s3 = rx_set_i128(AES_HASH_1R_STATE3);
 
     while (inptr < inputEnd) {
+        _mm_prefetch((const char *)(inptr + 128), _MM_HINT_T0);
         s0 = rx_aesenc_i128(s0, rx_load_i128((const rx_vec_i128 *)inptr + 0));
         s1 = rx_aesdec_i128(s1, rx_load_i128((const rx_vec_i128 *)inptr + 1));
         s2 = rx_aesenc_i128(s2, rx_load_i128((const rx_vec_i128 *)inptr + 2));
@@ -70,16 +71,18 @@ void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer) {
     rx_vec_i128 s3 = rx_load_i128((const rx_vec_i128 *)state + 3);
 
     while (outptr < outputEnd) {
+        _mm_prefetch((const char *)(outptr + 128), _MM_HINT_T0);
         s0 = rx_aesdec_i128(s0, k0);
         s1 = rx_aesenc_i128(s1, k1);
         s2 = rx_aesdec_i128(s2, k2);
         s3 = rx_aesenc_i128(s3, k3);
-        rx_store_i128((rx_vec_i128 *)outptr + 0, s0);
-        rx_store_i128((rx_vec_i128 *)outptr + 1, s1);
-        rx_store_i128((rx_vec_i128 *)outptr + 2, s2);
-        rx_store_i128((rx_vec_i128 *)outptr + 3, s3);
+        _mm_stream_si128((__m128i *)outptr + 0, s0);
+        _mm_stream_si128((__m128i *)outptr + 1, s1);
+        _mm_stream_si128((__m128i *)outptr + 2, s2);
+        _mm_stream_si128((__m128i *)outptr + 3, s3);
         outptr += 64;
     }
+    _mm_sfence();
 
     rx_store_i128((rx_vec_i128 *)state + 0, s0);
     rx_store_i128((rx_vec_i128 *)state + 1, s1);
@@ -106,6 +109,7 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
     rx_vec_i128 s3 = rx_load_i128((const rx_vec_i128 *)state + 3);
 
     while (outptr < outputEnd) {
+        _mm_prefetch((const char *)(outptr + 128), _MM_HINT_T0);
         s0 = rx_aesdec_i128(s0, k0); s1 = rx_aesenc_i128(s1, k0);
         s2 = rx_aesdec_i128(s2, k4); s3 = rx_aesenc_i128(s3, k4);
         s0 = rx_aesdec_i128(s0, k1); s1 = rx_aesenc_i128(s1, k1);
@@ -114,12 +118,13 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
         s2 = rx_aesdec_i128(s2, k6); s3 = rx_aesenc_i128(s3, k6);
         s0 = rx_aesdec_i128(s0, k3); s1 = rx_aesenc_i128(s1, k3);
         s2 = rx_aesdec_i128(s2, k7); s3 = rx_aesenc_i128(s3, k7);
-        rx_store_i128((rx_vec_i128 *)outptr + 0, s0);
-        rx_store_i128((rx_vec_i128 *)outptr + 1, s1);
-        rx_store_i128((rx_vec_i128 *)outptr + 2, s2);
-        rx_store_i128((rx_vec_i128 *)outptr + 3, s3);
+        _mm_stream_si128((__m128i *)outptr + 0, s0);
+        _mm_stream_si128((__m128i *)outptr + 1, s1);
+        _mm_stream_si128((__m128i *)outptr + 2, s2);
+        _mm_stream_si128((__m128i *)outptr + 3, s3);
         outptr += 64;
     }
+    _mm_sfence();
 }
 
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state) {
@@ -142,6 +147,8 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
     rx_vec_i128 fs3 = rx_load_i128((const rx_vec_i128 *)fill_state + 3);
 
     while (sp < spEnd) {
+        if (sp + 128 < spEnd)
+            _mm_prefetch((const char *)(sp + 128), _MM_HINT_T0);
         hs0 = rx_aesenc_i128(hs0, rx_load_i128((const rx_vec_i128 *)sp + 0));
         hs1 = rx_aesdec_i128(hs1, rx_load_i128((const rx_vec_i128 *)sp + 1));
         hs2 = rx_aesenc_i128(hs2, rx_load_i128((const rx_vec_i128 *)sp + 2));
@@ -150,12 +157,13 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
         fs1 = rx_aesenc_i128(fs1, fk1);
         fs2 = rx_aesdec_i128(fs2, fk2);
         fs3 = rx_aesenc_i128(fs3, fk3);
-        rx_store_i128((rx_vec_i128 *)sp + 0, fs0);
-        rx_store_i128((rx_vec_i128 *)sp + 1, fs1);
-        rx_store_i128((rx_vec_i128 *)sp + 2, fs2);
-        rx_store_i128((rx_vec_i128 *)sp + 3, fs3);
+        _mm_stream_si128((__m128i *)sp + 0, fs0);
+        _mm_stream_si128((__m128i *)sp + 1, fs1);
+        _mm_stream_si128((__m128i *)sp + 2, fs2);
+        _mm_stream_si128((__m128i *)sp + 3, fs3);
         sp += 64;
     }
+    _mm_sfence();
 
     rx_store_i128((rx_vec_i128 *)fill_state + 0, fs0);
     rx_store_i128((rx_vec_i128 *)fill_state + 1, fs1);

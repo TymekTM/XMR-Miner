@@ -30,11 +30,13 @@ struct stratum_ctx {
 static int send_line(stratum_ctx_t *ctx, const char *msg) {
     int len = (int)strlen(msg);
     if (len + 2 > STRATUM_BUF_SIZE) return -1;
+    LOG_DEBUG("[STRATUM] > %s", msg);
+    EnterCriticalSection(&ctx->lock);
     memcpy(ctx->send_buf, msg, len);
     ctx->send_buf[len] = '\n';
     ctx->send_buf[len + 1] = '\0';
-    LOG_DEBUG("[STRATUM] > %s", msg);
     int sent = send(ctx->sock, ctx->send_buf, len + 1, 0);
+    LeaveCriticalSection(&ctx->lock);
     if (sent != len + 1) {
         LOG_ERR("[STRATUM] send failed: %d", WSAGetLastError());
         return -1;
@@ -292,7 +294,7 @@ int stratum_connect(stratum_ctx_t *ctx) {
 
     freeaddrinfo(result);
 
-    DWORD timeout = 300000;
+    DWORD timeout = 10000;
     setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
     setsockopt(ctx->sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
 
@@ -315,7 +317,7 @@ static int try_monero_login(stratum_ctx_t *ctx) {
     snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
 
     char msg[1024];
-    int id = ctx->id_counter++;
+    int id = InterlockedIncrement(&ctx->id_counter) - 1;
     snprintf(msg, sizeof(msg),
         "{\"id\":%d,\"method\":\"login\",\"params\":{\"login\":\"%s\",\"pass\":\"%s\",\"agent\":\"xmr-miner/0.1.0\"}}",
         id, user, ctx->cfg.password);
@@ -364,7 +366,7 @@ static int try_monero_login(stratum_ctx_t *ctx) {
 
 static int try_standard_login(stratum_ctx_t *ctx) {
     char msg[512];
-    int id = ctx->id_counter++;
+    int id = InterlockedIncrement(&ctx->id_counter) - 1;
     snprintf(msg, sizeof(msg),
         "{\"id\":%d,\"method\":\"mining.subscribe\",\"params\":[]}", id);
     if (send_line(ctx, msg) != 0) return -1;
@@ -404,7 +406,7 @@ static int try_standard_login(stratum_ctx_t *ctx) {
 
     char user[256];
     snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
-    id = ctx->id_counter++;
+    id = InterlockedIncrement(&ctx->id_counter) - 1;
     char auth_msg[1024];
     snprintf(auth_msg, sizeof(auth_msg),
         "{\"id\":%d,\"method\":\"mining.authorize\",\"params\":[\"%s\",\"%s\"]}",
@@ -476,7 +478,7 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
                          const char *nonce_hex, const char *result_hex,
                          const char *en2_hex, const char *ntime_hex) {
     char msg[2048];
-    int id = ctx->id_counter++;
+    int id = InterlockedIncrement(&ctx->id_counter) - 1;
 
     if (ctx->protocol == STRATUM_PROTO_MONERO) {
         snprintf(msg, sizeof(msg),
@@ -498,6 +500,37 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
 
 stratum_job_t *stratum_get_job(stratum_ctx_t *ctx) {
     return &ctx->job;
+}
+
+void stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out) {
+    EnterCriticalSection(&ctx->lock);
+    memcpy(out, &ctx->job, sizeof(stratum_job_t));
+    out->job_id = ctx->job.job_id ? _strdup(ctx->job.job_id) : NULL;
+    out->blob = ctx->job.blob ? _strdup(ctx->job.blob) : NULL;
+    out->target = ctx->job.target ? _strdup(ctx->job.target) : NULL;
+    out->seed_hash = ctx->job.seed_hash ? _strdup(ctx->job.seed_hash) : NULL;
+    out->algo = ctx->job.algo ? _strdup(ctx->job.algo) : NULL;
+    out->prev_hash = ctx->job.prev_hash ? _strdup(ctx->job.prev_hash) : NULL;
+    out->coinb1 = ctx->job.coinb1 ? _strdup(ctx->job.coinb1) : NULL;
+    out->coinb2 = ctx->job.coinb2 ? _strdup(ctx->job.coinb2) : NULL;
+    out->version_hex = ctx->job.version_hex ? _strdup(ctx->job.version_hex) : NULL;
+    out->ntime_hex = ctx->job.ntime_hex ? _strdup(ctx->job.ntime_hex) : NULL;
+    out->extranonce1 = ctx->job.extranonce1 ? _strdup(ctx->job.extranonce1) : NULL;
+    LeaveCriticalSection(&ctx->lock);
+}
+
+void stratum_free_job_copy(stratum_job_t *job) {
+    free(job->job_id); job->job_id = NULL;
+    free(job->blob); job->blob = NULL;
+    free(job->target); job->target = NULL;
+    free(job->seed_hash); job->seed_hash = NULL;
+    free(job->algo); job->algo = NULL;
+    free(job->prev_hash); job->prev_hash = NULL;
+    free(job->coinb1); job->coinb1 = NULL;
+    free(job->coinb2); job->coinb2 = NULL;
+    free(job->version_hex); job->version_hex = NULL;
+    free(job->ntime_hex); job->ntime_hex = NULL;
+    free(job->extranonce1); job->extranonce1 = NULL;
 }
 
 int stratum_get_protocol(stratum_ctx_t *ctx) {
@@ -593,6 +626,22 @@ int stratum_recv(stratum_ctx_t *ctx) {
                 ctx->job.target_u64 = parse_target_le(target);
                 LeaveCriticalSection(&ctx->lock);
                 LOG_INFO("[STRATUM] Target: %s (%016llx)", target, (unsigned long long)ctx->job.target_u64);
+            }
+        } else if (strcmp(method_name, "mining.set_extranonce") == 0 &&
+                   params && params->type == JSON_ARRAY && params->size >= 1) {
+            const json_token_t *en1 = json_child(&jp, params, 0);
+            if (en1 && en1->type == JSON_STRING) {
+                EnterCriticalSection(&ctx->lock);
+                extract_string(en1, ctx->extranonce1, sizeof(ctx->extranonce1));
+                if (params->size >= 2) {
+                    const json_token_t *en2_size = json_child(&jp, params, 1);
+                    if (en2_size) {
+                        char buf[16];
+                        extract_string(en2_size, buf, sizeof(buf));
+                        ctx->extranonce2_size = atoi(buf);
+                    }
+                }
+                LeaveCriticalSection(&ctx->lock);
             }
         }
     }

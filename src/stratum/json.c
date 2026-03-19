@@ -38,8 +38,21 @@ void json_key(json_writer_t *w, const char *key) {
 }
 
 void json_string(json_writer_t *w, const char *val) {
-    char buf[2048];
-    snprintf(buf, sizeof(buf), "\"%s\"", val);
+    char buf[4096];
+    int pos = 0;
+    buf[pos++] = '"';
+    for (const char *s = val; *s && pos < (int)sizeof(buf) - 6; s++) {
+        if (*s == '"' || *s == '\\') {
+            buf[pos++] = '\\';
+            buf[pos++] = *s;
+        } else if (*s >= 0 && *s < 0x20) {
+            pos += snprintf(buf + pos, sizeof(buf) - pos, "\\u%04x", (unsigned char)*s);
+        } else {
+            buf[pos++] = *s;
+        }
+    }
+    buf[pos++] = '"';
+    buf[pos] = '\0';
     json_raw(w, buf);
 }
 
@@ -160,9 +173,24 @@ static const char *parse_value(const char *js, const char *end, json_token_t *t,
     if (*js == '"') return parse_string(js, end, t);
     if (*js == '{') return parse_object(js, end, t, p);
     if (*js == '[') return parse_array(js, end, t, p);
-    if (*js == 't') { t->type = JSON_BOOL; t->start = js; t->end = js + 4; return js + 4; }
-    if (*js == 'f') { t->type = JSON_BOOL; t->start = js; t->end = js + 5; return js + 5; }
-    if (*js == 'n') { t->type = JSON_NULL; t->start = js; t->end = js + 4; return js + 4; }
+    if (*js == 't') {
+        if (js + 3 < end && js[1] == 'r' && js[2] == 'u' && js[3] == 'e') {
+            t->type = JSON_BOOL; t->start = js; t->end = js + 4; return js + 4;
+        }
+        return NULL;
+    }
+    if (*js == 'f') {
+        if (js + 4 < end && js[1] == 'a' && js[2] == 'l' && js[3] == 's' && js[4] == 'e') {
+            t->type = JSON_BOOL; t->start = js; t->end = js + 5; return js + 5;
+        }
+        return NULL;
+    }
+    if (*js == 'n') {
+        if (js + 3 < end && js[1] == 'u' && js[2] == 'l' && js[3] == 'l') {
+            t->type = JSON_NULL; t->start = js; t->end = js + 4; return js + 4;
+        }
+        return NULL;
+    }
     if (*js == '-' || (*js >= '0' && *js <= '9')) return parse_number(js, end, t);
     return NULL;
 }
@@ -180,18 +208,16 @@ int json_parse(json_parser_t *p, const char *js, size_t len) {
 }
 
 const json_token_t *json_get(const json_parser_t *p, const char *key) {
-    for (int i = 0; i < p->count; i++) {
-        const json_token_t *t = &p->tokens[i];
-        if (t->type == JSON_OBJECT) {
-            int idx = i + 1;
-            for (int j = 0; j < t->size; j++) {
-                if (idx + j * 2 >= p->count) break;
-                const json_token_t *child = &p->tokens[idx + j * 2];
-                if (child->type == JSON_STRING &&
-                    (size_t)(child->end - child->start) == strlen(key) &&
-                    strncmp(child->start, key, child->end - child->start) == 0) {
-                    return &p->tokens[idx + j * 2 + 1];
-                }
+    if (!p || !p->tokens || !key) return NULL;
+    size_t klen = strlen(key);
+    for (int i = 1; i < p->count; i++) {
+        if (p->tokens[i].parent != 0) continue;
+        if (p->tokens[i].type != JSON_STRING) continue;
+        size_t tlen = (size_t)(p->tokens[i].end - p->tokens[i].start);
+        if (tlen == klen && strncmp(p->tokens[i].start, key, tlen) == 0) {
+            for (int j = i + 1; j < p->count; j++) {
+                if (p->tokens[j].parent == 0)
+                    return &p->tokens[j];
             }
         }
     }

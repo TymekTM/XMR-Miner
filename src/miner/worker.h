@@ -13,6 +13,8 @@ typedef struct {
     u64 hashes;
     u64 start_time;
     int should_stop;
+    uint32_t nonce_offset;
+    uint32_t loop_count;
     char initial_seed[65];
 } worker_t;
 

@@ -21,6 +21,25 @@ static int get_logical_cores(void) {
     return (int)si.dwNumberOfProcessors;
 }
 
+static int get_physical_cores(void) {
+    int count = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(len);
+    if (buf && GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) {
+        BYTE *ptr = (BYTE *)buf;
+        while (ptr < (BYTE *)buf + len) {
+            SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
+            if (item->Relationship == RelationProcessorCore) {
+                count += item->Processor.GroupCount;
+            }
+            ptr += item->Size;
+        }
+    }
+    free(buf);
+    return count > 0 ? count : get_logical_cores();
+}
+
 void cpu_detect(cpu_info_t *info) {
     memset(info, 0, sizeof(*info));
 
@@ -47,7 +66,7 @@ void cpu_detect(cpu_info_t *info) {
     }
 
     info->logical_cores = get_logical_cores();
-    info->physical_cores = info->logical_cores;
+    info->physical_cores = get_physical_cores();
 }
 
 void cpu_print_info(const cpu_info_t *info) {
@@ -80,6 +99,8 @@ int cpu_has_sse2(void) {
 
 int cpu_has_bmi2(void) {
     u32 eax, ebx, ecx, edx;
+    cpuid(0, 0, &eax, &ebx, &ecx, &edx);
+    if (eax < 7) return 0;
     cpuid(7, 0, &eax, &ebx, &ecx, &edx);
     return (ebx >> 8) & 1;
 }

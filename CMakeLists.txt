@@ -5,8 +5,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
 
 if(MSVC)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /O2 /arch:AVX2 /GS- /Gd")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /O2 /arch:AVX2 /GS- /Gd")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /Gd")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /Gd")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /arch:AVX2 /GL /Gw /Gy /fp:fast")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /arch:AVX2 /GL /Gw /Gy /fp:fast")
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
@@ -33,9 +35,22 @@ set(SOURCES
     src/miner/worker.c
 )
 
+set_source_files_properties(
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/aes/aes_ni.c
+    PROPERTIES COMPILE_FLAGS "/GS-"
+)
+
 add_executable(xmr-miner ${SOURCES})
 target_include_directories(xmr-miner PRIVATE src)
 target_link_libraries(xmr-miner ws2_32)
+set_target_properties(xmr-miner PROPERTIES
+    LINK_FLAGS "/LTCG /OPT:ICF /OPT:REF"
+)
 
 set(TEST_SOURCES
     tests/test_blake2.c

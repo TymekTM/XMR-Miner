@@ -107,6 +107,27 @@ static void aes256_key_expansion(u32 rk[60], const u8 key[32]) {
     }
 }
 
+static void aes256_key_expansion_ni(aes_ctx *ctx, const u8 key[32]) {
+    __m128i k0 = _mm_loadu_si128((const __m128i *)key);
+    __m128i k1 = _mm_loadu_si128((const __m128i *)(key + 16));
+    _mm_storeu_si128((__m128i *)&ctx->enc_key[0], k0);
+    _mm_storeu_si128((__m128i *)&ctx->enc_key[4], k1);
+    __m128i temp;
+    temp = _mm_aeskeygenassist_si128(k1, 1); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[8], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[12], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 2); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[16], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[20], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 3); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[24], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[28], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 4); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[32], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[36], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 5); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[40], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[44], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 6); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[48], k0);
+    temp = _mm_aeskeygenassist_si128(k0, 0); temp = _mm_shuffle_epi32(temp, 0xaa); k1 = _mm_xor_si128(k1, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[52], k1);
+    temp = _mm_aeskeygenassist_si128(k1, 7); temp = _mm_shuffle_epi32(temp, 0xff); k0 = _mm_xor_si128(k0, temp); _mm_storeu_si128((__m128i *)&ctx->enc_key[56], k0);
+}
+
 void aes256_init(aes_ctx *ctx, const u8 key[AES_KEY_SIZE]) {
     aes_init_tables();
     aes256_key_expansion(ctx->enc_key, key);
@@ -197,6 +218,30 @@ void aes256_encrypt_block_ni(const u8 *round_keys, const u8 in[16], u8 out[16]) 
     }
     key = _mm_loadu_si128((const __m128i *)(round_keys + 14 * 16));
     state = _mm_aesenclast_si128(state, key);
+    _mm_storeu_si128((__m128i *)out, state);
+}
+
+void aes256_key_expansion_dec_ni(aes_ctx *ctx, const u8 key[32]) {
+    aes256_key_expansion_ni(ctx, key);
+    u32 tmp[60];
+    memcpy(tmp, ctx->enc_key, sizeof(tmp));
+    u32 *dec = ctx->enc_key;
+    memcpy(&dec[0], &tmp[56], 16);
+    for (int i = 1; i < 14; i++) {
+        __m128i k = _mm_loadu_si128((const __m128i *)&tmp[(14 - i) * 4]);
+        k = _mm_aesimc_si128(k);
+        _mm_storeu_si128((__m128i *)&dec[i * 4], k);
+    }
+    memcpy(&dec[56], &tmp[0], 16);
+}
+
+void aes256_decrypt_block_ni(const aes_ctx *ctx, const u8 in[16], u8 out[16]) {
+    __m128i state = _mm_loadu_si128((const __m128i *)in);
+    state = _mm_xor_si128(state, _mm_loadu_si128((const __m128i *)ctx->enc_key));
+    for (int i = 1; i < 14; i++) {
+        state = _mm_aesdec_si128(state, _mm_loadu_si128((const __m128i *)&ctx->enc_key[i * 4]));
+    }
+    state = _mm_aesdeclast_si128(state, _mm_loadu_si128((const __m128i *)&ctx->enc_key[56]));
     _mm_storeu_si128((__m128i *)out, state);
 }
 

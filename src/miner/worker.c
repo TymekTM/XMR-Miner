@@ -155,8 +155,13 @@ void worker_run(worker_t *w) {
     uint64_t last_report_time = 0;
     uint64_t total_shares = 0;
 
+    stratum_job_t job_copy;
+    memset(&job_copy, 0, sizeof(job_copy));
+
     while (!w->should_stop) {
-        stratum_job_t *job = stratum_get_job(stratum);
+        stratum_free_job_copy(&job_copy);
+        stratum_copy_job(stratum, &job_copy);
+        stratum_job_t *job = &job_copy;
         int proto = stratum_get_protocol(stratum);
 
         if (!job || !job->job_id) {
@@ -213,6 +218,7 @@ void worker_run(worker_t *w) {
                 }
                 hex_decode(job->blob, blob, blob_len);
                 nonce = *(uint32_t *)(blob + NONCE_OFFSET);
+                nonce += w->nonce_offset;
             } else {
                 char *safe_id = _strdup(job->job_id);
                 char *safe_coinb1 = _strdup(job->coinb1);
@@ -248,7 +254,7 @@ void worker_run(worker_t *w) {
                     continue;
                 }
                 blob_len = 76;
-                nonce = 0;
+                nonce = w->nonce_offset;
                 saved_en2_size = job->extranonce2_size;
                 strncpy(saved_ntime, safe_ntime, sizeof(saved_ntime) - 1);
 
@@ -280,8 +286,8 @@ void worker_run(worker_t *w) {
         uint8_t hash[32];
         rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
 
-        uint64_t hash_val = *(uint64_t *)hash;
-        if (hash_val <= current_target) {
+        uint64_t hash_val = read_u64_le(hash);
+        if (hash_val < current_target) {
             char nonce_hex[16];
             snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
             char result_hex[65];
@@ -300,18 +306,21 @@ void worker_run(worker_t *w) {
 
         nonce++;
         w->hashes++;
+        w->loop_count++;
 
-        uint64_t now = GetTickCount64();
-        uint64_t elapsed_ms = now - w->start_time;
-        if (now - last_report_time >= 10000) {
-            uint64_t delta_h = w->hashes - last_report_hashes;
-            double hr = (double)delta_h / ((now - last_report_time) / 1000.0);
-            double avg_hr = elapsed_ms > 0 ? (double)w->hashes / (elapsed_ms / 1000.0) : 0;
-            LOG_INFO("[W%d] %llu H/s (avg %.1f) | %llu hashes | %llu shares",
-                     w->id, (unsigned long long)(hr + 0.5), avg_hr,
-                     w->hashes, total_shares);
-            last_report_time = now;
-            last_report_hashes = w->hashes;
+        if (w->loop_count % 1000 == 0) {
+            uint64_t now = GetTickCount64();
+            uint64_t elapsed_ms = now - w->start_time;
+            if (now - last_report_time >= 10000) {
+                uint64_t delta_h = w->hashes - last_report_hashes;
+                double hr = (double)delta_h / ((now - last_report_time) / 1000.0);
+                double avg_hr = elapsed_ms > 0 ? (double)w->hashes / (elapsed_ms / 1000.0) : 0;
+                LOG_INFO("[W%d] %llu H/s (avg %.1f) | %llu hashes | %llu shares",
+                         w->id, (unsigned long long)(hr + 0.5), avg_hr,
+                         w->hashes, total_shares);
+                last_report_time = now;
+                last_report_hashes = w->hashes;
+            }
         }
     }
 
