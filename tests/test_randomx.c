@@ -119,7 +119,7 @@ int main(void) {
     memcpy(&val33554431, cacheMem + 33554431 * 8, 8);
     failures += check_u64("Cache offset 33554431", val33554431, 0x1f47f056d05cd99bULL);
 
-    rx_vm *vm = rx_create_vm(0, 0, cache, NULL);
+    rx_vm *vm = rx_create_vm(0, 0, 0, cache, NULL);
     if (!vm) {
         printf("[FAIL] Failed to create VM\n");
         rx_free_cache(cache);
@@ -160,7 +160,7 @@ int main(void) {
         if (!jit_cache) { printf("[FAIL] JIT test: cache alloc failed\n"); }
         else {
             rx_init_cache(jit_cache, test_seed, 32);
-            rx_vm *jit_vm = rx_create_vm(1, 1, jit_cache, NULL);
+            rx_vm *jit_vm = rx_create_vm(1, 1, 0, jit_cache, NULL);
             if (!jit_vm) { printf("[FAIL] JIT test: VM alloc failed\n"); }
             else {
                 printf("[I] Testing JIT compilation only (no dataset for execution)...\n");

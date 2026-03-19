@@ -377,6 +377,7 @@ typedef struct rx_vm {
     int fullMem;
     int lightClient;
     int useJit;
+    int large_pages;
     rx_jit *jit;
     uint8_t datasetItem[64];
     RX_ALIGNAS(16) uint64_t tempHash[8];

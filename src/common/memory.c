@@ -10,14 +10,12 @@ void *memory_alloc_large(size_t size) {
     return ptr;
 }
 
-void *memory_alloc_huge_pages(size_t size) {
-    SIZE_T huge_page_min = GetLargePageMinimum();
-    if (huge_page_min == 0) {
-        LOG_WARN("Huge pages not supported by system");
-        return memory_alloc_large(size);
-    }
+static int huge_page_privilege_checked = 0;
+static int huge_page_privilege_available = 0;
 
-    size_t aligned_size = ALIGN(size, (size_t)huge_page_min);
+static int ensure_se_lock_memory_privilege(void) {
+    if (huge_page_privilege_checked) return huge_page_privilege_available;
+    huge_page_privilege_checked = 1;
 
     TOKEN_PRIVILEGES tp = {0};
     LUID luid;
@@ -25,13 +23,13 @@ void *memory_alloc_huge_pages(size_t size) {
 
     if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token)) {
         LOG_WARN("Cannot open process token for huge pages privilege");
-        return memory_alloc_large(size);
+        return 0;
     }
 
     if (!LookupPrivilegeValueA(NULL, "SeLockMemoryPrivilege", &luid)) {
         CloseHandle(token);
         LOG_WARN("SeLockMemoryPrivilege not available");
-        return memory_alloc_large(size);
+        return 0;
     }
 
     tp.PrivilegeCount = 1;
@@ -41,10 +39,26 @@ void *memory_alloc_huge_pages(size_t size) {
     if (!AdjustTokenPrivileges(token, FALSE, &tp, sizeof(tp), NULL, NULL)) {
         CloseHandle(token);
         LOG_WARN("Cannot enable SeLockMemoryPrivilege");
-        return memory_alloc_large(size);
+        return 0;
     }
 
     CloseHandle(token);
+    huge_page_privilege_available = 1;
+    return 1;
+}
+
+void *memory_alloc_huge_pages(size_t size) {
+    SIZE_T huge_page_min = GetLargePageMinimum();
+    if (huge_page_min == 0) {
+        LOG_WARN("Huge pages not supported by system");
+        return memory_alloc_large(size);
+    }
+
+    size_t aligned_size = ALIGN(size, (size_t)huge_page_min);
+
+    if (!ensure_se_lock_memory_privilege()) {
+        return memory_alloc_large(size);
+    }
 
     void *ptr = VirtualAlloc(NULL, aligned_size, MEM_COMMIT | MEM_RESERVE | MEM_LARGE_PAGES, PAGE_READWRITE);
     if (!ptr) {

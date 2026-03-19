@@ -21,7 +21,7 @@ void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t c
 void *rx_get_dataset_memory(rx_dataset *ds);
 void rx_free_dataset(rx_dataset *ds);
 
-rx_vm *rx_create_vm(int full_mem, int use_jit, rx_cache *cache, rx_dataset *dataset);
+rx_vm *rx_create_vm(int full_mem, int use_jit, int large_pages, rx_cache *cache, rx_dataset *dataset);
 void rx_destroy_vm(rx_vm *vm);
 void rx_calculate_hash(rx_vm *vm, const void *input, size_t input_size, void *output);
 void rx_calculate_hash_first(rx_vm *vm, const void *input, size_t input_size);

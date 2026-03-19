@@ -53,7 +53,7 @@ int main(void) {
     printf("[BENCH] Dataset ready in %.1f s\n", ds_time); fflush(stdout);
 
     printf("[BENCH] Creating JIT VM (full mode)...\n"); fflush(stdout);
-    rx_vm *vm = rx_create_vm(1, 1, cache, dataset);
+    rx_vm *vm = rx_create_vm(1, 1, 0, cache, dataset);
     if (!vm) { printf("[FAIL] VM alloc\n"); return 1; }
 
     uint8_t hash[32];

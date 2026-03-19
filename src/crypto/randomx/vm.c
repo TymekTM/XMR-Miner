@@ -746,7 +746,7 @@ void rx_free_dataset(rx_dataset *ds) {
     free(ds);
 }
 
-rx_vm *rx_create_vm(int full_mem, int use_jit, rx_cache *cache, rx_dataset *dataset) {
+rx_vm *rx_create_vm(int full_mem, int use_jit, int large_pages, rx_cache *cache, rx_dataset *dataset) {
     rx_vm *vm = (rx_vm *)calloc(1, sizeof(rx_vm));
     if (!vm) return NULL;
     vm->fullMem = full_mem;
@@ -756,7 +756,14 @@ rx_vm *rx_create_vm(int full_mem, int use_jit, rx_cache *cache, rx_dataset *data
     vm->datasetPtr = dataset;
     if (dataset) vm->mem.memory = dataset->memory;
     else if (cache) vm->mem.memory = cache->memory;
-    vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
+    vm->scratchpad = NULL;
+    vm->large_pages = 0;
+    if (large_pages) {
+        vm->scratchpad = (uint8_t *)VirtualAlloc(NULL, RX_SCRATCHPAD_L3, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+        if (vm->scratchpad) vm->large_pages = 1;
+    }
+    if (!vm->scratchpad)
+        vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
     if (!vm->scratchpad) { free(vm); return NULL; }
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
@@ -767,7 +774,12 @@ rx_vm *rx_create_vm(int full_mem, int use_jit, rx_cache *cache, rx_dataset *data
 
 void rx_destroy_vm(rx_vm *vm) {
     if (!vm) return;
-    if (vm->scratchpad) _aligned_free(vm->scratchpad);
+    if (vm->scratchpad) {
+        if (vm->large_pages)
+            VirtualFree(vm->scratchpad, 0, MEM_RELEASE);
+        else
+            _aligned_free(vm->scratchpad);
+    }
     if (vm->jit) {
         extern void rx_jit_destroy(rx_jit *jit);
         rx_jit_destroy(vm->jit);

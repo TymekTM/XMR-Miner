@@ -216,15 +216,20 @@ int argon2_hash(const argon2_type type,
                 u32 starting_index = (pass == 0 && slice == 0) ? 2 : 0;
                 u32 curr_offset = lane * lane_length + slice * seg_len + starting_index;
                 u32 prev_offset;
-                if (curr_offset % lane_length == 0)
+                u32 pos_in_lane = curr_offset % lane_length;
+                if (pos_in_lane == 0)
                     prev_offset = curr_offset + lane_length - 1;
                 else
                     prev_offset = curr_offset - 1;
+                u32 next_crossing = (pos_in_lane == 0)
+                    ? (curr_offset + 1)
+                    : (curr_offset + lane_length - pos_in_lane + 1);
 
                 for (u32 index = starting_index; index < seg_len;
                      index++, curr_offset++, prev_offset++) {
-                    if (curr_offset % lane_length == 1) {
+                    if (curr_offset == next_crossing) {
                         prev_offset = curr_offset - 1;
+                        next_crossing += lane_length;
                     }
                     u64 pseudo_rand = (blocks + (size_t)prev_offset * QWORDS)[0];
                     u32 ref_lane = (u32)((pseudo_rand >> 32) % parallelism);

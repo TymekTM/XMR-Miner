@@ -60,7 +60,10 @@ static void keccak_absorb(uint64_t *state, const uint8_t *data, size_t len) {
     while (i < len) {
         size_t block_size = len - i;
         if (block_size > rate) block_size = rate;
-        for (size_t j = 0; j < block_size; j++)
+        size_t j;
+        for (j = 0; j + 8 <= block_size; j += 8)
+            state[j / 8] ^= *(const uint64_t *)(data + i + j);
+        for (; j < block_size; j++)
             state[j / 8] ^= (uint64_t)data[i + j] << (8 * (j % 8));
         keccakf1600(state);
         i += block_size;
@@ -73,7 +76,10 @@ static void keccak_squeeze(uint64_t *state, uint8_t *output, size_t len) {
     while (i < len) {
         size_t block_size = len - i;
         if (block_size > rate) block_size = rate;
-        for (size_t j = 0; j < block_size; j++)
+        size_t j;
+        for (j = 0; j + 8 <= block_size; j += 8)
+            *(uint64_t *)(output + i + j) = state[j / 8];
+        for (; j < block_size; j++)
             output[i + j] = (uint8_t)(state[j / 8] >> (8 * (j % 8)));
         keccakf1600(state);
         i += block_size;
