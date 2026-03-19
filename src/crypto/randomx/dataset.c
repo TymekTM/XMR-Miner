@@ -123,21 +123,31 @@ void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number) {
     uint64_t reg_val = item_number;
     for (int i = 0; i < RX_CACHE_ACCESSES; i++) {
         uint8_t *mix_block = cache->memory + ((reg_val & DS_CACHE_MASK) << 6);
-        _mm_prefetch((const char *)mix_block, _MM_HINT_NTA);
 
-        rx_superscalar_program *prog = &cache->programs[i];
-        uint64_t r[8];
-        memcpy(r, rl, 64);
-        ss_execute(r, prog, cache->reciprocalCache);
+        if (i < RX_CACHE_ACCESSES - 1) {
+            uint64_t next_reg = rl[cache->programs[i].addrReg];
+            uint8_t *next_block = cache->memory + ((next_reg & DS_CACHE_MASK) << 6);
+            _mm_prefetch((const char *)next_block, _MM_HINT_T0);
+        }
 
-        const uint64_t *ml = (const uint64_t *)mix_block;
-        r[0] ^= ml[0]; r[1] ^= ml[1]; r[2] ^= ml[2]; r[3] ^= ml[3];
-        r[4] ^= ml[4]; r[5] ^= ml[5]; r[6] ^= ml[6]; r[7] ^= ml[7];
-        memcpy(rl, r, 64);
+        ss_execute(rl, &cache->programs[i], cache->reciprocalCache);
 
-        reg_val = rl[prog->addrReg];
+        __m128i *rl128 = (__m128i *)rl;
+        __m128i *ml128 = (__m128i *)mix_block;
+        rl128[0] = _mm_xor_si128(rl128[0], ml128[0]);
+        rl128[1] = _mm_xor_si128(rl128[1], ml128[1]);
+        rl128[2] = _mm_xor_si128(rl128[2], ml128[2]);
+        rl128[3] = _mm_xor_si128(rl128[3], ml128[3]);
+
+        reg_val = rl[cache->programs[i].addrReg];
     }
-    memcpy(out, rl, RX_CACHE_LINE_SIZE);
+
+    __m128i *rl128 = (__m128i *)rl;
+    _mm_stream_si128((__m128i *)out + 0, rl128[0]);
+    _mm_stream_si128((__m128i *)out + 1, rl128[1]);
+    _mm_stream_si128((__m128i *)out + 2, rl128[2]);
+    _mm_stream_si128((__m128i *)out + 3, rl128[3]);
+    _mm_sfence();
 }
 
 typedef struct {
