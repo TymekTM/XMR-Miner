@@ -10,6 +10,7 @@ typedef struct {
     int has_avx;
     int logical_cores;
     int physical_cores;
+    int l3_cache_kb;
     char brand_string[49];
 } cpu_info_t;
 

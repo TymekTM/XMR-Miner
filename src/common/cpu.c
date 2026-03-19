@@ -67,11 +67,30 @@ void cpu_detect(cpu_info_t *info) {
 
     info->logical_cores = get_logical_cores();
     info->physical_cores = get_physical_cores();
+
+    info->l3_cache_kb = 0;
+    u32 max_ext2;
+    cpuid(0x80000000, 0, &max_ext2, &ebx, &ecx, &edx);
+    if (max_ext2 >= 0x80000006) {
+        u32 regs4[4];
+        __cpuidex((int*)regs4, 0x80000006, 0);
+        info->l3_cache_kb = (regs4[2] >> 16) & 0xFFFF;
+    }
+    if (info->l3_cache_kb == 0) {
+        u32 regs4[4];
+        __cpuidex((int*)regs4, 4, 3);
+        int sets = (regs4[0] & 0x1FF) + 1;
+        int line_size = ((regs4[0] >> 0) & 0xFFF) + 1;
+        int ways = ((regs4[0] >> 22) & 0x3FF) + 1;
+        info->l3_cache_kb = (sets * line_size * ways) / 1024;
+    }
 }
 
 void cpu_print_info(const cpu_info_t *info) {
     LOG_INFO("CPU: %s", info->brand_string);
     LOG_INFO("Cores: %d logical", info->logical_cores);
+    if (info->l3_cache_kb > 0)
+        LOG_INFO("L3 cache: %d MB", info->l3_cache_kb / 1024);
     LOG_INFO("Features: AES-NI=%s AVX2=%s SSE2=%s BMI2=%s",
         info->has_aes_ni ? "yes" : "no",
         info->has_avx2 ? "yes" : "no",
