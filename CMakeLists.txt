@@ -58,6 +58,7 @@ set(TEST_SOURCES
     tests/test_argon2.c
     tests/test_randomx.c
     tests/bench_jit.c
+    tests/dump_jit.c
 )
 
 set(RANDOMX_SOURCES
