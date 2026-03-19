@@ -71,7 +71,6 @@ void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer) {
     rx_vec_i128 s3 = rx_load_i128((const rx_vec_i128 *)state + 3);
 
     while (outptr < outputEnd) {
-        _mm_prefetch((const char *)(outptr + 128), _MM_HINT_T0);
         s0 = rx_aesdec_i128(s0, k0);
         s1 = rx_aesenc_i128(s1, k1);
         s2 = rx_aesdec_i128(s2, k2);
@@ -109,7 +108,6 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
     rx_vec_i128 s3 = rx_load_i128((const rx_vec_i128 *)state + 3);
 
     while (outptr < outputEnd) {
-        _mm_prefetch((const char *)(outptr + 128), _MM_HINT_T0);
         s0 = rx_aesdec_i128(s0, k0); s1 = rx_aesenc_i128(s1, k0);
         s2 = rx_aesdec_i128(s2, k4); s3 = rx_aesenc_i128(s3, k4);
         s0 = rx_aesdec_i128(s0, k1); s1 = rx_aesenc_i128(s1, k1);
@@ -148,7 +146,7 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
 
     while (sp < spEnd) {
         if (sp + 128 < spEnd)
-            _mm_prefetch((const char *)(sp + 128), _MM_HINT_T0);
+            _mm_prefetch((const char *)(sp + 128), _MM_HINT_NTA);
         hs0 = rx_aesenc_i128(hs0, rx_load_i128((const rx_vec_i128 *)sp + 0));
         hs1 = rx_aesdec_i128(hs1, rx_load_i128((const rx_vec_i128 *)sp + 1));
         hs2 = rx_aesenc_i128(hs2, rx_load_i128((const rx_vec_i128 *)sp + 2));

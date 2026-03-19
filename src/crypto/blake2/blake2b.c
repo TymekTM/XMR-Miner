@@ -52,7 +52,7 @@ static const u8 blake2b_sigma[12][16] = {
     b = rotr64(b ^ c, 63); \
 } while(0)
 
-static void blake2b_compress(blake2b_state *S, const u8 block[BLAKE2B_BLOCKBYTES]) {
+static __forceinline void blake2b_compress(blake2b_state *S, const u8 block[BLAKE2B_BLOCKBYTES]) {
     u64 m[16];
     u64 v[16];
     int i;

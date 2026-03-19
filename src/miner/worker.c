@@ -150,6 +150,7 @@ void worker_run(worker_t *w) {
     int is_monero_proto = 0;
     char saved_ntime[64] = {0};
     int saved_en2_size = 4;
+    int need_first = 1;
 
     uint64_t last_report_hashes = 0;
     uint64_t last_report_time = 0;
@@ -202,6 +203,7 @@ void worker_run(worker_t *w) {
                 LOG_WARN("[W%d] Invalid seed_hash: %s", w->id, job->seed_hash);
             }
             got_job = 0;
+            need_first = 1;
         }
 
         if (strcmp(job->job_id, current_job_id) != 0) {
@@ -269,6 +271,7 @@ void worker_run(worker_t *w) {
             strncpy(current_job_id, job->job_id, sizeof(current_job_id) - 1);
             current_target = job->target_u64;
             got_job = 1;
+            need_first = 1;
 
             LOG_INFO("[W%d] New job: %s blob_len=%d target=%016llx proto=%s",
                      w->id, current_job_id, blob_len, (unsigned long long)current_target,
@@ -283,8 +286,13 @@ void worker_run(worker_t *w) {
 
         memcpy(blob + NONCE_OFFSET, &nonce, 4);
 
+        if (need_first) {
+            rx_calculate_hash_first(vm, blob, (size_t)blob_len);
+            need_first = 0;
+        }
+
         uint8_t hash[32];
-        rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+        rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
 
         uint64_t hash_val = read_u64_le(hash);
         if (hash_val < current_target) {

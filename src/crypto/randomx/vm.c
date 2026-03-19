@@ -423,13 +423,10 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             memRegs.mx = vm->mem.mx;
             memRegs.ma = vm->mem.ma;
             memRegs.memory = vm->mem.memory + vm->datasetOffset;
-            printf("[VM] JIT call mx=%u ma=%u mem=%p sp=%p\n", memRegs.mx, memRegs.ma, memRegs.memory, vm->scratchpad); fflush(stdout);
             func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
-            printf("[VM] JIT call returned OK\n"); fflush(stdout);
             vm->mem.mx = memRegs.mx;
             vm->mem.ma = memRegs.ma;
         } __except(EXCEPTION_EXECUTE_HANDLER) {
-            printf("[VM] JIT crashed with exception 0x%08lx\n", GetExceptionCode()); fflush(stdout);
             vm->useJit = 0;
         }
         if (vm->useJit) return;
@@ -474,6 +471,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             e[i] = raw;
         }
 
+        rx_vec_f128 fscal_mask = rx_set1_f128(0x80F0000000000000ULL);
         for (int pc = 0; pc < RX_PROGRAM_SIZE; pc++) {
             rx_bytecode *ibc = &bc[pc];
             switch (ibc->type) {
@@ -548,8 +546,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 break;
             }
             case RX_OP_FSCAL_R: {
-                rx_vec_f128 mask = rx_set1_f128(0x80F0000000000000ULL);
-                *ibc->fdst = rx_xor_f128(*ibc->fdst, mask);
+                *ibc->fdst = rx_xor_f128(*ibc->fdst, fscal_mask);
                 break;
             }
             case RX_OP_FMUL_R:

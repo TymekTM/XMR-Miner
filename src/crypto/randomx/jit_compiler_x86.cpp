@@ -322,7 +322,6 @@ struct JitCompiler {
 
         generateProgramEpilogue(prog, pcfg);
 
-        printf("[JIT] codeSize=%d epilogueOffset=%d\n", pos, EPILOGUE_OFFSET); fflush(stdout);
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
@@ -839,7 +838,7 @@ rx_jit* rx_jit_create(void) {
     rx_jit* jit = (rx_jit*)calloc(1, sizeof(rx_jit));
     jit->compiler = new JitCompiler();
     jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
-        MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     if (!jit->compiler->code) { delete jit->compiler; free(jit); return NULL; }
     return jit;
 }
@@ -852,21 +851,15 @@ void rx_jit_destroy(rx_jit* jit) {
 }
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg) {
-    DWORD oldProtect;
-    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_READWRITE, &oldProtect);
     jit->compiler->cache = nullptr;
     jit->compiler->generateProgram(prog, pcfg);
-    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_EXECUTE_READ, &oldProtect);
 }
 
 void rx_jit_generate_program_light(rx_jit* jit, rx_program* prog, rx_program_config* pcfg,
                                      rx_cache* cache, uint32_t datasetOffset) {
-    DWORD oldProtect;
-    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_READWRITE, &oldProtect);
     jit->compiler->cache = cache;
     jit->compiler->generateSuperscalarHash(cache);
     jit->compiler->generateProgramLight(prog, pcfg, datasetOffset);
-    VirtualProtect(jit->compiler->code, RX_TOTAL_CODE_SIZE, PAGE_EXECUTE_READ, &oldProtect);
 }
 
 void* rx_jit_get_program_func(rx_jit* jit) {

@@ -2,6 +2,7 @@
 #include "../blake2/blake2b.h"
 #include <string.h>
 #include <stdlib.h>
+#include <intrin.h>
 
 #define BLOCK_SIZE 1024
 #define QWORDS 128
@@ -36,6 +37,10 @@ static void P(u64 v[16]) {
 }
 
 static void fill_block(const u64 *prev, const u64 *ref, u64 *next, int with_xor) {
+    for (int i = 0; i < QWORDS; i += 8) {
+        _mm_prefetch((const char *)(prev + i), _MM_HINT_T0);
+        _mm_prefetch((const char *)(ref + i), _MM_HINT_T0);
+    }
     u64 R[QWORDS];
     for (int i = 0; i < QWORDS; i++)
         R[i] = prev[i] ^ ref[i];
