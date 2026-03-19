@@ -733,6 +733,20 @@ void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t c
     rx_init_dataset_internal(ds, cache, start, count, num_threads, num_physical_cores);
 }
 
+extern int rx_try_load_dataset_cache(rx_dataset *ds, const uint8_t *seed, size_t seed_len,
+                                       uint32_t start_item, uint32_t count);
+extern int rx_save_dataset_cache(rx_dataset *ds, const uint8_t *seed, size_t seed_len,
+                                   uint32_t start_item, uint32_t count);
+
+void rx_init_dataset_cached(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count,
+                              int num_threads, int num_physical_cores) {
+    if (rx_try_load_dataset_cache(ds, cache->seed, cache->seed_len, start, count)) {
+        return;
+    }
+    rx_init_dataset_internal(ds, cache, start, count, num_threads, num_physical_cores);
+    rx_save_dataset_cache(ds, cache->seed, cache->seed_len, start, count);
+}
+
 void *rx_get_dataset_memory(rx_dataset *ds) { return ds->memory; }
 
 void rx_free_dataset(rx_dataset *ds) {

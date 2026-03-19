@@ -356,6 +356,8 @@ typedef struct rx_cache {
     uint64_t *reciprocalCache;
     int reciprocalCount;
     int reciprocalCapacity;
+    uint8_t seed[64];
+    size_t seed_len;
 } rx_cache;
 
 typedef struct rx_dataset {

@@ -26,6 +26,7 @@ set(SOURCES
     src/crypto/randomx/reciprocal.c
     src/crypto/randomx/aes_hash.c
     src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
@@ -40,6 +41,7 @@ set_source_files_properties(
     src/crypto/randomx/jit_compiler_x86.cpp
     src/crypto/randomx/aes_hash.c
     src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
     src/crypto/aes/aes_ni.c
     PROPERTIES COMPILE_FLAGS "/GS-"
@@ -65,6 +67,7 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/reciprocal.c
     src/crypto/randomx/aes_hash.c
     src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp

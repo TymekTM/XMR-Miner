@@ -74,6 +74,11 @@ static void ss_execute(uint64_t r[8], const rx_superscalar_program *prog, const 
 }
 
 void rx_init_cache_internal(rx_cache *cache, const void *key, size_t key_size) {
+    memset(cache->seed, 0, sizeof(cache->seed));
+    size_t copy_len = key_size < 64 ? key_size : 64;
+    memcpy(cache->seed, key, copy_len);
+    cache->seed_len = key_size;
+
     argon2_hash(ARGON2_D, RX_ARGON_ITERATIONS, RX_ARGON_MEMORY, RX_ARGON_LANES,
                  key, key_size, RX_ARGON_SALT, RX_ARGON_SALT_LEN,
                  NULL, 0, NULL, 0,
