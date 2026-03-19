@@ -17,7 +17,7 @@ void *rx_get_cache_memory(rx_cache *cache);
 void rx_free_cache(rx_cache *cache);
 
 rx_dataset *rx_alloc_dataset(int large_pages);
-void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count, int num_threads);
+void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count, int num_threads, int num_physical_cores);
 void *rx_get_dataset_memory(rx_dataset *ds);
 void rx_free_dataset(rx_dataset *ds);
 

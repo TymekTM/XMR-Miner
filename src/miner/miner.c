@@ -93,7 +93,7 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
 
     if (ctx->dataset) {
         LOG_INFO("[MINER] Reinitializing dataset with new seed...");
-        rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432, ctx->num_threads);
+        rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432, ctx->num_threads, ctx->physical_cores);
         LOG_INFO("[MINER] Dataset reinitialized");
     }
 
@@ -145,7 +145,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     LOG_INFO("[MINER] Cache initialized with seed: %.16s...", ctx->current_seed_hex);
 
     extern rx_dataset *rx_alloc_dataset(int large_pages);
-    extern void rx_init_dataset(rx_dataset *, rx_cache *, uint32_t, uint32_t, int);
+    extern void rx_init_dataset(rx_dataset *, rx_cache *, uint32_t, uint32_t, int, int);
     LOG_INFO("[MINER] Initializing dataset (2 GB, this takes ~60 seconds)...");
     ctx->dataset = rx_alloc_dataset(ctx->huge_pages);
     if (!ctx->dataset) {
@@ -153,7 +153,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         return -1;
     }
     LOG_INFO("[MINER] Dataset allocated, initializing items...");
-    rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432, ctx->num_threads);
+    rx_init_dataset(ctx->dataset, ctx->cache, 0, 33554432, ctx->num_threads, ctx->physical_cores);
     LOG_INFO("[MINER] Dataset initialized");
 
     for (int i = 0; i < ctx->num_threads; i++) {

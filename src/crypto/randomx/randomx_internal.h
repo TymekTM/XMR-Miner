@@ -397,7 +397,7 @@ static inline int is_zero_or_power_of_2(uint32_t x) {
 #include "crypto/blake2/blake2_generator.h"
 
 void rx_init_cache_internal(rx_cache *cache, const void *key, size_t key_size);
-void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads);
+void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads, int num_physical_cores);
 void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number);
 void generate_superscalar(rx_superscalar_program *prog, blake2_gen *gen);
 

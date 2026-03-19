@@ -155,6 +155,7 @@ typedef struct {
     rx_cache *cache;
     uint32_t start;
     uint32_t count;
+    int thread_id;
 } ds_thread_arg_t;
 
 static DWORD WINAPI ds_init_thread(LPVOID param) {
@@ -166,8 +167,9 @@ static DWORD WINAPI ds_init_thread(LPVOID param) {
     return 0;
 }
 
-void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads) {
+void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads, int num_physical_cores) {
     if (num_threads < 1) num_threads = 1;
+    if (num_physical_cores < 1) num_physical_cores = num_threads;
 
     if (num_threads <= 1) {
         uint8_t *ptr = ds->memory + (size_t)start_item * RX_CACHE_LINE_SIZE;
@@ -194,8 +196,14 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
             args[t].cache = cache;
             args[t].start = offset;
             args[t].count = per_thread + (t < remainder ? 1 : 0);
+            args[t].thread_id = t;
             offset += args[t].count;
             threads[t] = CreateThread(NULL, 0, ds_init_thread, &args[t], 0, NULL);
+            SetThreadPriority(threads[t], THREAD_PRIORITY_ABOVE_NORMAL);
+            if (t < num_physical_cores) {
+                DWORD_PTR mask = 1ULL << t;
+                SetThreadAffinityMask(threads[t], mask);
+            }
         }
 
         uint32_t report_interval = count / 20;
