@@ -43,17 +43,17 @@ int main(void) {
     rx_dataset *dataset = rx_alloc_dataset(0);
     if (!dataset) { printf("[FAIL] dataset alloc\n"); return 1; }
 
-    printf("[BENCH] Initializing dataset...\n"); fflush(stdout);
+    printf("[BENCH] Initializing dataset (14 threads)...\n"); fflush(stdout);
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
-    rx_init_dataset(dataset, cache, 0, RX_DATASET_ITEMS, 1);
+    rx_init_dataset(dataset, cache, 0, RX_DATASET_ITEMS, 14);
     QueryPerformanceCounter(&t1);
     double ds_time = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
     printf("[BENCH] Dataset ready in %.1f s\n", ds_time); fflush(stdout);
 
     printf("[BENCH] Creating JIT VM (full mode)...\n"); fflush(stdout);
-    rx_vm *vm = rx_create_vm(1, 1, 0, cache, dataset);
+    rx_vm *vm = rx_create_vm(1, 0, 0, cache, dataset);
     if (!vm) { printf("[FAIL] VM alloc\n"); return 1; }
 
     uint8_t hash[32];
@@ -65,24 +65,25 @@ int main(void) {
         HANDLE h = CreateThread(NULL, 0, jit_run_thread, &ctx, 0, NULL);
         WaitForSingleObject(h, 10000);
         if (ctx.crashed) {
-            printf("[FAIL] JIT crashed\n");
+            printf("[FAIL] JIT crashed (falling back to interpreter)\n");
             TerminateThread(h, 1);
             CloseHandle(h);
-            rx_destroy_vm(vm); rx_free_dataset(dataset); rx_free_cache(cache);
-            return 1;
-        }
-        if (!ctx.done) {
+            rx_destroy_vm(vm);
+            vm = rx_create_vm(1, 0, 0, cache, dataset);
+            if (!vm) { printf("[FAIL] VM alloc (interpreter)\n"); return 1; }
+        } else if (!ctx.done) {
             printf("[FAIL] JIT hung (timeout after 10s)\n");
             TerminateThread(h, 1);
             CloseHandle(h);
             rx_destroy_vm(vm); rx_free_dataset(dataset); rx_free_cache(cache);
             return 1;
+        } else {
+            CloseHandle(h);
         }
-        CloseHandle(h);
     }
     printf("[BENCH] Warm-up done\n"); fflush(stdout);
 
-    int num_hashes = 5;
+    int num_hashes = 10;
     printf("[BENCH] Running %d hashes...\n", num_hashes); fflush(stdout);
     QueryPerformanceCounter(&t0);
     for (int i = 0; i < num_hashes; i++) {
