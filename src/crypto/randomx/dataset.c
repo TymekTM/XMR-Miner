@@ -156,15 +156,7 @@ static DWORD WINAPI ds_init_thread(LPVOID param) {
     return 0;
 }
 
-void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count) {
-    SYSTEM_INFO si;
-    GetSystemInfo(&si);
-    int max_threads = (int)si.dwNumberOfProcessors / 2;
-    if (max_threads < 1) max_threads = 1;
-    if (max_threads > 16) max_threads = 16;
-
-    int num_threads = max_threads;
-    if ((uint32_t)num_threads > count / 100000) num_threads = (int)(count / 100000);
+void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads) {
     if (num_threads < 1) num_threads = 1;
 
     if (num_threads <= 1) {

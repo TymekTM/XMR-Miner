@@ -177,7 +177,7 @@ void worker_run(worker_t *w) {
 
         if (job->target_u64 == 0 && job->difficulty > 0) {
             if (job->difficulty >= 1.0)
-                job->target_u64 = (uint64_t)(4294967295.0 / job->difficulty);
+                job->target_u64 = (uint64_t)(4294967296.0 / job->difficulty);
             else
                 job->target_u64 = 0xFFFFFFFF;
         }
@@ -294,8 +294,13 @@ void worker_run(worker_t *w) {
             hex_encode(hash, 32, result_hex);
 
             char en2_hex[32];
-            memset(en2_hex, '0', saved_en2_size * 2);
-            en2_hex[saved_en2_size * 2] = '\0';
+            int en2_size = saved_en2_size * 2;
+            for (int i = en2_size - 1; i >= 0; i--) {
+                int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
+                en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+            }
+            en2_hex[en2_size] = '\0';
+            w->extranonce2_counter++;
 
             LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
             total_shares++;

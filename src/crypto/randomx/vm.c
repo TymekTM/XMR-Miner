@@ -732,8 +732,8 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
     return ds;
 }
 
-void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count) {
-    rx_init_dataset_internal(ds, cache, start, count);
+void rx_init_dataset(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count, int num_threads) {
+    rx_init_dataset_internal(ds, cache, start, count, num_threads);
 }
 
 void *rx_get_dataset_memory(rx_dataset *ds) { return ds->memory; }

@@ -14,7 +14,7 @@ struct stratum_ctx {
     stratum_config_t cfg;
     SOCKET sock;
     int connected;
-    int running;
+    volatile int running;
     int protocol;
     int id_counter;
     char session_id[128];
@@ -200,7 +200,7 @@ static void parse_standard_job(stratum_ctx_t *ctx, const json_parser_t *jp,
 
     if (ctx->job.difficulty > 0) {
         if (ctx->job.difficulty >= 1.0)
-            ctx->job.target_u64 = (uint32_t)(4294967295.0 / ctx->job.difficulty);
+            ctx->job.target_u64 = (uint64_t)(4294967296.0 / ctx->job.difficulty);
         else
             ctx->job.target_u64 = 0xFFFFFFFF;
     }
@@ -598,7 +598,7 @@ int stratum_recv(stratum_ctx_t *ctx) {
                 EnterCriticalSection(&ctx->lock);
                 ctx->job.difficulty = new_diff;
                 if (new_diff >= 1.0)
-                    ctx->job.target_u64 = (uint32_t)(4294967295.0 / new_diff);
+                    ctx->job.target_u64 = (uint64_t)(4294967296.0 / new_diff);
                 else
                     ctx->job.target_u64 = 0xFFFFFFFF;
                 LeaveCriticalSection(&ctx->lock);

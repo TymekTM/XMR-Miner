@@ -83,14 +83,22 @@ static void keccak_squeeze(uint64_t *state, uint8_t *output, size_t len) {
 void keccak256(const uint8_t *data, size_t len, uint8_t *hash) {
     uint64_t state[KECCAK_STATE_SIZE] = {0};
     size_t padded_len = len + 1;
-    if (padded_len > 136) padded_len += 136 - (padded_len % 136);
+    if (padded_len > 136) {
+        size_t rem = padded_len % 136;
+        padded_len += (rem == 0) ? 0 : (136 - rem);
+    }
     else padded_len = 136;
-    uint8_t *padded = (uint8_t *)calloc(padded_len, 1);
-    if (!padded) return;
+    uint8_t padded_stack[512];
+    uint8_t *padded = padded_stack;
+    if (padded_len > sizeof(padded_stack)) {
+        padded = (uint8_t *)calloc(padded_len, 1);
+        if (!padded) return;
+    }
+    memset(padded, 0, padded_len);
     memcpy(padded, data, len);
     padded[len] = 0x01;
     padded[padded_len - 1] |= 0x80;
     keccak_absorb(state, padded, padded_len);
     keccak_squeeze(state, hash, 32);
-    free(padded);
+    if (padded != padded_stack) free(padded);
 }

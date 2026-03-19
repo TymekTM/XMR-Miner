@@ -47,7 +47,7 @@ int main(void) {
     LARGE_INTEGER t0, t1, freq;
     QueryPerformanceFrequency(&freq);
     QueryPerformanceCounter(&t0);
-    rx_init_dataset(dataset, cache, 0, RX_DATASET_ITEMS);
+    rx_init_dataset(dataset, cache, 0, RX_DATASET_ITEMS, 1);
     QueryPerformanceCounter(&t1);
     double ds_time = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
     printf("[BENCH] Dataset ready in %.1f s\n", ds_time); fflush(stdout);
