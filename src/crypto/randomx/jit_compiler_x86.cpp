@@ -472,33 +472,12 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
-        // Clear buffer with NOPs instead of INT3 for safer padding
+        // Use the static prologue for consistency with full mode
         memset(code, 0x90, RX_TOTAL_CODE_SIZE);
-        pos = 0;
+        memcpy(code, code_prologue, PROLOGUE_SIZE);
+        pos = PROLOGUE_SIZE;
 
-        // Generate prologue (working version)
-        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x200);  // sub rsp, 0x200 (512 bytes for locals + safety)
-        emitByte(0x48); emitByte(0x89); emitByte(0x1C); emitByte(0x24);  // mov [rsp+0], rbx (save rbx)
-        emitByte(0x48); emitByte(0x89); emitByte(0x6C); emitByte(0x24); emitByte(0x08);  // mov [rsp+8], rbp (save rbp)
-        emitByte(0x4C); emitByte(0x89); emitByte(0xCB);  // mov rbx, r9  (initialize loop counter)
-        emitByte(0x48); emitByte(0x8B); emitByte(0x2A);  // mov rbp, [rdx]
-        emitByte(0x48); emitByte(0x8B); emitByte(0x7A); emitByte(0x08);  // mov rdi, [rdx+8]
-
-        printf("[JIT] Prologue: pos=%d\n", pos);
-
-        // Copy loop_load from original
-        memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
-        pos += LOOP_LOAD_SIZE;
-
-        printf("[JIT] After loop_load: pos=%d\n", pos);
-
-        printf("[JIT] Generating %d instructions\n", RX_PROGRAM_SIZE);
-
-        instructionOffsets.clear();
-        for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
-
-        // Copy eMask
-        memcpy(code + EMASK_OFFSET, pcfg->eMask, sizeof(pcfg->eMask));
+        printf("[JIT] Using static prologue, pos after prologue=%d\n", pos);
 
         // Store loop_start position
         int loop_start = pos;
@@ -527,23 +506,12 @@ struct JitCompiler {
         printf("[JIT] After loop store, pos=%d\n", pos);
 
         // Loop control: decrement counter and jump
-        // Decrement rbx (which holds iteration count)
         emitByte(0x83); emitByte(0xEB); emitByte(0x01);  // sub ebx, 1
-
-        // Jump back to loop_start if not zero
-        emitByte(0x0F); emitByte(0x85);  // jnz (5-byte form)
-        int32_t offset = loop_start - (pos + 6);  // Offset from AFTER the instruction (pos + 6 = 2 opcode + 4 offset)
+        emitByte(0x0F); emitByte(0x85);  // jnz
+        int32_t offset = loop_start - (pos + 6);
         emit32(offset);
 
-        printf("[JIT] After loop control (offset=%d, loop_start=%d, pos_after=%d), pos=%d\n", offset, loop_start, pos + 6, pos);
-
-        // Restore saved registers
-        emitByte(0x48); emitByte(0x8B); emitByte(0x1C); emitByte(0x24);  // mov rbx, [rsp+0]
-        emitByte(0x48); emitByte(0x8B); emitByte(0x6C); emitByte(0x24); emitByte(0x08);  // mov rbp, [rsp+8]
-        emitByte(0x48); emitByte(0x89); emitByte(0x2A);  // mov [rdx], rbp - save mx_ma
-        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x200);  // add rsp, 0x200
-        emitByte(0xC3);  // ret
-
+        printf("[JIT] After loop control (offset=%d), pos=%d\n", offset, pos);
         printf("[JIT] COMPLETE: pos=%d\n", pos);
     }
 };
