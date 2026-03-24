@@ -491,12 +491,32 @@ struct JitCompiler {
 
         printf("[JIT] After loop_load: pos=%d\n", pos);
 
-        // For now - skip instructions and epilogue
-        // Just do simple loop: decrease counter, jump back, return
+        // Generate program instructions WITHOUT resetting pos
+        // (generateProgramPrologue resets pos which breaks our layout)
+        printf("[JIT] Generating %d instructions\n", RX_PROGRAM_SIZE);
 
-        // Store loop count (param r9d has iterations)
-        // For now just return without loop
-        printf("[JIT] Skipping full program, simple return\n");
+        instructionOffsets.clear();
+        for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+
+        // Copy eMask
+        memcpy(code + EMASK_OFFSET, pcfg->eMask, sizeof(pcfg->eMask));
+
+        // Generate all 256 instructions (without resetging pos!)
+        for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
+            rx_instruction* instr = &prog->programBuffer[i];
+            instr->src %= RX_REGISTERS_COUNT;
+            instr->dst %= RX_REGISTERS_COUNT;
+            generateCode(instr, i);
+        }
+
+        // Final instructions
+        emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg2);
+        emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg3);
+
+        printf("[JIT] After generateProgramPrologue: pos=%d\n", pos);
+
+        // DO NOT implement loop yet - test that generateProgramPrologue code works
+        printf("[JIT] Skipping loop for now, just return\n");
 
         // Restore saved registers
         emitByte(0x48); emitByte(0x8B); emitByte(0x9C); emitByte(0x24); emit32(0x1e0);  // mov rbx, [rsp+0x1e0]
@@ -505,7 +525,7 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x1c8);  // add rsp, 0x1c8
         emitByte(0xC3);  // ret
 
-        printf("[JIT] Simple version: pos=%d\n", pos);
+        printf("[JIT] COMPLETE: pos=%d\n", pos);
     }
 };
 
