@@ -221,3 +221,23 @@ add_executable(bench_interpreter_only tests/bench_interpreter_only.c
 )
 target_include_directories(bench_interpreter_only PRIVATE src)
 target_link_libraries(bench_interpreter_only ws2_32)
+
+# JIT vs Interpreter test
+add_executable(jit_vs_interpreter tests/jit_vs_interpreter.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(jit_vs_interpreter PRIVATE src)
+target_link_libraries(jit_vs_interpreter ws2_32)
