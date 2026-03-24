@@ -472,63 +472,40 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
-        // Clear the code buffer
-        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);
-
+        // Clear buffer with NOPs instead of INT3 for safer padding
+        memset(code, 0x90, RX_TOTAL_CODE_SIZE);
         pos = 0;
 
-        // Generate working prologue from scratch
-        //  sub rsp, 0x1c8  # allocate 456 bytes (0x1c8 = even, maintains 16-byte alignment)
-        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x1c8);
-
-        // Save registers: rbx, rbp, rsi, rdi, r12-r15
+        // Generate prologue (working version)
+        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x1c8);  // sub rsp, 0x1c8
         emitByte(0x48); emitByte(0x89); emitByte(0x9C); emitByte(0x24); emit32(0x1e0);  // mov [rsp+0x1e0], rbx
         emitByte(0x48); emitByte(0x89); emitByte(0xAC); emitByte(0x24); emit32(0x1e8);  // mov [rsp+0x1e8], rbp
-        emitByte(0x48); emitByte(0x89); emitByte(0xB4); emitByte(0x24); emit32(0x1f0);  // mov [rsp+0x1f0], rsi
-        emitByte(0x48); emitByte(0x89); emitByte(0xBC); emitByte(0x24); emit32(0x1f8);  // mov [rsp+0x1f8], rdi
+        emitByte(0x48); emitByte(0x8B); emitByte(0x2A);  // mov rbp, [rdx]
+        emitByte(0x48); emitByte(0x8B); emitByte(0x7A); emitByte(0x08);  // mov rdi, [rdx+8]
 
-        // Save XMM registers (handled by code_prologue)
-        // For now skip XMM to keep it simple
+        printf("[JIT] Prologue: pos=%d\n", pos);
 
-        // Load mx_ma and memory pointer from memRegs (rdx)
-        emitByte(0x48); emitByte(0x8B); emitByte(0x2A);       // mov rbp, [rdx]      - load mx_ma
-        emitByte(0x48); emitByte(0x8B); emitByte(0x7A); emitByte(0x08);  // mov rdi, [rdx+8]   - load memory ptr
+        // Copy loop_load from original
+        memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
+        pos += LOOP_LOAD_SIZE;
 
-        // Initialize r8-r15
-        emitByte(0x4D); emitByte(0x33); emitByte(0xC0);  // xor r8, r8
-        emitByte(0x4D); emitByte(0x33); emitByte(0xC9);  // xor r9, r9
-        emitByte(0x4D); emitByte(0x33); emitByte(0xD2);  // xor r10, r10
-        emitByte(0x4D); emitByte(0x33); emitByte(0xDB);  // xor r11, r11
-        emitByte(0x4D); emitByte(0x33); emitByte(0xE4);  // xor r12, r12
-        emitByte(0x4D); emitByte(0x33); emitByte(0xED);  // xor r13, r13
-        emitByte(0x4D); emitByte(0x33); emitByte(0xF6);  // xor r14, r14
-        emitByte(0x4D); emitByte(0x33); emitByte(0xFF);  // xor r15, r15
+        printf("[JIT] After loop_load: pos=%d\n", pos);
 
-        printf("[JIT-GEN] Prologue: %d bytes\n", pos);
+        // For now - skip instructions and epilogue
+        // Just do simple loop: decrease counter, jump back, return
 
-        // For now, just jump to epilogue and return
-        // Later we'll add generateProgramPrologue/Epilogue
+        // Store loop count (param r9d has iterations)
+        // For now just return without loop
+        printf("[JIT] Skipping full program, simple return\n");
 
-        // Load parameters properly (r8=scratchpad, r9=iterations)
-        // r8d already has scratchpad (param 3)
-        // r9d already has iterations (param 4)
-
-        // Save mx_ma to memory
-        emitByte(0x48); emitByte(0x89); emitByte(0x2A);  // mov [rdx], rbp  - store mx_ma back
-
-        // Restore registers
+        // Restore saved registers
         emitByte(0x48); emitByte(0x8B); emitByte(0x9C); emitByte(0x24); emit32(0x1e0);  // mov rbx, [rsp+0x1e0]
         emitByte(0x48); emitByte(0x8B); emitByte(0xAC); emitByte(0x24); emit32(0x1e8);  // mov rbp, [rsp+0x1e8]
-        emitByte(0x48); emitByte(0x8B); emitByte(0xB4); emitByte(0x24); emit32(0x1f0);  // mov rsi, [rsp+0x1f0]
-        emitByte(0x48); emitByte(0x8B); emitByte(0xBC); emitByte(0x24); emit32(0x1f8);  // mov rdi, [rsp+0x1f8]
-
-        // Deallocate stack
+        emitByte(0x48); emitByte(0x89); emitByte(0x2A);  // mov [rdx], rbp - save mx_ma
         emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x1c8);  // add rsp, 0x1c8
-
-        // Return
         emitByte(0xC3);  // ret
 
-        printf("[JIT-GEN] Total generated: %d bytes\n", pos);
+        printf("[JIT] Simple version: pos=%d\n", pos);
     }
 };
 
