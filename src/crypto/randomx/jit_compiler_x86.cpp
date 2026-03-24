@@ -487,6 +487,16 @@ struct JitCompiler {
         emit32(RX_SUPER_OFFSET - (pos + 4));
 
         generateProgramEpilogue(prog, pcfg);
+
+        // DEBUG: dump generated code
+        {
+            FILE *f = fopen("C:\\temp\\jit_code_dump.bin", "wb");
+            if (f) {
+                fwrite(code, 1, RX_TOTAL_CODE_SIZE, f);
+                fclose(f);
+                printf("[JIT] Code dumped to C:\\temp\\jit_code_dump.bin\n");
+            }
+        }
     }
 };
 
