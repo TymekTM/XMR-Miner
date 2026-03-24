@@ -4,35 +4,50 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
-#include <excpt.h>
 #include <windows.h>
+
+extern void rx_vm_run(rx_vm *vm, void *seed);
 
 int main(void) {
     uint8_t key[32] = {0x01};
+    printf("[1] start\n"); fflush(stdout);
 
     rx_cache *cache = rx_alloc_cache(0);
+    printf("[2] cache alloc\n"); fflush(stdout);
     rx_init_cache(cache, key, 32);
-    printf("[DUMP] Cache ready\n"); fflush(stdout);
+    printf("[3] cache init\n"); fflush(stdout);
 
-    rx_vm *vm = rx_create_vm(0, 1, 0, cache, NULL);
-    if (!vm) { printf("FAIL: vm\n"); return 1; }
-    printf("[DUMP] VM created, useJit=%d\n", vm->useJit); fflush(stdout);
+    rx_vm *vm = rx_create_vm(0, 0, 0, cache, NULL);
+    printf("[4] vm created useJit=%d lightClient=%d\n", vm->useJit, vm->lightClient); fflush(stdout);
 
-    uint8_t hash[32];
-    const char *input = "test";
+    printf("[4a] fill\n"); fflush(stdout);
+    rx_fill_aes4rx4(key, sizeof(rx_program), &vm->program);
+    printf("[4b] fill done\n"); fflush(stdout);
+    printf("[4c] interpreter\n"); fflush(stdout);
+    rx_vm_run(vm, key);
+    printf("[4d] interpreter ok\n"); fflush(stdout);
 
-    printf("[DUMP] About to call rx_calculate_hash...\n"); fflush(stdout);
+    printf("[5] JIT gen\n"); fflush(stdout);
+    rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
+    
+    typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
+    ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
+    
+    rx_memory_regs memRegs;
+    memRegs.mx = vm->mem.mx;
+    memRegs.ma = vm->mem.ma;
+    memRegs.memory = vm->mem.memory;
+    printf("[6] func=%p mem=%p\n", (void*)func, (void*)memRegs.memory); fflush(stdout);
+    
     __try {
-        rx_calculate_hash(vm, (const uint8_t*)input, strlen(input), hash);
-        printf("[DUMP] OK hash: ");
-        for (int i = 0; i < 8; i++) printf("%02x", hash[i]);
-        printf("\n");
+        func(&vm->reg, &memRegs, vm->scratchpad, 1);
+        printf("[7] func returned\n"); fflush(stdout);
     } __except(EXCEPTION_EXECUTE_HANDLER) {
-        printf("[DUMP] CRASHED: 0x%08lx at PC\n", GetExceptionCode());
-        printf("[DUMP] useJit=%d\n", vm->useJit);
+        printf("[7] SEH 0x%08lx\n", GetExceptionCode()); fflush(stdout);
     }
 
     rx_destroy_vm(vm);
     rx_free_cache(cache);
+    printf("[8] done\n"); fflush(stdout);
     return 0;
 }

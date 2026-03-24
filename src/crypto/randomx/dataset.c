@@ -137,22 +137,16 @@ void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number) {
 
         ss_execute(rl, &cache->programs[i], cache->reciprocalCache);
 
-        __m128i *rl128 = (__m128i *)rl;
-        __m128i *ml128 = (__m128i *)mix_block;
-        rl128[0] = _mm_xor_si128(rl128[0], ml128[0]);
-        rl128[1] = _mm_xor_si128(rl128[1], ml128[1]);
-        rl128[2] = _mm_xor_si128(rl128[2], ml128[2]);
-        rl128[3] = _mm_xor_si128(rl128[3], ml128[3]);
+        uint64_t *ml64 = (uint64_t *)mix_block;
+        rl[0] ^= ml64[0]; rl[1] ^= ml64[1];
+        rl[2] ^= ml64[2]; rl[3] ^= ml64[3];
+        rl[4] ^= ml64[4]; rl[5] ^= ml64[5];
+        rl[6] ^= ml64[6]; rl[7] ^= ml64[7];
 
         reg_val = rl[cache->programs[i].addrReg];
     }
 
-    __m128i *rl128 = (__m128i *)rl;
-    _mm_stream_si128((__m128i *)out + 0, rl128[0]);
-    _mm_stream_si128((__m128i *)out + 1, rl128[1]);
-    _mm_stream_si128((__m128i *)out + 2, rl128[2]);
-    _mm_stream_si128((__m128i *)out + 3, rl128[3]);
-    _mm_sfence();
+    memcpy(out, rl, 64);
 }
 
 typedef struct {

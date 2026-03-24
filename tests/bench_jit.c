@@ -50,10 +50,21 @@ int main(void) {
     rx_init_dataset(dataset, cache, 0, RX_DATASET_ITEMS, 14, 14);
     QueryPerformanceCounter(&t1);
     double ds_time = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
-    printf("[BENCH] Dataset ready in %.1f s\n", ds_time); fflush(stdout);
+    printf("[BENCH] Dataset ready in %.1f s (14 threads)\n", ds_time); fflush(stdout);
+
+    printf("[BENCH] Measuring single-threaded dataset init (1M items)...\n"); fflush(stdout);
+    QueryPerformanceCounter(&t0);
+    rx_init_dataset(dataset, cache, 0, 1048576, 1, 1);
+    QueryPerformanceCounter(&t1);
+    double st_time = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
+    double st_per_item = st_time / 1048576.0 * 1e6;
+    double st_estimated = st_time * (double)RX_DATASET_ITEMS / 1048576.0;
+    printf("[BENCH] Single-threaded: %.1f s for 1M items, %.2f us/item\n", st_time, st_per_item);
+    printf("[BENCH] Single-threaded estimated for 33.5M items: %.0f s\n", st_estimated);
+    printf("[BENCH] Multi-threaded speedup: %.2fx\n", st_estimated / ds_time);
 
     printf("[BENCH] Creating JIT VM (full mode)...\n"); fflush(stdout);
-    rx_vm *vm = rx_create_vm(1, 0, 0, cache, dataset);
+    rx_vm *vm = rx_create_vm(1, 1, 0, cache, dataset);
     if (!vm) { printf("[FAIL] VM alloc\n"); return 1; }
 
     uint8_t hash[32];

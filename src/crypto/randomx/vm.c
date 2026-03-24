@@ -393,8 +393,9 @@ static void vm_initialize(rx_vm *vm) {
         store64_le((uint8_t *)&vm->reg.a[i][0], bits0);
         store64_le((uint8_t *)&vm->reg.a[i][1], bits1);
     }
-    vm->mem.ma = (uint32_t)(vm->program.entropyBuffer[8] & RX_CACHE_LINE_ALIGN_MASK);
-    vm->mem.mx = (uint32_t)vm->program.entropyBuffer[10];
+    uint32_t mem_ma = (uint32_t)(vm->program.entropyBuffer[8] & RX_CACHE_LINE_ALIGN_MASK);
+    uint32_t mem_mx = (uint32_t)vm->program.entropyBuffer[10];
+    vm->mem.mx_ma = ((uint64_t)mem_ma << 32) | mem_mx;
     uint64_t addrRegs = vm->program.entropyBuffer[12];
     vm->config.readReg0 = 0 + (int)(addrRegs & 1);
     addrRegs >>= 1;
@@ -415,17 +416,20 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     if (vm->useJit && vm->jit) {
         __try {
             extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*);
+            extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
             extern void* rx_jit_get_program_func(rx_jit*);
-            rx_jit_generate_program(vm->jit, &vm->program, &vm->config);
+            if (vm->lightClient) {
+                rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
+            } else {
+                rx_jit_generate_program(vm->jit, &vm->program, &vm->config);
+            }
             typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
             ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
-            rx_memory_regs memRegs;
-            memRegs.mx = vm->mem.mx;
-            memRegs.ma = vm->mem.ma;
-            memRegs.memory = vm->mem.memory + vm->datasetOffset;
-            func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
-            vm->mem.mx = memRegs.mx;
-            vm->mem.ma = memRegs.ma;
+        rx_memory_regs memRegs;
+        memRegs.mx_ma = vm->mem.mx_ma;
+        memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
+        func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+        vm->mem.mx_ma = memRegs.mx_ma;
         } __except(EXCEPTION_EXECUTE_HANDLER) {
             vm->useJit = 0;
         }
@@ -447,8 +451,10 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     rx_bytecode bc[RX_PROGRAM_SIZE];
     compile_program(&vm->program, bc, r, f, e, a);
 
-    uint32_t spAddr0 = vm->mem.mx;
-    uint32_t spAddr1 = vm->mem.ma;
+    uint32_t spAddr0 = (uint32_t)vm->mem.mx_ma;
+    uint32_t spAddr1 = (uint32_t)(vm->mem.mx_ma >> 32);
+    uint32_t mem_mx = spAddr0;
+    uint32_t mem_ma = spAddr1;
     uint8_t *sp = vm->scratchpad;
     uint8_t *mem = vm->mem.memory;
 
@@ -581,11 +587,10 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             }
         }
 
-        uint64_t readPtr = vm->datasetOffset + (vm->mem.ma & RX_CACHE_LINE_ALIGN_MASK);
-        uint32_t *mp = &vm->mem.mx;
-        *mp ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
+        uint64_t readPtr = vm->datasetOffset + (mem_ma & RX_CACHE_LINE_ALIGN_MASK);
+        mem_mx ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
 
-        uint64_t prefetchAddr = vm->datasetOffset + (vm->mem.mx & RX_CACHE_LINE_ALIGN_MASK);
+        uint64_t prefetchAddr = vm->datasetOffset + (mem_mx & RX_CACHE_LINE_ALIGN_MASK);
         _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_NTA);
 
         if (vm->lightClient) {
@@ -602,9 +607,9 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 r[i] ^= dsLine[i];
         }
 
-        uint32_t tmp = vm->mem.mx;
-        vm->mem.mx = vm->mem.ma;
-        vm->mem.ma = tmp;
+        uint32_t tmp = mem_mx;
+        mem_mx = mem_ma;
+        mem_ma = tmp;
 
         for (unsigned i = 0; i < RX_REGISTERS_COUNT; i++)
             store64_le(sp + spAddr1 + 8 * i, r[i]);

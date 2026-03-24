@@ -320,8 +320,7 @@ typedef struct {
 } rx_bytecode;
 
 typedef struct {
-    uint32_t mx;
-    uint32_t ma;
+    uint64_t mx_ma;
     uint8_t *memory;
 } rx_memory_regs;
 
