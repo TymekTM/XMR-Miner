@@ -24,3 +24,4 @@ cache-line alignment on r/f/bc,73,MASSIVE REGRESSION. destroys locality. REVERT
 PGO (LTCG:PGINSTRUMENT),N/A,could not get .pgc/.pgd files generated. needs MSVC vcperf. REVERT
 __declspec(noalias) on rx_vm_run,200,KEEP! helps optimizer
 current best,190-202,~195 H/s stable. 50->195 H/s = 3.9x speedup
+27,restore working C interpreter (remove ASM),204,correct hash dfc0adc087ce099c. ASM removed from build. 204 H/s = 4x speedup
