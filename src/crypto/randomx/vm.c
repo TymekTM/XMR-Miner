@@ -390,7 +390,7 @@ static void vm_initialize(rx_vm *vm) {
     vm->config.eMask[1] = *(double *)&(uint64_t){rx_get_float_mask(vm->program.entropyBuffer[15])};
 }
 
-void rx_vm_run(rx_vm *vm, void *seed) {
+__declspec(noalias) __declspec(restrict) void rx_vm_run(rx_vm *vm, void *seed) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
