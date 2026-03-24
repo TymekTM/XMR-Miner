@@ -646,8 +646,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
         mem_mx ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
 
         uint64_t prefetchAddr = vm->datasetOffset + (mem_mx & RX_CACHE_LINE_ALIGN_MASK);
-        _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_NTA);
-        _mm_prefetch((const char *)(mem + prefetchAddr) + 64, _MM_HINT_NTA);
+        _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_T0);
 
         if (vm->lightClient) {
             uint64_t lcPtr = readPtr;
@@ -659,7 +658,6 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 r[i] ^= dsLine[i];
         } else {
             uint64_t *dsLine = (uint64_t *)(mem + readPtr);
-            _mm_prefetch((const char *)dsLine, _MM_HINT_NTA);
             __m128i d0 = _mm_loadu_si128((__m128i *)dsLine);
             __m128i d1 = _mm_loadu_si128((__m128i *)(dsLine + 2));
             __m128i d2 = _mm_loadu_si128((__m128i *)(dsLine + 4));

@@ -1,7 +1,7 @@
 experiment,hashrate_hs,notes
 baseline (SSE2 XOR + hoisted constants, 1000 hashes),176.08,pointer-based bytecode, clean duplicate removal
 __forceinline rx_smulh/rx_mulh/rx_cvt_int_f128,176.55,no change, MSVC already inlines
-NTA prefetch dataset (next iter + dsLine),182.23,KEEP both NTA prefetches
+NTA prefetch dataset (next iter + dsLine),182.23,REVERTED: T0 prefetch better on this CPU
 __forceinline ALL float helpers (add/sub/mul/div/sqrt/xor/and/or/swap/set/set1),183.02,significant gain! KEEP
 __forceinline rotr/rotl,179.38,slight regression vs 183, noise range. KEEP
 non-temporal stores for scratchpad writeback,169.22,REGRESSION. scratchpad fits in L2. REVERT
@@ -11,9 +11,12 @@ early dataset prefetch at loop top,179.06,neutral/slight regression. REVERT
 prefetch inside IMULH_M/ISMULH_M,176.58,neutral. REVERT
 config caching (readReg/datasetOffset/lightClient to locals),75.34,MASSIVE REGRESSION. REVERT
 BMI2 _mulx_u64 for rx_mulh,203-207,HUGE WIN +14%! KEEP
-BMI2 _mulx_u64 for rx_smulh (signed),184,HASH CORRUPTION! _mulx_u64 unsigned semantics wrong for signed. REVERT
-fast-path common ops with if-else before switch,125,MASSIVE REGRESSION. switch jump table much better. REVERT
+BMI2 _mulx_u64 for rx_smulh (signed),184,HASH CORRUPTION! REVERT
+fast-path common ops with if-else before switch,125,MASSIVE REGRESSION. REVERT
 AVX2 256-bit XOR for register ops,174,REGRESSION. AVX/SSE transition penalty. REVERT
 restrict pointers (sp, mem),206,neutral/noise. KEEP
-remove dsLine prefetch,198,slight regression. prefetch helps. REVERT
-current best (BMI2 mulx + NTA + forceinline + restrict),206,50 H/s original -> 206 H/s = 4.1x speedup
+cache ibc fields in locals (idst/isrc/imm/mask),154,REGRESSION. MSVC register pressure. REVERT
+BMI2 _rorx_u64/_rolx_u64 for rotr/rotl,N/A,_rorx needs const count in MSVC. _rolx doesnt exist. REVERT
+T0 prefetch dataset (single line, no dsLine),202,KEEP! Better than NTA on this CPU. Remove redundant dsLine prefetch
+remove scratchpad prefetch,147,MASSIVE REGRESSION. scratchpad prefetch critical. REVERT
+current best (BMI2 mulx + T0 prefetch + forceinline + restrict),190-202,stable ~195 H/s. 50->195 H/s = 3.9x speedup
