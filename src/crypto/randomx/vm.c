@@ -413,7 +413,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
-    if (0 && vm->useJit && vm->jit) {
+    if (vm->useJit && vm->jit) {
         __try {
             extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
             extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
@@ -432,22 +432,36 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             vm->useJit = 0;
         }
 
-        printf("[DEBUG] Getting function pointer...\n"); fflush(stdout);
+        printf("[DEBUG] Getting function pointer (code at %p)...\n", rx_jit_get_program_func(vm->jit)); fflush(stdout);
         typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
         extern void* rx_jit_get_program_func(rx_jit*);
         ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
 
-        __try {
-            rx_memory_regs memRegs;
-            memRegs.mx_ma = vm->mem.mx_ma;
-            memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
-            printf("[DEBUG] Calling JIT function...\n"); fflush(stdout);
-            func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
-            printf("[DEBUG] JIT function returned OK\n"); fflush(stdout);
-            vm->mem.mx_ma = memRegs.mx_ma;
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            printf("[ERROR] Exception during JIT execution: 0x%08lx\n", GetExceptionCode());
+        if (!func) {
+            printf("[ERROR] JIT function pointer is NULL!\n");
             vm->useJit = 0;
+        } else {
+            printf("[DEBUG] Function pointer: %p\n", (void*)func);
+            printf("[DEBUG] First 8 bytes of code: %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                ((uint8_t*)func)[0], ((uint8_t*)func)[1], ((uint8_t*)func)[2], ((uint8_t*)func)[3],
+                ((uint8_t*)func)[4], ((uint8_t*)func)[5], ((uint8_t*)func)[6], ((uint8_t*)func)[7]);
+
+            __try {
+                rx_memory_regs memRegs;
+                memRegs.mx_ma = vm->mem.mx_ma;
+                memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
+                printf("[DEBUG] memRegs.mx_ma = 0x%llx\n", memRegs.mx_ma);
+                printf("[DEBUG] memRegs.memory = %p\n", memRegs.memory);
+                printf("[DEBUG] scratchpad = %p\n", vm->scratchpad);
+                printf("[DEBUG] RX_PROGRAM_ITERATIONS = %u\n", RX_PROGRAM_ITERATIONS);
+                printf("[DEBUG] Calling JIT function...\n"); fflush(stdout);
+                func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+                printf("[DEBUG] JIT function returned OK\n"); fflush(stdout);
+                vm->mem.mx_ma = memRegs.mx_ma;
+            } __except(EXCEPTION_EXECUTE_HANDLER) {
+                printf("[ERROR] Exception during JIT execution: 0x%08lx\n", GetExceptionCode());
+                vm->useJit = 0;
+            }
         }
         if (vm->useJit) { return; }
     }
