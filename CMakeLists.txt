@@ -181,3 +181,43 @@ add_executable(quick_full_jit_bench tests/quick_full_jit_bench.c
 )
 target_include_directories(quick_full_jit_bench PRIVATE src)
 target_link_libraries(quick_full_jit_bench ws2_32)
+
+# Debug JIT loop test
+add_executable(debug_jit_loop tests/debug_jit_loop.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(debug_jit_loop PRIVATE src)
+target_link_libraries(debug_jit_loop ws2_32)
+
+# Interpreter-only benchmark
+add_executable(bench_interpreter_only tests/bench_interpreter_only.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(bench_interpreter_only PRIVATE src)
+target_link_libraries(bench_interpreter_only ws2_32)
