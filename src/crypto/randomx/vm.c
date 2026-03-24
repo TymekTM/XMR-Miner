@@ -413,7 +413,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
-    if (0 && vm->useJit && vm->jit) {  // DISABLED: JIT complex and crashes in light mode
+    if (vm->useJit && vm->jit) {
         __try {
             extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
             extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);

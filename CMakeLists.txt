@@ -65,6 +65,7 @@ set(TEST_SOURCES
     tests/quick_jit_test.c
     tests/verify_hash_consistency.c
     tests/debug_jit_crash.c
+    tests/test_full_jit.c
 )
 
 set(RANDOMX_SOURCES
@@ -141,4 +142,22 @@ add_executable(test_loop_load tests/test_loop_load.c)
 target_include_directories(test_loop_load PRIVATE src)
 target_link_libraries(test_loop_load ws2_32)
 
-
+# Full mode JIT performance test
+add_executable(test_full_jit_perf tests/test_full_jit_perf.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(test_full_jit_perf PRIVATE src)
+target_link_libraries(test_full_jit_perf ws2_32)
