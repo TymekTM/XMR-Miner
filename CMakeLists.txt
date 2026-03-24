@@ -62,6 +62,7 @@ set(TEST_SOURCES
     tests/bench_jit.c
     tests/bench_compare.c
     tests/dump_jit.c
+    tests/quick_jit_test.c
 )
 
 set(RANDOMX_SOURCES
