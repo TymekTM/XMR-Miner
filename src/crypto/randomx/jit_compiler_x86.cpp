@@ -312,13 +312,17 @@ struct JitCompiler {
     }
 
     void generateProgram(rx_program* prog, rx_program_config* pcfg) {
+        // Clear the code buffer before generating new code
+        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);  // 0xCC = INT3 (breakpoint), safe padding
+
         memcpy(code, code_prologue, PROLOGUE_SIZE);
         memcpy(code + EPILOGUE_OFFSET, code_epilogue, EPILOGUE_SIZE);
 
         generateProgramPrologue(prog, pcfg);
 
-        memcpy(code + pos, code_read_dataset, READ_DATASET_SIZE);
-        pos += READ_DATASET_SIZE;
+        // NOTE: In full mode, dataset reads are inlined in the program
+        // We don't copy code_read_dataset here - it would be copied into the middle of the program
+        // causing incorrect x86 code layout
 
         generateProgramEpilogue(prog, pcfg);
 
@@ -468,6 +472,10 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
+        // Clear the code buffer before generating new code
+        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);  // 0xCC = INT3, safe padding
+
+        pos = 0;  // RESET pos from generateSuperscalarHash!
         memcpy(code, code_prologue, PROLOGUE_SIZE);
         memcpy(code + EPILOGUE_OFFSET, code_epilogue, EPILOGUE_SIZE);
 
@@ -477,10 +485,6 @@ struct JitCompiler {
         emit32(datasetOffset / RX_CACHE_LINE_SIZE);
         emitByte(0xE8);
         emit32(RX_SUPER_OFFSET - (pos + 4));
-
-        memcpy(code + pos, code_epilogue, EPILOGUE_SIZE);
-        fixupCallOffsets(code + pos, EPILOGUE_SIZE, pos);
-        pos += EPILOGUE_SIZE;
 
         generateProgramEpilogue(prog, pcfg);
     }
@@ -850,8 +854,11 @@ void rx_jit_destroy(rx_jit* jit) {
     free(jit);
 }
 
-void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg) {
-    jit->compiler->cache = nullptr;
+void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
+    jit->compiler->cache = cache;
+    if (cache) {
+        jit->compiler->generateSuperscalarHash(cache);
+    }
     jit->compiler->generateProgram(prog, pcfg);
 }
 

@@ -415,13 +415,13 @@ void rx_vm_run(rx_vm *vm, void *seed) {
 
     if (0 && vm->useJit && vm->jit) {
         __try {
-            extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*);
+            extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
             extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
             extern void* rx_jit_get_program_func(rx_jit*);
             if (vm->lightClient) {
                 rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
             } else {
-                rx_jit_generate_program(vm->jit, &vm->program, &vm->config);
+                rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
             }
             typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
             ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);

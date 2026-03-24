@@ -92,3 +92,43 @@ set(RANDOMX_SOURCES
     target_include_directories(${test_name} PRIVATE src)
     target_link_libraries(${test_name} ws2_32)
 endforeach()
+
+# Explicitly add test_jit_loop
+add_executable(test_jit_loop tests/test_jit_loop.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(test_jit_loop PRIVATE src)
+target_link_libraries(test_jit_loop ws2_32)
+
+# Test JIT vs Interpreter
+add_executable(test_jit_detailed tests/test_jit_detailed.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(test_jit_detailed PRIVATE src)
+target_link_libraries(test_jit_detailed ws2_32)
