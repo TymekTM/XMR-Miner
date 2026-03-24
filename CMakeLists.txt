@@ -63,6 +63,7 @@ set(TEST_SOURCES
     tests/bench_compare.c
     tests/dump_jit.c
     tests/quick_jit_test.c
+    tests/verify_hash_consistency.c
 )
 
 set(RANDOMX_SOURCES
