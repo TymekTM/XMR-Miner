@@ -477,9 +477,10 @@ struct JitCompiler {
         pos = 0;
 
         // Generate prologue (working version)
-        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x1c8);  // sub rsp, 0x1c8
-        emitByte(0x48); emitByte(0x89); emitByte(0x9C); emitByte(0x24); emit32(0x1e0);  // mov [rsp+0x1e0], rbx
-        emitByte(0x48); emitByte(0x89); emitByte(0xAC); emitByte(0x24); emit32(0x1e8);  // mov [rsp+0x1e8], rbp
+        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x200);  // sub rsp, 0x200 (512 bytes for locals + safety)
+        emitByte(0x48); emitByte(0x89); emitByte(0x1C); emitByte(0x24);  // mov [rsp+0], rbx (save rbx)
+        emitByte(0x48); emitByte(0x89); emitByte(0x6C); emitByte(0x24); emitByte(0x08);  // mov [rsp+8], rbp (save rbp)
+        emitByte(0x4C); emitByte(0x89); emitByte(0xCB);  // mov rbx, r9  (initialize loop counter)
         emitByte(0x48); emitByte(0x8B); emitByte(0x2A);  // mov rbp, [rdx]
         emitByte(0x48); emitByte(0x8B); emitByte(0x7A); emitByte(0x08);  // mov rdi, [rdx+8]
 
@@ -491,8 +492,6 @@ struct JitCompiler {
 
         printf("[JIT] After loop_load: pos=%d\n", pos);
 
-        // Generate program instructions WITHOUT resetting pos
-        // (generateProgramPrologue resets pos which breaks our layout)
         printf("[JIT] Generating %d instructions\n", RX_PROGRAM_SIZE);
 
         instructionOffsets.clear();
@@ -501,7 +500,11 @@ struct JitCompiler {
         // Copy eMask
         memcpy(code + EMASK_OFFSET, pcfg->eMask, sizeof(pcfg->eMask));
 
-        // Generate all 256 instructions (without resetging pos!)
+        // Store loop_start position
+        int loop_start = pos;
+        printf("[JIT] Loop start at pos=%d\n", loop_start);
+
+        // Generate all 256 instructions
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
             rx_instruction* instr = &prog->programBuffer[i];
             instr->src %= RX_REGISTERS_COUNT;
@@ -509,20 +512,36 @@ struct JitCompiler {
             generateCode(instr, i);
         }
 
+        printf("[JIT] After instructions, pos=%d\n", pos);
+
         // Final instructions
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg2);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg3);
 
-        printf("[JIT] After generateProgramPrologue: pos=%d\n", pos);
+        printf("[JIT] Before loop store, pos=%d\n", pos);
 
-        // DO NOT implement loop yet - test that generateProgramPrologue code works
-        printf("[JIT] Skipping loop for now, just return\n");
+        // Copy loop_store
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
+
+        printf("[JIT] After loop store, pos=%d\n", pos);
+
+        // Loop control: decrement counter and jump
+        // Decrement rbx (which holds iteration count)
+        emitByte(0x83); emitByte(0xEB); emitByte(0x01);  // sub ebx, 1
+
+        // Jump back to loop_start if not zero
+        emitByte(0x0F); emitByte(0x85);  // jnz (5-byte form)
+        int32_t offset = loop_start - (pos + 6);  // Offset from AFTER the instruction (pos + 6 = 2 opcode + 4 offset)
+        emit32(offset);
+
+        printf("[JIT] After loop control (offset=%d, loop_start=%d, pos_after=%d), pos=%d\n", offset, loop_start, pos + 6, pos);
 
         // Restore saved registers
-        emitByte(0x48); emitByte(0x8B); emitByte(0x9C); emitByte(0x24); emit32(0x1e0);  // mov rbx, [rsp+0x1e0]
-        emitByte(0x48); emitByte(0x8B); emitByte(0xAC); emitByte(0x24); emit32(0x1e8);  // mov rbp, [rsp+0x1e8]
+        emitByte(0x48); emitByte(0x8B); emitByte(0x1C); emitByte(0x24);  // mov rbx, [rsp+0]
+        emitByte(0x48); emitByte(0x8B); emitByte(0x6C); emitByte(0x24); emitByte(0x08);  // mov rbp, [rsp+8]
         emitByte(0x48); emitByte(0x89); emitByte(0x2A);  // mov [rdx], rbp - save mx_ma
-        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x1c8);  // add rsp, 0x1c8
+        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x200);  // add rsp, 0x200
         emitByte(0xC3);  // ret
 
         printf("[JIT] COMPLETE: pos=%d\n", pos);

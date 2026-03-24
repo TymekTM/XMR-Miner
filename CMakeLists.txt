@@ -132,3 +132,13 @@ add_executable(test_jit_detailed tests/test_jit_detailed.c
 )
 target_include_directories(test_jit_detailed PRIVATE src)
 target_link_libraries(test_jit_detailed ws2_32)
+
+add_executable(test_minimal_jit tests/test_minimal_jit.c)
+target_include_directories(test_minimal_jit PRIVATE src)
+target_link_libraries(test_minimal_jit ws2_32)
+
+add_executable(test_loop_load tests/test_loop_load.c)
+target_include_directories(test_loop_load PRIVATE src)
+target_link_libraries(test_loop_load ws2_32)
+
+
