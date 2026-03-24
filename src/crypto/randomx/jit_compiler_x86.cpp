@@ -21,7 +21,7 @@
 #define RX_CONDITION_OFFSET       8
 #define RX_STORE_L3_CONDITION     14
 
-static const int PROLOGUE_SIZE = 448;
+static const int PROLOGUE_SIZE = 449;
 static const int LOOP_LOAD_SIZE = 120;
 static const int PREFETCH_SP_SIZE = 26;
 static const int EPILOGUE_SIZE = 256;
