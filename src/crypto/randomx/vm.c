@@ -4,35 +4,19 @@
 #include <excpt.h>
 
 static inline uint32_t load32_le(const void *p) {
-    uint32_t v;
-    memcpy(&v, p, 4);
-    return v;
+    return *(const uint32_t *)p;
 }
 
 static inline uint64_t load64_le(const void *p) {
-    uint64_t v;
-    memcpy(&v, p, 8);
-    return v;
+    return *(const uint64_t *)p;
 }
 
-static inline void store64_le(void *p, uint64_t v) { memcpy(p, &v, 8); }
+static inline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
 
 static uint64_t rx_zero_val = 0;
 
-static inline void *get_sp_addr(rx_bytecode *ibc, uint8_t *sp) {
-    uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
-    return sp + addr;
-}
-
-static void mask_reg_exp_mantissa(rx_program_config *cfg, rx_vec_f128 *x) {
-    rx_vec_f128 mm = rx_set_f128(RX_DYN_MANTISSA_MASK, RX_DYN_MANTISSA_MASK);
-    rx_vec_f128 em = rx_load_f128((const double *)cfg->eMask);
-    *x = rx_and_f128(*x, mm);
-    *x = rx_or_f128(*x, em);
-}
-
 static void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
-                             uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a) {
+                              uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a) {
     int reg_usage[RX_REGISTERS_COUNT];
     for (int i = 0; i < RX_REGISTERS_COUNT; i++) reg_usage[i] = -1;
 
@@ -273,12 +257,9 @@ static void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
             continue;
         }
         if (opcode < RX_CEIL_RX_FSWAP_R) {
-            dst = instr->dst % RX_REGISTERS_COUNT;
+            dst = instr->dst % RX_REG_FLT_COUNT;
             ibc->type = RX_OP_FSWAP_R;
-            if (dst < RX_REG_FLT_COUNT)
-                ibc->fdst = &f[dst];
-            else
-                ibc->fdst = &e[dst - RX_REG_FLT_COUNT];
+            ibc->fdst = &f[dst];
             continue;
         }
         if (opcode < RX_CEIL_RX_FADD_R) {
@@ -390,8 +371,8 @@ static void vm_initialize(rx_vm *vm) {
         uint64_t ent1 = vm->program.entropyBuffer[2 * i + 1];
         uint64_t bits0 = rx_get_small_positive_float_bits(ent0);
         uint64_t bits1 = rx_get_small_positive_float_bits(ent1);
-        store64_le((uint8_t *)&vm->reg.a[i][0], bits0);
-        store64_le((uint8_t *)&vm->reg.a[i][1], bits1);
+        vm->reg.a[i][0] = *(double *)&bits0;
+        vm->reg.a[i][1] = *(double *)&bits1;
     }
     uint32_t mem_ma = (uint32_t)(vm->program.entropyBuffer[8] & RX_CACHE_LINE_ALIGN_MASK);
     uint32_t mem_mx = (uint32_t)vm->program.entropyBuffer[10];
@@ -405,8 +386,8 @@ static void vm_initialize(rx_vm *vm) {
     addrRegs >>= 1;
     vm->config.readReg3 = 6 + (int)(addrRegs & 1);
     vm->datasetOffset = (uint32_t)(vm->program.entropyBuffer[13] % (RX_DATASET_EXTRA_ITEMS + 1)) * RX_CACHE_LINE_SIZE;
-    store64_le((uint8_t *)&vm->config.eMask[0], rx_get_float_mask(vm->program.entropyBuffer[14]));
-    store64_le((uint8_t *)&vm->config.eMask[1], rx_get_float_mask(vm->program.entropyBuffer[15]));
+    vm->config.eMask[0] = *(double *)&(uint64_t){rx_get_float_mask(vm->program.entropyBuffer[14])};
+    vm->config.eMask[1] = *(double *)&(uint64_t){rx_get_float_mask(vm->program.entropyBuffer[15])};
 }
 
 void rx_vm_run(rx_vm *vm, void *seed) {
@@ -418,7 +399,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
             extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
             extern void* rx_jit_get_program_func(rx_jit*);
-            if (vm->lightClient) {
+        if (vm->lightClient) {
                 printf("[DEBUG] Generating light program...\n"); fflush(stdout);
                 rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
                 printf("[DEBUG] Light program generated OK\n"); fflush(stdout);
@@ -485,8 +466,12 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     uint32_t spAddr1 = (uint32_t)(vm->mem.mx_ma >> 32);
     uint32_t mem_mx = spAddr0;
     uint32_t mem_ma = spAddr1;
-    uint8_t *sp = vm->scratchpad;
-    uint8_t *mem = vm->mem.memory;
+    uint8_t * __restrict sp = vm->scratchpad;
+    uint8_t * __restrict mem = vm->mem.memory;
+
+    rx_vec_f128 fscal_mask = rx_set1_f128(0x80F0000000000000ULL);
+    rx_vec_f128 fdiv_mm = rx_set_f128(RX_DYN_MANTISSA_MASK, RX_DYN_MANTISSA_MASK);
+    rx_vec_f128 fdiv_em = rx_load_f128((const double *)vm->config.eMask);
 
     for (unsigned ic = 0; ic < RX_PROGRAM_ITERATIONS; ic++) {
         uint64_t spMix = r[vm->config.readReg0] ^ r[vm->config.readReg1];
@@ -495,61 +480,97 @@ void rx_vm_run(rx_vm *vm, void *seed) {
         spAddr1 ^= (uint32_t)(spMix >> 32);
         spAddr1 &= RX_SPL3_MASK64;
 
-        for (unsigned i = 0; i < RX_REGISTERS_COUNT; i++)
-            r[i] ^= load64_le(sp + spAddr0 + 8 * i);
+        uint64_t *sp0 = (uint64_t *)(sp + spAddr0);
+        uint64_t *sp1 = (uint64_t *)(sp + spAddr1);
 
-        for (unsigned i = 0; i < RX_REG_FLT_COUNT; i++)
-            f[i] = rx_cvt_int_f128(sp + spAddr1 + 8 * i);
+        _mm_prefetch((const char *)sp0 + 64, _MM_HINT_T0);
+        _mm_prefetch((const char *)sp1 + 64, _MM_HINT_T0);
 
-        for (unsigned i = 0; i < RX_REG_FLT_COUNT; i++) {
-            rx_vec_f128 raw = rx_cvt_int_f128(sp + spAddr1 + 8 * (RX_REG_FLT_COUNT + i));
-            mask_reg_exp_mantissa(&vm->config, &raw);
-            e[i] = raw;
+        {
+            __m128i s0 = _mm_loadu_si128((__m128i *)sp0);
+            __m128i s1 = _mm_loadu_si128((__m128i *)(sp0 + 2));
+            __m128i s2 = _mm_loadu_si128((__m128i *)(sp0 + 4));
+            __m128i s3 = _mm_loadu_si128((__m128i *)(sp0 + 6));
+            __m128i r0 = _mm_loadu_si128((__m128i *)r);
+            __m128i r1 = _mm_loadu_si128((__m128i *)(r + 2));
+            __m128i r2 = _mm_loadu_si128((__m128i *)(r + 4));
+            __m128i r3 = _mm_loadu_si128((__m128i *)(r + 6));
+            _mm_storeu_si128((__m128i *)r, _mm_xor_si128(s0, r0));
+            _mm_storeu_si128((__m128i *)(r + 2), _mm_xor_si128(s1, r1));
+            _mm_storeu_si128((__m128i *)(r + 4), _mm_xor_si128(s2, r2));
+            _mm_storeu_si128((__m128i *)(r + 6), _mm_xor_si128(s3, r3));
         }
 
-        rx_vec_f128 fscal_mask = rx_set1_f128(0x80F0000000000000ULL);
+        f[0] = rx_cvt_int_f128(&sp1[0]);
+        f[1] = rx_cvt_int_f128(&sp1[1]);
+        f[2] = rx_cvt_int_f128(&sp1[2]);
+        f[3] = rx_cvt_int_f128(&sp1[3]);
+
+        {
+            rx_vec_f128 raw0 = rx_cvt_int_f128(&sp1[4]);
+            rx_vec_f128 raw1 = rx_cvt_int_f128(&sp1[5]);
+            rx_vec_f128 raw2 = rx_cvt_int_f128(&sp1[6]);
+            rx_vec_f128 raw3 = rx_cvt_int_f128(&sp1[7]);
+            e[0] = rx_or_f128(rx_and_f128(raw0, fdiv_mm), fdiv_em);
+            e[1] = rx_or_f128(rx_and_f128(raw1, fdiv_mm), fdiv_em);
+            e[2] = rx_or_f128(rx_and_f128(raw2, fdiv_mm), fdiv_em);
+            e[3] = rx_or_f128(rx_and_f128(raw3, fdiv_mm), fdiv_em);
+        }
+
         for (int pc = 0; pc < RX_PROGRAM_SIZE; pc++) {
             rx_bytecode *ibc = &bc[pc];
             switch (ibc->type) {
             case RX_OP_IADD_RS:
                 *ibc->idst += (*ibc->isrc << ibc->shift) + ibc->imm;
                 break;
-            case RX_OP_IADD_M:
-                *ibc->idst += load64_le(get_sp_addr(ibc, sp));
+            case RX_OP_IADD_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst += *(uint64_t *)(sp + addr);
                 break;
+            }
             case RX_OP_ISUB_R:
                 *ibc->idst -= *ibc->isrc;
                 break;
-            case RX_OP_ISUB_M:
-                *ibc->idst -= load64_le(get_sp_addr(ibc, sp));
+            case RX_OP_ISUB_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst -= *(uint64_t *)(sp + addr);
                 break;
+            }
             case RX_OP_IMUL_R:
                 *ibc->idst *= *ibc->isrc;
                 break;
-            case RX_OP_IMUL_M:
-                *ibc->idst *= load64_le(get_sp_addr(ibc, sp));
+            case RX_OP_IMUL_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst *= *(uint64_t *)(sp + addr);
                 break;
+            }
             case RX_OP_IMULH_R:
                 *ibc->idst = rx_mulh(*ibc->idst, *ibc->isrc);
                 break;
-            case RX_OP_IMULH_M:
-                *ibc->idst = rx_mulh(*ibc->idst, load64_le(get_sp_addr(ibc, sp)));
+            case RX_OP_IMULH_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst = rx_mulh(*ibc->idst, *(uint64_t *)(sp + addr));
                 break;
+            }
             case RX_OP_ISMULH_R:
-                *ibc->idst = (uint64_t)rx_smulh(rx_u64_to_s64(*ibc->idst), rx_u64_to_s64(*ibc->isrc));
+                *ibc->idst = (uint64_t)rx_smulh((int64_t)*ibc->idst, (int64_t)*ibc->isrc);
                 break;
-            case RX_OP_ISMULH_M:
-                *ibc->idst = (uint64_t)rx_smulh(rx_u64_to_s64(*ibc->idst), rx_u64_to_s64(load64_le(get_sp_addr(ibc, sp))));
+            case RX_OP_ISMULH_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst = (uint64_t)rx_smulh((int64_t)*ibc->idst, (int64_t)*(uint64_t *)(sp + addr));
                 break;
+            }
             case RX_OP_INEG_R:
                 *ibc->idst = ~(*ibc->idst) + 1;
                 break;
             case RX_OP_IXOR_R:
                 *ibc->idst ^= *ibc->isrc;
                 break;
-            case RX_OP_IXOR_M:
-                *ibc->idst ^= load64_le(get_sp_addr(ibc, sp));
+            case RX_OP_IXOR_M: {
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                *ibc->idst ^= *(uint64_t *)(sp + addr);
                 break;
+            }
             case RX_OP_IROR_R:
                 *ibc->idst = rx_rotr(*ibc->idst, *ibc->isrc & 63);
                 break;
@@ -569,7 +590,8 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 *ibc->fdst = rx_add_f128(*ibc->fdst, *ibc->fsrc);
                 break;
             case RX_OP_FADD_M: {
-                rx_vec_f128 fsrc = rx_cvt_int_f128(get_sp_addr(ibc, sp));
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
                 *ibc->fdst = rx_add_f128(*ibc->fdst, fsrc);
                 break;
             }
@@ -577,20 +599,21 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 *ibc->fdst = rx_sub_f128(*ibc->fdst, *ibc->fsrc);
                 break;
             case RX_OP_FSUB_M: {
-                rx_vec_f128 fsrc = rx_cvt_int_f128(get_sp_addr(ibc, sp));
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
                 *ibc->fdst = rx_sub_f128(*ibc->fdst, fsrc);
                 break;
             }
-            case RX_OP_FSCAL_R: {
+            case RX_OP_FSCAL_R:
                 *ibc->fdst = rx_xor_f128(*ibc->fdst, fscal_mask);
                 break;
-            }
             case RX_OP_FMUL_R:
                 *ibc->fdst = rx_mul_f128(*ibc->fdst, *ibc->fsrc);
                 break;
             case RX_OP_FDIV_M: {
-                rx_vec_f128 fsrc = rx_cvt_int_f128(get_sp_addr(ibc, sp));
-                mask_reg_exp_mantissa(&vm->config, &fsrc);
+                uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
+                fsrc = rx_or_f128(rx_and_f128(fsrc, fdiv_mm), fdiv_em);
                 *ibc->fdst = rx_div_f128(*ibc->fdst, fsrc);
                 break;
             }
@@ -608,9 +631,11 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 rx_set_rounding_mode((uint32_t)(isrc_val & 3));
                 break;
             }
-            case RX_OP_ISTORE:
-                store64_le(sp + ((*ibc->idst + ibc->imm) & ibc->memMask), *ibc->isrc);
+            case RX_OP_ISTORE: {
+                uint32_t addr = (uint32_t)((*ibc->idst + ibc->imm) & ibc->memMask);
+                *(uint64_t *)(sp + addr) = *ibc->isrc;
                 break;
+            }
             case RX_OP_NOP:
             default:
                 break;
@@ -622,6 +647,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
 
         uint64_t prefetchAddr = vm->datasetOffset + (mem_mx & RX_CACHE_LINE_ALIGN_MASK);
         _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_NTA);
+        _mm_prefetch((const char *)(mem + prefetchAddr) + 64, _MM_HINT_NTA);
 
         if (vm->lightClient) {
             uint64_t lcPtr = readPtr;
@@ -633,22 +659,42 @@ void rx_vm_run(rx_vm *vm, void *seed) {
                 r[i] ^= dsLine[i];
         } else {
             uint64_t *dsLine = (uint64_t *)(mem + readPtr);
-            for (int i = 0; i < RX_REGISTERS_COUNT; i++)
-                r[i] ^= dsLine[i];
+            _mm_prefetch((const char *)dsLine, _MM_HINT_NTA);
+            __m128i d0 = _mm_loadu_si128((__m128i *)dsLine);
+            __m128i d1 = _mm_loadu_si128((__m128i *)(dsLine + 2));
+            __m128i d2 = _mm_loadu_si128((__m128i *)(dsLine + 4));
+            __m128i d3 = _mm_loadu_si128((__m128i *)(dsLine + 6));
+            __m128i r0 = _mm_loadu_si128((__m128i *)r);
+            __m128i r1 = _mm_loadu_si128((__m128i *)(r + 2));
+            __m128i r2 = _mm_loadu_si128((__m128i *)(r + 4));
+            __m128i r3 = _mm_loadu_si128((__m128i *)(r + 6));
+            _mm_storeu_si128((__m128i *)r, _mm_xor_si128(r0, d0));
+            _mm_storeu_si128((__m128i *)(r + 2), _mm_xor_si128(r1, d1));
+            _mm_storeu_si128((__m128i *)(r + 4), _mm_xor_si128(r2, d2));
+            _mm_storeu_si128((__m128i *)(r + 6), _mm_xor_si128(r3, d3));
         }
 
         uint32_t tmp = mem_mx;
         mem_mx = mem_ma;
         mem_ma = tmp;
 
-        for (unsigned i = 0; i < RX_REGISTERS_COUNT; i++)
-            store64_le(sp + spAddr1 + 8 * i, r[i]);
+        {
+            uint64_t *sp1s = (uint64_t *)(sp + spAddr1);
+            _mm_storeu_si128((__m128i *)sp1s, _mm_loadu_si128((__m128i *)r));
+            _mm_storeu_si128((__m128i *)(sp1s + 2), _mm_loadu_si128((__m128i *)(r + 2)));
+            _mm_storeu_si128((__m128i *)(sp1s + 4), _mm_loadu_si128((__m128i *)(r + 4)));
+            _mm_storeu_si128((__m128i *)(sp1s + 6), _mm_loadu_si128((__m128i *)(r + 6)));
+        }
 
-        for (unsigned i = 0; i < RX_REG_FLT_COUNT; i++)
-            f[i] = rx_xor_f128(f[i], e[i]);
+        f[0] = rx_xor_f128(f[0], e[0]);
+        f[1] = rx_xor_f128(f[1], e[1]);
+        f[2] = rx_xor_f128(f[2], e[2]);
+        f[3] = rx_xor_f128(f[3], e[3]);
 
-        for (unsigned i = 0; i < RX_REG_FLT_COUNT; i++)
-            rx_store_f128((double *)(sp + spAddr0 + 16 * i), f[i]);
+        rx_store_f128((double *)(sp + spAddr0), f[0]);
+        rx_store_f128((double *)(sp + spAddr0 + 16), f[1]);
+        rx_store_f128((double *)(sp + spAddr0 + 32), f[2]);
+        rx_store_f128((double *)(sp + spAddr0 + 48), f[3]);
 
         spAddr0 = 0;
         spAddr1 = 0;

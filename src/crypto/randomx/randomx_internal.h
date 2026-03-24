@@ -65,24 +65,23 @@
 #define RX_STAT_EXP_BITS      4
 #define RX_DYN_MANTISSA_MASK  ((1ULL << (RX_MANTISSA_SIZE + RX_DYN_EXP_BITS)) - 1)
 
-static inline int64_t rx_smulh(int64_t a, int64_t b) {
+static __forceinline int64_t rx_smulh(int64_t a, int64_t b) {
     int64_t high;
     (void)_mul128(a, b, &high);
     return high;
 }
 
-static inline uint64_t rx_mulh(uint64_t a, uint64_t b) {
-    uint64_t high;
-    (void)_umul128(a, b, &high);
-    return high;
+static __forceinline uint64_t rx_mulh(uint64_t a, uint64_t b) {
+    unsigned __int64 low;
+    return _mulx_u64(a, b, &low);
 }
 
-static inline uint64_t rx_rotr(uint64_t x, unsigned int n) {
+static __forceinline uint64_t rx_rotr(uint64_t x, unsigned int n) {
     n &= 63;
     return (x >> n) | (x << (64 - n));
 }
 
-static inline uint64_t rx_rotl(uint64_t x, unsigned int n) {
+static __forceinline uint64_t rx_rotl(uint64_t x, unsigned int n) {
     n &= 63;
     return (x << n) | (x >> (64 - n));
 }
@@ -123,29 +122,29 @@ static inline uint64_t rx_get_float_mask(uint64_t entropy) {
 typedef __m128d rx_vec_f128;
 typedef __m128i rx_vec_i128;
 
-static inline rx_vec_f128 rx_load_f128(const double *p) { return _mm_load_pd(p); }
-static inline void rx_store_f128(double *p, rx_vec_f128 v) { _mm_store_pd(p, v); }
-static inline rx_vec_f128 rx_add_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_add_pd(a, b); }
-static inline rx_vec_f128 rx_sub_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_sub_pd(a, b); }
-static inline rx_vec_f128 rx_mul_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_mul_pd(a, b); }
-static inline rx_vec_f128 rx_div_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_div_pd(a, b); }
-static inline rx_vec_f128 rx_sqrt_f128(rx_vec_f128 a) { return _mm_sqrt_pd(a); }
-static inline rx_vec_f128 rx_swap_f128(rx_vec_f128 a) { return _mm_shuffle_pd(a, a, 1); }
-static inline rx_vec_f128 rx_xor_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_xor_pd(a, b); }
-static inline rx_vec_f128 rx_and_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_and_pd(a, b); }
-static inline rx_vec_f128 rx_or_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_or_pd(a, b); }
+static __forceinline rx_vec_f128 rx_load_f128(const double *p) { return _mm_load_pd(p); }
+static __forceinline void rx_store_f128(double *p, rx_vec_f128 v) { _mm_store_pd(p, v); }
+static __forceinline rx_vec_f128 rx_add_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_add_pd(a, b); }
+static __forceinline rx_vec_f128 rx_sub_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_sub_pd(a, b); }
+static __forceinline rx_vec_f128 rx_mul_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_mul_pd(a, b); }
+static __forceinline rx_vec_f128 rx_div_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_div_pd(a, b); }
+static __forceinline rx_vec_f128 rx_sqrt_f128(rx_vec_f128 a) { return _mm_sqrt_pd(a); }
+static __forceinline rx_vec_f128 rx_swap_f128(rx_vec_f128 a) { return _mm_shuffle_pd(a, a, 1); }
+static __forceinline rx_vec_f128 rx_xor_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_xor_pd(a, b); }
+static __forceinline rx_vec_f128 rx_and_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_and_pd(a, b); }
+static __forceinline rx_vec_f128 rx_or_f128(rx_vec_f128 a, rx_vec_f128 b) { return _mm_or_pd(a, b); }
 
-static inline rx_vec_f128 rx_set_f128(uint64_t hi, uint64_t lo) {
+static __forceinline rx_vec_f128 rx_set_f128(uint64_t hi, uint64_t lo) {
     return _mm_castsi128_pd(_mm_set_epi64x((long long)hi, (long long)lo));
 }
-static inline rx_vec_f128 rx_set1_f128(uint64_t x) {
+static __forceinline rx_vec_f128 rx_set1_f128(uint64_t x) {
     return _mm_castsi128_pd(_mm_set1_epi64x((long long)x));
 }
 
 static inline rx_vec_f128 rx_cast_i2f(rx_vec_i128 a) { return _mm_castsi128_pd(a); }
 static inline rx_vec_i128 rx_cast_f2i(rx_vec_f128 a) { return _mm_castpd_si128(a); }
 
-static inline rx_vec_f128 rx_cvt_int_f128(const void *addr) {
+static __forceinline rx_vec_f128 rx_cvt_int_f128(const void *addr) {
     __m128i ix = _mm_loadl_epi64((const __m128i *)addr);
     return _mm_cvtepi32_pd(ix);
 }

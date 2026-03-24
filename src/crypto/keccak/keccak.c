@@ -29,22 +29,60 @@ static const int keccak_rotations[25] = {
 void keccakf1600(uint64_t *state) {
     uint64_t C[5], D[5], B[25];
     for (int round = 0; round < KECCAK_ROUNDS; round++) {
-        for (int x = 0; x < 5; x++)
-            C[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
+        C[0] = state[0] ^ state[5] ^ state[10] ^ state[15] ^ state[20];
+        C[1] = state[1] ^ state[6] ^ state[11] ^ state[16] ^ state[21];
+        C[2] = state[2] ^ state[7] ^ state[12] ^ state[17] ^ state[22];
+        C[3] = state[3] ^ state[8] ^ state[13] ^ state[18] ^ state[23];
+        C[4] = state[4] ^ state[9] ^ state[14] ^ state[19] ^ state[24];
 
-        for (int x = 0; x < 5; x++) {
-            D[x] = C[(x + 4) % 5] ^ ROTL64(C[(x + 1) % 5], 1);
-            for (int y = 0; y < 5; y++)
-                state[x + 5 * y] ^= D[x];
-        }
+        D[0] = C[4] ^ ROTL64(C[1], 1);
+        D[1] = C[0] ^ ROTL64(C[2], 1);
+        D[2] = C[1] ^ ROTL64(C[3], 1);
+        D[3] = C[2] ^ ROTL64(C[4], 1);
+        D[4] = C[3] ^ ROTL64(C[0], 1);
 
-        for (int x = 0; x < 5; x++)
-            for (int y = 0; y < 5; y++)
-                B[y + 5 * ((2 * x + 3 * y) % 5)] = ROTL64(state[x + 5 * y], keccak_rotations[x + 5 * y]);
+        state[0] ^= D[0]; state[5] ^= D[0]; state[10] ^= D[0]; state[15] ^= D[0]; state[20] ^= D[0];
+        state[1] ^= D[1]; state[6] ^= D[1]; state[11] ^= D[1]; state[16] ^= D[1]; state[21] ^= D[1];
+        state[2] ^= D[2]; state[7] ^= D[2]; state[12] ^= D[2]; state[17] ^= D[2]; state[22] ^= D[2];
+        state[3] ^= D[3]; state[8] ^= D[3]; state[13] ^= D[3]; state[18] ^= D[3]; state[23] ^= D[3];
+        state[4] ^= D[4]; state[9] ^= D[4]; state[14] ^= D[4]; state[19] ^= D[4]; state[24] ^= D[4];
 
-        for (int x = 0; x < 5; x++)
-            for (int y = 0; y < 5; y++)
-                state[x + 5 * y] = B[x + 5 * y] ^ ((~B[(x + 1) % 5 + 5 * y]) & B[(x + 2) % 5 + 5 * y]);
+        B[0]  = ROTL64(state[0], 0);   B[1]  = ROTL64(state[5], 1);   B[2]  = ROTL64(state[10], 62);
+        B[3]  = ROTL64(state[15], 28);  B[4]  = ROTL64(state[20], 27);
+        B[5]  = ROTL64(state[16], 36);  B[6]  = ROTL64(state[21], 44);  B[7]  = ROTL64(state[1], 6);
+        B[8]  = ROTL64(state[6], 55);   B[9]  = ROTL64(state[11], 20);
+        B[10] = ROTL64(state[2], 3);    B[11] = ROTL64(state[7], 10);  B[12] = ROTL64(state[12], 43);
+        B[13] = ROTL64(state[17], 25);  B[14] = ROTL64(state[22], 39);
+        B[15] = ROTL64(state[3], 41);   B[16] = ROTL64(state[8], 45);  B[17] = ROTL64(state[13], 15);
+        B[18] = ROTL64(state[18], 21);  B[19] = ROTL64(state[23], 8);
+        B[20] = ROTL64(state[24], 18);  B[21] = ROTL64(state[4], 2);   B[22] = ROTL64(state[9], 61);
+        B[23] = ROTL64(state[14], 56);  B[24] = ROTL64(state[19], 14);
+
+        state[0]  = B[0]  ^ (~B[1]  & B[2]);
+        state[1]  = B[1]  ^ (~B[2]  & B[3]);
+        state[2]  = B[2]  ^ (~B[3]  & B[4]);
+        state[3]  = B[3]  ^ (~B[4]  & B[0]);
+        state[4]  = B[4]  ^ (~B[0]  & B[1]);
+        state[5]  = B[5]  ^ (~B[6]  & B[7]);
+        state[6]  = B[6]  ^ (~B[7]  & B[8]);
+        state[7]  = B[7]  ^ (~B[8]  & B[9]);
+        state[8]  = B[8]  ^ (~B[9]  & B[5]);
+        state[9]  = B[9]  ^ (~B[5]  & B[6]);
+        state[10] = B[10] ^ (~B[11] & B[12]);
+        state[11] = B[11] ^ (~B[12] & B[13]);
+        state[12] = B[12] ^ (~B[13] & B[14]);
+        state[13] = B[13] ^ (~B[14] & B[10]);
+        state[14] = B[14] ^ (~B[10] & B[11]);
+        state[15] = B[15] ^ (~B[16] & B[17]);
+        state[16] = B[16] ^ (~B[17] & B[18]);
+        state[17] = B[17] ^ (~B[18] & B[19]);
+        state[18] = B[18] ^ (~B[19] & B[15]);
+        state[19] = B[19] ^ (~B[15] & B[16]);
+        state[20] = B[20] ^ (~B[21] & B[22]);
+        state[21] = B[21] ^ (~B[22] & B[23]);
+        state[22] = B[22] ^ (~B[23] & B[24]);
+        state[23] = B[23] ^ (~B[24] & B[20]);
+        state[24] = B[24] ^ (~B[20] & B[21]);
 
         state[0] ^= keccak_round_constants[round];
     }

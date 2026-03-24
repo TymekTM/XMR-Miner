@@ -241,3 +241,28 @@ add_executable(jit_vs_interpreter tests/jit_vs_interpreter.c
 )
 target_include_directories(jit_vs_interpreter PRIVATE src)
 target_link_libraries(jit_vs_interpreter ws2_32)
+
+# Fast benchmark
+add_executable(bench_fast tests/bench_fast.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(bench_fast PRIVATE src)
+target_link_libraries(bench_fast ws2_32)
+
+# Minimal prologue test
+add_executable(minimal_working_prologue tests/minimal_working_prologue.c)
+target_include_directories(minimal_working_prologue PRIVATE src)
+target_link_libraries(minimal_working_prologue ws2_32)
