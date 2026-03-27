@@ -330,7 +330,7 @@ void worker_run(worker_t *w) {
         w->hashes++;
         w->loop_count++;
 
-        if (w->loop_count % 1000 == 0) {
+        if ((w->loop_count & 0xFF) == 0) {
             uint64_t now = GetTickCount64();
             uint64_t elapsed_ms = now - w->start_time;
             if (now - last_report_time >= 10000) {

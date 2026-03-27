@@ -1,7 +1,8 @@
 #include "randomx_internal.h"
 #include "common/log.h"
 #include <string.h>
-#include <excpt.h>
+#include <stdio.h>
+
 
 static inline uint32_t load32_le(const void *p) {
     return *(const uint32_t *)p;
@@ -386,65 +387,37 @@ static void vm_initialize(rx_vm *vm) {
     addrRegs >>= 1;
     vm->config.readReg3 = 6 + (int)(addrRegs & 1);
     vm->datasetOffset = (uint32_t)(vm->program.entropyBuffer[13] % (RX_DATASET_EXTRA_ITEMS + 1)) * RX_CACHE_LINE_SIZE;
-    vm->config.eMask[0] = *(double *)&(uint64_t){rx_get_float_mask(vm->program.entropyBuffer[14])};
-    vm->config.eMask[1] = *(double *)&(uint64_t){rx_get_float_mask(vm->program.entropyBuffer[15])};
+    vm->config.eMask[0] = rx_get_float_mask(vm->program.entropyBuffer[14]);
+    vm->config.eMask[1] = rx_get_float_mask(vm->program.entropyBuffer[15]);
 }
 
-__declspec(noalias) __declspec(restrict) void rx_vm_run(rx_vm *vm, void *seed) {
+void rx_vm_run(rx_vm *vm, void *seed) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
-    if (0 && vm->useJit && vm->jit) {  // DISABLED: JIT crashes on execution, needs major debugging
-        __try {
-            extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
-            extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
-            extern void* rx_jit_get_program_func(rx_jit*);
+    if (vm->useJit && vm->jit) {
+        extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
+        extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
+        extern void* rx_jit_get_program_func(rx_jit*);
+
         if (vm->lightClient) {
-                printf("[DEBUG] Generating light program...\n"); fflush(stdout);
-                rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
-                printf("[DEBUG] Light program generated OK\n"); fflush(stdout);
-            } else {
-                printf("[DEBUG] Generating full program...\n"); fflush(stdout);
-                rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
-                printf("[DEBUG] Full program generated OK\n"); fflush(stdout);
-            }
-        } __except(EXCEPTION_EXECUTE_HANDLER) {
-            printf("[ERROR] Exception during JIT generation: 0x%08lx\n", GetExceptionCode());
-            vm->useJit = 0;
+            rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
+        } else {
+            rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
         }
 
-        printf("[DEBUG] Getting function pointer (code at %p)...\n", rx_jit_get_program_func(vm->jit)); fflush(stdout);
         typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
-        extern void* rx_jit_get_program_func(rx_jit*);
         ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
 
-        if (!func) {
-            printf("[ERROR] JIT function pointer is NULL!\n");
-            vm->useJit = 0;
-        } else {
-            printf("[DEBUG] Function pointer: %p\n", (void*)func);
-            printf("[DEBUG] First 8 bytes of code: %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                ((uint8_t*)func)[0], ((uint8_t*)func)[1], ((uint8_t*)func)[2], ((uint8_t*)func)[3],
-                ((uint8_t*)func)[4], ((uint8_t*)func)[5], ((uint8_t*)func)[6], ((uint8_t*)func)[7]);
-
-            __try {
-                rx_memory_regs memRegs;
-                memRegs.mx_ma = vm->mem.mx_ma;
-                memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
-                printf("[DEBUG] memRegs.mx_ma = 0x%llx\n", memRegs.mx_ma);
-                printf("[DEBUG] memRegs.memory = %p\n", memRegs.memory);
-                printf("[DEBUG] scratchpad = %p\n", vm->scratchpad);
-                printf("[DEBUG] RX_PROGRAM_ITERATIONS = %u\n", RX_PROGRAM_ITERATIONS);
-                printf("[DEBUG] Calling JIT function...\n"); fflush(stdout);
-                func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
-                printf("[DEBUG] JIT function returned OK\n"); fflush(stdout);
-                vm->mem.mx_ma = memRegs.mx_ma;
-            } __except(EXCEPTION_EXECUTE_HANDLER) {
-                printf("[ERROR] Exception during JIT execution: 0x%08lx\n", GetExceptionCode());
-                vm->useJit = 0;
-            }
+        if (func) {
+            rx_memory_regs memRegs;
+            memRegs.mx_ma = vm->mem.mx_ma;
+            memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
+            func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+            vm->mem.mx_ma = memRegs.mx_ma;
+            return;
         }
-        if (vm->useJit) { return; }
+        vm->useJit = 0;
     }
 
     uint64_t r[RX_REGISTERS_COUNT];
@@ -647,6 +620,7 @@ __declspec(noalias) __declspec(restrict) void rx_vm_run(rx_vm *vm, void *seed) {
 
         uint64_t prefetchAddr = vm->datasetOffset + (mem_mx & RX_CACHE_LINE_ALIGN_MASK);
         _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_T0);
+        _mm_prefetch((const char *)(mem + prefetchAddr) + 64, _MM_HINT_T2);
 
         if (vm->lightClient) {
             uint64_t lcPtr = readPtr;
@@ -658,10 +632,10 @@ __declspec(noalias) __declspec(restrict) void rx_vm_run(rx_vm *vm, void *seed) {
                 r[i] ^= dsLine[i];
         } else {
             uint64_t *dsLine = (uint64_t *)(mem + readPtr);
-            __m128i d0 = _mm_loadu_si128((__m128i *)dsLine);
-            __m128i d1 = _mm_loadu_si128((__m128i *)(dsLine + 2));
-            __m128i d2 = _mm_loadu_si128((__m128i *)(dsLine + 4));
-            __m128i d3 = _mm_loadu_si128((__m128i *)(dsLine + 6));
+            __m128i d0 = _mm_load_si128((__m128i *)dsLine);
+            __m128i d1 = _mm_load_si128((__m128i *)(dsLine + 2));
+            __m128i d2 = _mm_load_si128((__m128i *)(dsLine + 4));
+            __m128i d3 = _mm_load_si128((__m128i *)(dsLine + 6));
             __m128i r0 = _mm_loadu_si128((__m128i *)r);
             __m128i r1 = _mm_loadu_si128((__m128i *)(r + 2));
             __m128i r2 = _mm_loadu_si128((__m128i *)(r + 4));

@@ -179,8 +179,14 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
             LOG_ERR("[MINER] Failed to create thread %d", i);
             continue;
         }
-        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_HIGHEST);
-        if (i < ctx->physical_cores) {
+        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_TIME_CRITICAL);
+        if (ctx->num_threads == 1 && ctx->physical_cores > 0) {
+            GROUP_AFFINITY ga = {0};
+            ga.Group = 0;
+            ga.Mask = (KAFFINITY)1;
+            ga.Reserved[0] = ga.Reserved[1] = ga.Reserved[2] = 0;
+            SetThreadGroupAffinity(ctx->thread_handles[i], &ga, NULL);
+        } else if (i < ctx->physical_cores) {
             DWORD_PTR mask = 1ULL << i;
             SetThreadAffinityMask(ctx->thread_handles[i], mask);
         }

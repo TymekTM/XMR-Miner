@@ -5,10 +5,10 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
 
 if(MSVC)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /Gd")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /Gd")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /arch:AVX2 /GL /Gw /Gy /fp:fast")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /arch:AVX2 /GL /Gw /Gy /fp:fast")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /Gd /MP")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /Gd /MP")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O2 /Oi /Ob3 /arch:AVX2 /GL /Gw /Gy /fp:fast /favor:AMD64 /GS- /EHs-c- /GR-")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O2 /Oi /Ob3 /arch:AVX2 /GL /Gw /Gy /fp:fast /favor:AMD64 /GS- /EHs-c- /GR-")
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
@@ -261,6 +261,46 @@ add_executable(bench_fast tests/bench_fast.c
 )
 target_include_directories(bench_fast PRIVATE src)
 target_link_libraries(bench_fast ws2_32)
+
+# Dump JIT bytes test
+add_executable(dump_jit_bytes tests/dump_jit_bytes.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(dump_jit_bytes PRIVATE src)
+target_link_libraries(dump_jit_bytes ws2_32)
+
+# JIT crash diagnostic test
+add_executable(test_jit_crash_diag tests/test_jit_crash_diag.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(test_jit_crash_diag PRIVATE src)
+target_link_libraries(test_jit_crash_diag ws2_32)
 
 # Minimal prologue test
 add_executable(minimal_working_prologue tests/minimal_working_prologue.c)

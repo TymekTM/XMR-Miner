@@ -21,7 +21,7 @@ int main(void) {
     rx_init_dataset_cached(dataset, cache, 0, RX_DATASET_ITEMS, 8, 8);
     printf("[BENCH] Dataset ready\n"); fflush(stdout);
 
-    rx_vm *vm = rx_create_vm(1, 0, 0, cache, dataset);
+    rx_vm *vm = rx_create_vm(1, 1, 0, cache, dataset);
     if (!vm) { printf("[FAIL] VM alloc\n"); return 1; }
 
     uint8_t blob[76] = {0};
