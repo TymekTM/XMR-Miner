@@ -47,16 +47,16 @@ void keccakf1600(uint64_t *state) {
         state[3] ^= D[3]; state[8] ^= D[3]; state[13] ^= D[3]; state[18] ^= D[3]; state[23] ^= D[3];
         state[4] ^= D[4]; state[9] ^= D[4]; state[14] ^= D[4]; state[19] ^= D[4]; state[24] ^= D[4];
 
-        B[0]  = ROTL64(state[0], 0);   B[1]  = ROTL64(state[5], 1);   B[2]  = ROTL64(state[10], 62);
-        B[3]  = ROTL64(state[15], 28);  B[4]  = ROTL64(state[20], 27);
-        B[5]  = ROTL64(state[16], 36);  B[6]  = ROTL64(state[21], 44);  B[7]  = ROTL64(state[1], 6);
-        B[8]  = ROTL64(state[6], 55);   B[9]  = ROTL64(state[11], 20);
-        B[10] = ROTL64(state[2], 3);    B[11] = ROTL64(state[7], 10);  B[12] = ROTL64(state[12], 43);
-        B[13] = ROTL64(state[17], 25);  B[14] = ROTL64(state[22], 39);
-        B[15] = ROTL64(state[3], 41);   B[16] = ROTL64(state[8], 45);  B[17] = ROTL64(state[13], 15);
-        B[18] = ROTL64(state[18], 21);  B[19] = ROTL64(state[23], 8);
-        B[20] = ROTL64(state[24], 18);  B[21] = ROTL64(state[4], 2);   B[22] = ROTL64(state[9], 61);
-        B[23] = ROTL64(state[14], 56);  B[24] = ROTL64(state[19], 14);
+        B[0]  = ROTL64(state[0],  0);   B[10] = ROTL64(state[1],  1);  B[20] = ROTL64(state[2], 62);
+        B[5]  = ROTL64(state[3], 28);   B[15] = ROTL64(state[4], 27);
+        B[16] = ROTL64(state[5], 36);   B[1]  = ROTL64(state[6], 44);  B[11] = ROTL64(state[7],  6);
+        B[21] = ROTL64(state[8], 55);   B[6]  = ROTL64(state[9], 20);
+        B[7]  = ROTL64(state[10], 3);   B[17] = ROTL64(state[11],10);  B[2]  = ROTL64(state[12],43);
+        B[12] = ROTL64(state[13],25);   B[22] = ROTL64(state[14],39);
+        B[23] = ROTL64(state[15],41);   B[8]  = ROTL64(state[16],45);  B[18] = ROTL64(state[17],15);
+        B[3]  = ROTL64(state[18],21);   B[13] = ROTL64(state[19], 8);
+        B[14] = ROTL64(state[20],18);   B[24] = ROTL64(state[21], 2);  B[9]  = ROTL64(state[22],61);
+        B[19] = ROTL64(state[23],56);   B[4]  = ROTL64(state[24],14);
 
         state[0]  = B[0]  ^ (~B[1]  & B[2]);
         state[1]  = B[1]  ^ (~B[2]  & B[3]);

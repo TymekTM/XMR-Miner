@@ -302,6 +302,26 @@ add_executable(test_jit_crash_diag tests/test_jit_crash_diag.c
 target_include_directories(test_jit_crash_diag PRIVATE src)
 target_link_libraries(test_jit_crash_diag ws2_32)
 
+# Debug interpreter test
+add_executable(debug_interpreter tests/debug_interpreter.c
+    src/crypto/blake2/blake2b.c
+    src/crypto/blake2/blake2_generator.c
+    src/crypto/aes/aes_ni.c
+    src/crypto/argon2/argon2.c
+    src/crypto/keccak/keccak.c
+    src/crypto/randomx/reciprocal.c
+    src/crypto/randomx/aes_hash.c
+    src/crypto/randomx/dataset.c
+    src/crypto/randomx/dataset_cache.c
+    src/crypto/randomx/superscalar.c
+    src/crypto/randomx/vm.c
+    src/crypto/randomx/jit_compiler_x86.cpp
+    src/common/log.c
+    src/common/cpu.c
+)
+target_include_directories(debug_interpreter PRIVATE src)
+target_link_libraries(debug_interpreter ws2_32)
+
 # Minimal prologue test
 add_executable(minimal_working_prologue tests/minimal_working_prologue.c)
 target_include_directories(minimal_working_prologue PRIVATE src)

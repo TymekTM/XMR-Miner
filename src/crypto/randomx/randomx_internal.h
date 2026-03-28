@@ -72,8 +72,9 @@ static __forceinline int64_t rx_smulh(int64_t a, int64_t b) {
 }
 
 static __forceinline uint64_t rx_mulh(uint64_t a, uint64_t b) {
-    unsigned __int64 low;
-    return _mulx_u64(a, b, &low);
+    unsigned __int64 high;
+    _mulx_u64(a, b, &high);
+    return high;
 }
 
 static __forceinline uint64_t rx_rotr(uint64_t x, unsigned int n) {

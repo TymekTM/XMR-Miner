@@ -119,6 +119,21 @@ int main(void) {
     memcpy(&val33554431, cacheMem + 33554431 * 8, 8);
     failures += check_u64("Cache offset 33554431", val33554431, 0x1f47f056d05cd99bULL);
 
+    printf("[I] Dataset item tests...\n");
+    fflush(stdout);
+    {
+        uint8_t dsItem[64];
+        rx_init_dataset_item(cache, dsItem, 0);
+        uint64_t dsVal0;
+        memcpy(&dsVal0, dsItem, 8);
+        failures += check_u64("Dataset item 0 [0]", dsVal0, 0x680588a85ae222dbULL);
+
+        rx_init_dataset_item(cache, dsItem, 10000000);
+        uint64_t dsVal10m;
+        memcpy(&dsVal10m, dsItem, 8);
+        failures += check_u64("Dataset item 10000000 [0]", dsVal10m, 0x7943a1f6186ffb72ULL);
+    }
+
     rx_vm *vm = rx_create_vm(0, 0, 0, cache, NULL);
     if (!vm) {
         printf("[FAIL] Failed to create VM\n");

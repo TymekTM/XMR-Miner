@@ -16,7 +16,7 @@ static inline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
 
 static uint64_t rx_zero_val = 0;
 
-static void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
+void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
                               uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a) {
     int reg_usage[RX_REGISTERS_COUNT];
     for (int i = 0; i < RX_REGISTERS_COUNT; i++) reg_usage[i] = -1;
@@ -258,9 +258,12 @@ static void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
             continue;
         }
         if (opcode < RX_CEIL_RX_FSWAP_R) {
-            dst = instr->dst % RX_REG_FLT_COUNT;
+            dst = instr->dst % RX_REGISTERS_COUNT;
             ibc->type = RX_OP_FSWAP_R;
-            ibc->fdst = &f[dst];
+            if (dst < RX_REG_FLT_COUNT)
+                ibc->fdst = &f[dst];
+            else
+                ibc->fdst = &e[dst - RX_REG_FLT_COUNT];
             continue;
         }
         if (opcode < RX_CEIL_RX_FADD_R) {
@@ -366,7 +369,7 @@ static void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
     }
 }
 
-static void vm_initialize(rx_vm *vm) {
+void vm_initialize(rx_vm *vm) {
     for (int i = 0; i < RX_REG_FLT_COUNT; i++) {
         uint64_t ent0 = vm->program.entropyBuffer[2 * i];
         uint64_t ent1 = vm->program.entropyBuffer[2 * i + 1];
@@ -391,7 +394,7 @@ static void vm_initialize(rx_vm *vm) {
     vm->config.eMask[1] = rx_get_float_mask(vm->program.entropyBuffer[15]);
 }
 
-void rx_vm_run(rx_vm *vm, void *seed) {
+void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
     rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
     vm_initialize(vm);
 
@@ -413,7 +416,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
             rx_memory_regs memRegs;
             memRegs.mx_ma = vm->mem.mx_ma;
             memRegs.memory = vm->lightClient ? vm->mem.memory : vm->mem.memory + vm->datasetOffset;
-            func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+            func(&vm->reg, &memRegs, vm->scratchpad, iterations);
             vm->mem.mx_ma = memRegs.mx_ma;
             return;
         }
@@ -446,7 +449,7 @@ void rx_vm_run(rx_vm *vm, void *seed) {
     rx_vec_f128 fdiv_mm = rx_set_f128(RX_DYN_MANTISSA_MASK, RX_DYN_MANTISSA_MASK);
     rx_vec_f128 fdiv_em = rx_load_f128((const double *)vm->config.eMask);
 
-    for (unsigned ic = 0; ic < RX_PROGRAM_ITERATIONS; ic++) {
+    for (unsigned ic = 0; ic < iterations; ic++) {
         uint64_t spMix = r[vm->config.readReg0] ^ r[vm->config.readReg1];
         spAddr0 ^= (uint32_t)spMix;
         spAddr0 &= RX_SPL3_MASK64;
@@ -682,6 +685,10 @@ void rx_vm_run(rx_vm *vm, void *seed) {
 void rx_vm_init_scratchpad(rx_vm *vm, void *seed) {
     rx_fill_aes1rx4(seed, RX_SCRATCHPAD_L3, vm->scratchpad);
     _mm_sfence();
+}
+
+void rx_vm_run(rx_vm *vm, void *seed) {
+    rx_vm_run_n(vm, seed, RX_PROGRAM_ITERATIONS);
 }
 
 void rx_vm_get_final_result(rx_vm *vm, void *out) {

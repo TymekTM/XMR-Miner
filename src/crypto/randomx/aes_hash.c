@@ -75,13 +75,12 @@ void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer) {
         s1 = rx_aesenc_i128(s1, k1);
         s2 = rx_aesdec_i128(s2, k2);
         s3 = rx_aesenc_i128(s3, k3);
-        _mm_stream_si128((__m128i *)outptr + 0, s0);
-        _mm_stream_si128((__m128i *)outptr + 1, s1);
-        _mm_stream_si128((__m128i *)outptr + 2, s2);
-        _mm_stream_si128((__m128i *)outptr + 3, s3);
+        _mm_store_si128((__m128i *)outptr + 0, s0);
+        _mm_store_si128((__m128i *)outptr + 1, s1);
+        _mm_store_si128((__m128i *)outptr + 2, s2);
+        _mm_store_si128((__m128i *)outptr + 3, s3);
         outptr += 64;
     }
-    _mm_sfence();
 
     rx_store_i128((rx_vec_i128 *)state + 0, s0);
     rx_store_i128((rx_vec_i128 *)state + 1, s1);
@@ -116,10 +115,10 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
         s2 = rx_aesdec_i128(s2, k6); s3 = rx_aesenc_i128(s3, k6);
         s0 = rx_aesdec_i128(s0, k3); s1 = rx_aesenc_i128(s1, k3);
         s2 = rx_aesdec_i128(s2, k7); s3 = rx_aesenc_i128(s3, k7);
-        _mm_stream_si128((__m128i *)outptr + 0, s0);
-        _mm_stream_si128((__m128i *)outptr + 1, s1);
-        _mm_stream_si128((__m128i *)outptr + 2, s2);
-        _mm_stream_si128((__m128i *)outptr + 3, s3);
+        _mm_store_si128((__m128i *)outptr + 0, s0);
+        _mm_store_si128((__m128i *)outptr + 1, s1);
+        _mm_store_si128((__m128i *)outptr + 2, s2);
+        _mm_store_si128((__m128i *)outptr + 3, s3);
         outptr += 64;
     }
     _mm_sfence();
