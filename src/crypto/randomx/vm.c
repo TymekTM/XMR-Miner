@@ -772,6 +772,8 @@ void rx_free_cache(rx_cache *cache) {
             free(cache->memory);
     }
     if (cache->reciprocalCache) free(cache->reciprocalCache);
+    for (int i = 0; i < RX_CACHE_ACCESSES; i++)
+        ss_jit_free(&cache->programs[i]);
     free(cache);
 }
 

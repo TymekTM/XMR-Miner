@@ -28,5 +28,6 @@ void rx_calculate_hash(rx_vm *vm, const void *input, size_t input_size, void *ou
 void rx_calculate_hash_first(rx_vm *vm, const void *input, size_t input_size);
 void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input_size, void *output);
 void rx_calculate_hash_last(rx_vm *vm, void *output);
+void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations);
 
 #endif

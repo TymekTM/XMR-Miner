@@ -28,6 +28,7 @@ set(SOURCES
     src/crypto/randomx/dataset.c
     src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
+    src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
     src/stratum/json.c
@@ -43,6 +44,7 @@ set_source_files_properties(
     src/crypto/randomx/dataset.c
     src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
+    src/crypto/randomx/superscalar_jit.c
     src/crypto/aes/aes_ni.c
     PROPERTIES COMPILE_FLAGS "/GS-"
 )
@@ -63,9 +65,8 @@ set(TEST_SOURCES
     tests/bench_compare.c
     tests/dump_jit.c
     tests/quick_jit_test.c
-    tests/verify_hash_consistency.c
-    tests/debug_jit_crash.c
     tests/test_full_jit.c
+    tests/debug_jit_crash.c
 )
 
 set(RANDOMX_SOURCES
@@ -74,11 +75,12 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/dataset.c
     src/crypto/randomx/dataset_cache.c
     src/crypto/randomx/superscalar.c
+    src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
 )
 
-    foreach(test_src ${TEST_SOURCES})
+foreach(test_src ${TEST_SOURCES})
     get_filename_component(test_name ${test_src} NAME_WE)
     add_executable(${test_name} ${test_src}
         src/crypto/blake2/blake2b.c
@@ -94,6 +96,7 @@ set(RANDOMX_SOURCES
     target_link_libraries(${test_name} ws2_32)
 endforeach()
 
+
 # Explicitly add test_jit_loop
 add_executable(test_jit_loop tests/test_jit_loop.c
     src/crypto/blake2/blake2b.c
@@ -101,228 +104,82 @@ add_executable(test_jit_loop tests/test_jit_loop.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
 target_include_directories(test_jit_loop PRIVATE src)
 target_link_libraries(test_jit_loop ws2_32)
 
-# Test JIT vs Interpreter
-add_executable(test_jit_detailed tests/test_jit_detailed.c
+# Superscalar JIT diagnostic test
+add_executable(test_ss_jit tests/test_ss_jit.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
-target_include_directories(test_jit_detailed PRIVATE src)
-target_link_libraries(test_jit_detailed ws2_32)
+target_include_directories(test_ss_jit PRIVATE src)
+target_link_libraries(test_ss_jit ws2_32)
 
-add_executable(test_minimal_jit tests/test_minimal_jit.c)
-target_include_directories(test_minimal_jit PRIVATE src)
-target_link_libraries(test_minimal_jit ws2_32)
-
-add_executable(test_loop_load tests/test_loop_load.c)
-target_include_directories(test_loop_load PRIVATE src)
-target_link_libraries(test_loop_load ws2_32)
-
-# Full mode JIT performance test
-add_executable(test_full_jit_perf tests/test_full_jit_perf.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(test_full_jit_perf PRIVATE src)
-target_link_libraries(test_full_jit_perf ws2_32)
-
-# Quick full JIT benchmark
-add_executable(quick_full_jit_bench tests/quick_full_jit_bench.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(quick_full_jit_bench PRIVATE src)
-target_link_libraries(quick_full_jit_bench ws2_32)
-
-# Debug JIT loop test
-add_executable(debug_jit_loop tests/debug_jit_loop.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(debug_jit_loop PRIVATE src)
-target_link_libraries(debug_jit_loop ws2_32)
-
-# Interpreter-only benchmark
-add_executable(bench_interpreter_only tests/bench_interpreter_only.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(bench_interpreter_only PRIVATE src)
-target_link_libraries(bench_interpreter_only ws2_32)
-
-# JIT vs Interpreter test
-add_executable(jit_vs_interpreter tests/jit_vs_interpreter.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(jit_vs_interpreter PRIVATE src)
-target_link_libraries(jit_vs_interpreter ws2_32)
-
-# Fast benchmark
 add_executable(bench_fast tests/bench_fast.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
 target_include_directories(bench_fast PRIVATE src)
 target_link_libraries(bench_fast ws2_32)
 
-# Dump JIT bytes test
-add_executable(dump_jit_bytes tests/dump_jit_bytes.c
+# JIT smoke test (no dependencies)
+add_executable(test_jit_smoke tests/test_jit_smoke.c)
+target_include_directories(test_jit_smoke PRIVATE src)
+target_link_libraries(test_jit_smoke ws2_32)
+
+# JIT crash isolation test
+add_executable(test_jit_crash2 tests/test_jit_crash2.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
-target_include_directories(dump_jit_bytes PRIVATE src)
-target_link_libraries(dump_jit_bytes ws2_32)
+target_include_directories(test_jit_crash2 PRIVATE src)
+target_link_libraries(test_jit_crash2 ws2_32)
 
-# JIT crash diagnostic test
-add_executable(test_jit_crash_diag tests/test_jit_crash_diag.c
+# JIT dump test
+add_executable(test_jit_dump tests/test_jit_dump.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
-target_include_directories(test_jit_crash_diag PRIVATE src)
-target_link_libraries(test_jit_crash_diag ws2_32)
+target_include_directories(test_jit_dump PRIVATE src)
+target_link_libraries(test_jit_dump ws2_32)
 
-# Debug interpreter test
-add_executable(debug_interpreter tests/debug_interpreter.c
+add_executable(test_dataset_bench tests/test_dataset_bench.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
     src/crypto/argon2/argon2.c
     src/crypto/keccak/keccak.c
-    src/crypto/randomx/reciprocal.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/randomx/dataset.c
-    src/crypto/randomx/dataset_cache.c
-    src/crypto/randomx/superscalar.c
-    src/crypto/randomx/vm.c
-    src/crypto/randomx/jit_compiler_x86.cpp
+    ${RANDOMX_SOURCES}
     src/common/log.c
     src/common/cpu.c
 )
-target_include_directories(debug_interpreter PRIVATE src)
-target_link_libraries(debug_interpreter ws2_32)
-
-# Minimal prologue test
-add_executable(minimal_working_prologue tests/minimal_working_prologue.c)
-target_include_directories(minimal_working_prologue PRIVATE src)
-target_link_libraries(minimal_working_prologue ws2_32)
+target_include_directories(test_dataset_bench PRIVATE src)
+target_link_libraries(test_dataset_bench ws2_32)

@@ -105,7 +105,7 @@ static int build_hashing_blob(stratum_job_t *job, uint8_t *blob, uint32_t nonce)
     if (full_tx_len < 2) { free(coinbase_tx); return -1; }
 
     uint8_t prefix_hash[32];
-    keccak256(coinbase_tx, prefix_len, prefix_hash);
+    keccak256(coinbase_tx, full_tx_len, prefix_hash);
 
     uint8_t rct_type_hash[32];
     uint8_t rct_type_byte[1] = { coinbase_tx[prefix_len] };

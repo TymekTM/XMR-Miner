@@ -111,6 +111,10 @@ void rx_init_cache_internal(rx_cache *cache, const void *key, size_t key_size) {
             }
         }
     }
+
+    for (int i = 0; i < RX_CACHE_ACCESSES; i++) {
+        ss_jit_compile(&cache->programs[i], cache->reciprocalCache);
+    }
 }
 
 void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number) {
@@ -135,7 +139,10 @@ void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number) {
             _mm_prefetch((const char *)next_block, _MM_HINT_T0);
         }
 
-        ss_execute(rl, &cache->programs[i], cache->reciprocalCache);
+        if (cache->programs[i].fn && cache->programs[i].fn != NULL)
+            cache->programs[i].fn(rl);
+        else
+            ss_execute(rl, &cache->programs[i], cache->reciprocalCache);
 
         uint64_t *ml64 = (uint64_t *)mix_block;
         rl[0] ^= ml64[0]; rl[1] ^= ml64[1];

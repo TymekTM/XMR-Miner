@@ -346,6 +346,8 @@ typedef struct {
     rx_instruction buffer[RX_SUPERSCALAR_MAX_SIZE];
     uint32_t size;
     int addrReg;
+    uint8_t *code;
+    void (*fn)(uint64_t *);
 } rx_superscalar_program;
 
 typedef struct rx_cache {
@@ -401,6 +403,8 @@ void rx_init_cache_internal(rx_cache *cache, const void *key, size_t key_size);
 void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads, int num_physical_cores);
 void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number);
 void generate_superscalar(rx_superscalar_program *prog, blake2_gen *gen);
+void ss_jit_compile(rx_superscalar_program *prog, const uint64_t *reciprocals);
+void ss_jit_free(rx_superscalar_program *prog);
 
 void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash);
 void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer);
