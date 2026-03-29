@@ -69,20 +69,34 @@ void cpu_detect(cpu_info_t *info) {
     info->physical_cores = get_physical_cores();
 
     info->l3_cache_kb = 0;
-    u32 max_ext2;
-    cpuid(0x80000000, 0, &max_ext2, &ebx, &ecx, &edx);
-    if (max_ext2 >= 0x80000006) {
-        u32 regs4[4];
-        __cpuidex((int*)regs4, 0x80000006, 0);
-        info->l3_cache_kb = (regs4[2] >> 16) & 0xFFFF;
+    {
+        DWORD len = 0;
+        GetLogicalProcessorInformationEx(RelationCache, NULL, &len);
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(len);
+        if (buf && GetLogicalProcessorInformationEx(RelationCache, buf, &len)) {
+            BYTE *ptr = (BYTE *)buf;
+            DWORD max_l3 = 0;
+            while (ptr < (BYTE *)buf + len) {
+                SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
+                if (item->Relationship == RelationCache &&
+                    item->Cache.Level == 3 &&
+                    item->Cache.CacheSize > max_l3) {
+                    max_l3 = item->Cache.CacheSize;
+                }
+                ptr += item->Size;
+            }
+            info->l3_cache_kb = (max_l3 + 1023) / 1024;
+        }
+        free(buf);
     }
     if (info->l3_cache_kb == 0) {
-        u32 regs4[4];
-        __cpuidex((int*)regs4, 4, 3);
-        int sets = (regs4[0] & 0x1FF) + 1;
-        int line_size = ((regs4[0] >> 0) & 0xFFF) + 1;
-        int ways = ((regs4[0] >> 22) & 0x3FF) + 1;
-        info->l3_cache_kb = (sets * line_size * ways) / 1024;
+        u32 max_ext2;
+        cpuid(0x80000000, 0, &max_ext2, &ebx, &ecx, &edx);
+        if (max_ext2 >= 0x80000006) {
+            u32 regs4[4];
+            __cpuidex((int*)regs4, 0x80000006, 0);
+            info->l3_cache_kb = ((regs4[2] >> 16) & 0xFFFF) * 64;
+        }
     }
 }
 
