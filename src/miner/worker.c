@@ -303,8 +303,8 @@ void worker_run(worker_t *w) {
         uint8_t hash[32];
         rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
 
-        uint64_t hash_val = read_u64_le(hash);
-        if (hash_val < current_target) {
+        uint32_t hash_val = read_u32_le(hash);
+        if (hash_val <= (uint32_t)current_target) {
             char nonce_hex[16];
             snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
             char result_hex[65];

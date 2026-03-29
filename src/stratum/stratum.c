@@ -300,9 +300,12 @@ int stratum_connect(stratum_ctx_t *ctx) {
 
     freeaddrinfo(result);
 
-    DWORD timeout = 10000;
+    DWORD timeout = 120000;
     setsockopt(ctx->sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout));
     setsockopt(ctx->sock, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout, sizeof(timeout));
+
+    DWORD keepalive = 1;
+    setsockopt(ctx->sock, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, sizeof(keepalive));
 
     ctx->connected = 1;
     ctx->recv_len = 0;
@@ -551,7 +554,9 @@ int stratum_recv(stratum_ctx_t *ctx) {
 
     int n = recv(ctx->sock, ctx->recv_buf + ctx->recv_len, avail, 0);
     if (n <= 0) {
-        LOG_WARN("[STRATUM] recv returned %d", n);
+        int err = WSAGetLastError();
+        if (err == WSAETIMEDOUT) return 0;
+        LOG_WARN("[STRATUM] recv returned %d (err=%d)", n, err);
         return -1;
     }
     ctx->recv_len += n;
