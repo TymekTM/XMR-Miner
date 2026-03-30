@@ -7,3 +7,4 @@ Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
 5,IADD_M/ISUB_M/IXOR_M/IMUL_M prefetch,614.68,196.58,YES,Hash correct but -1% vs baseline. Code bloat for low-latency ops. REVERT
 6,Loop store VEX vxorpd/vmovapd,607.49,N/A,BAD_HASH,Hash d2dbec97 != c5600a03. VEX zero-upper breaks xorpd. REVERT
 7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,Hash correct. +2.4% improvement. KEEP
+8,Epilogue VEX vmovdqa/vmovdqu,N/A,N/A,CRASH,Segfault - wrong VEX.R bit for extended xmm regs. REVERT
