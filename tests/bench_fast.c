@@ -3,14 +3,10 @@
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
+#include <time.h>
 
 extern void vm_initialize(rx_vm *vm);
 extern void rx_vm_init_scratchpad(rx_vm *vm, void *seed);
-extern void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
-                            uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a);
-extern uint8_t* rx_jit_get_code_ptr(rx_jit *jit);
-extern int rx_jit_get_instruction_offset(rx_jit *jit, int index);
-extern int rx_jit_get_num_instructions(rx_jit *jit);
 
 int main(void) {
     uint8_t key[32] = {0x01};
@@ -25,35 +21,45 @@ int main(void) {
     rx_vm *vm_jit = rx_create_vm(1, 1, 0, cache, dataset);
     rx_vm *vm_interp = rx_create_vm(1, 0, 0, cache, dataset);
 
-    uint8_t tempHash[64];
-    blake2b(tempHash, sizeof(tempHash), blob, 76, NULL, 0);
-
-    uint8_t tempHashJitSeed[64];
-    memcpy(tempHashJitSeed, tempHash, 64);
-
-    rx_vm_init_scratchpad(vm_jit, tempHashJitSeed);
-    rx_vm_init_scratchpad(vm_interp, tempHash);
+    const int iterations = 1000;
     
-    // Ensure both have identical scratchpad
-    memcpy(vm_jit->scratchpad, vm_interp->scratchpad, RX_SCRATCHPAD_L3);
-    rx_reset_float_state();
-
-    // Do NOT generate program manually. Just let rx_vm_run_n do it for BOTH.
-
-    printf("Before Interpreter...\n"); fflush(stdout);
+    printf("Warming up...\n");
+    uint8_t hashInterp[32];
+    uint8_t hashJit[32];
     extern void rx_calculate_hash(rx_vm* vm, const void* input, size_t input_size, void* output);
 
-    uint8_t hashInterp[32];
-    rx_calculate_hash(vm_interp, blob, 76, hashInterp);
-    printf("After Interpreter...\n"); fflush(stdout);
+    // Interpreter run
+    printf("Running Interpreter benchmark (%d iterations)...\n", iterations);
+    LARGE_INTEGER freq, start, end;
+    QueryPerformanceFrequency(&freq);
+    
+    QueryPerformanceCounter(&start);
+    for(int i=0; i<iterations; i++) {
+        // slightly mutate the blob to get a new hash
+        blob[0] = (uint8_t)i;
+        blob[1] = (uint8_t)(i >> 8);
+        rx_calculate_hash(vm_interp, blob, 76, hashInterp);
+    }
+    QueryPerformanceCounter(&end);
+    double timeInterp = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
+    double hrInterp = iterations / timeInterp;
+    
+    // Reset blob
+    memset(blob, 0x41, 76);
 
-    printf("Before JIT...\n"); fflush(stdout);
-    vm_jit->useJit = 1;
-    uint8_t hashJit[32];
-    rx_calculate_hash(vm_jit, blob, 76, hashJit);
-    printf("After JIT...\n"); fflush(stdout);
+    // JIT run
+    printf("Running JIT benchmark (%d iterations)...\n", iterations);
+    QueryPerformanceCounter(&start);
+    for(int i=0; i<iterations; i++) {
+        blob[0] = (uint8_t)i;
+        blob[1] = (uint8_t)(i >> 8);
+        rx_calculate_hash(vm_jit, blob, 76, hashJit);
+    }
+    QueryPerformanceCounter(&end);
+    double timeJit = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
+    double hrJit = iterations / timeJit;
 
-    printf("\n==== FINAL HASH ====\n");
+    printf("\n==== FINAL HASH (Iter %d) ====\n", iterations - 1);
     printf("INTERP: ");
     for(int i=0; i<32; i++) printf("%02x", hashInterp[i]);
     printf("\nJIT   : ");
@@ -64,13 +70,18 @@ int main(void) {
         printf("\nSUCCESS: Hashes match perfectly!\n");
     } else {
         printf("\nERROR: Hashes diverge!\n");
+        return 1;
     }
-    
-    // Also dump E registers loaded from A?
-    
+
+    printf("\n==== PERFORMANCE ====\n");
+    printf("Interpreter: %.2f H/s (Time: %.3f s)\n", hrInterp, timeInterp);
+    printf("JIT        : %.2f H/s (Time: %.3f s)\n", hrJit, timeJit);
+    printf("Speedup    : %.2fx\n", hrJit / hrInterp);
+
     rx_destroy_vm(vm_jit);
     rx_destroy_vm(vm_interp);
     rx_free_dataset(dataset);
     rx_free_cache(cache);
+
     return 0;
 }
