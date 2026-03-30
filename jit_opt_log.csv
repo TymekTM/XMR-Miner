@@ -11,3 +11,4 @@ Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
 9,Dataset prefetcht0,621.64,186.43,YES,-2.2% vs prefetcht1. REVERT
 10,BMI2 MULX for IMULH_R,N/A,N/A,CRASH,Illegal instruction. REVERT
 11,Scratchpad prefetchnta,598.61,188.53,YES,-5.9% vs prefetcht1. REVERT
+12,FIX: Dataset prefetch target wrong address,865.50,184.68,YES,BUG FIX! Prefetch was hitting hi32(rbp)=old_mem_ma (already read) instead of lo32(rbp)=new_mem_ma (next iter). +36%! KEEP

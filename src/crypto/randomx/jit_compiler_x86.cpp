@@ -337,14 +337,13 @@ struct JitCompiler {
         // 2. mem_mx ^= (uint32_t)(r[readReg2] ^ r[readReg3])
         //    ror rbp,32: lo32=mem_mx, hi32=mem_ma
         //    xor rbp, rcx where rcx=(uint32_t)rax: lo32^=val, hi32 unchanged
-        //    Result: lo32=new_mem_ma=mem_mx^val, hi32=new_mem_mx=mem_ma
+        //    Result: lo32=new_mem_ma=mem_mx^val, hi32=old_mem_ma
         emitByte(0x89); emitByte(0xC1);                         // mov ecx, eax
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);  // ror rbp, 32
         emitByte(0x48); emitByte(0x33); emitByte(0xE9);         // xor rbp, rcx
 
-        // 3. Prefetch next dataset line: mem_mx_new = hi32(rbp)
-        emitByte(0x48); emitByte(0x89); emitByte(0xE8);         // mov rax, rbp
-        emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);  // shr rax, 32
+        // 3. Prefetch next dataset line: lo32(rbp) = new_mem_ma (next iter's read addr)
+        emitByte(0x89); emitByte(0xE8);                         // mov eax, ebp
         emitByte(0x25); emit32(0x7FFFFFC0);                     // and eax, 0x7FFFFFC0
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);  // prefetch [rdi+rax]
 
