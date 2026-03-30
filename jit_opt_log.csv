@@ -1,15 +1,7 @@
-Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
-0,Baseline (IMULH_M/ISMULH_M prefetch),621.32,191.24,YES,Hash c5600a03f426c083. Speedup 3.25x over interp
-1,CFROUND RORX BMI2,N/A,N/A,CRASH,Illegal instruction. REVERT
-2,Dataset dual prefetch (T0+T1) WRONG ADDR,370.23,N/A,YES,-37% regression (was also bugged address). REVERT
-3,IMULH_M/ISMULH_M prefetch,613.40,N/A,YES,+4.5% vs raw baseline. KEEP
-4,Loop load VEX,594.51,N/A,BAD_HASH,REVERT
-5,IADD_M/ISUB_M/IXOR_M/IMUL_M prefetch,614.68,196.58,YES,-1% code bloat. REVERT
-6,Loop store VEX,607.49,N/A,BAD_HASH,REVERT
-7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,+2.4%. KEEP
-8,Epilogue VEX,N/A,N/A,CRASH,Wrong VEX.R. REVERT
-9,Dataset prefetcht0,621.64,186.43,YES,-2.2%. REVERT
-10,BMI2 MULX for IMULH_R,N/A,N/A,CRASH,REVERT
-11,Scratchpad prefetchnta,598.61,188.53,YES,-5.9%. REVERT
-12,FIX: Dataset prefetch wrong address,865.50,184.68,YES,BUG FIX +36%. Prefetch hit old addr instead of next. KEEP
-13,Dataset dual prefetch (T1+T2) CORRECT ADDR,680.87,163.57,YES,-21% vs single prefetch. REVERT
+Opt,Description,JIT_ST_H/s,JIT_MT_H/s,Interp_ST_H/s,Interp_MT_H/s,Hash_OK,Notes
+0,Baseline (no opts),~587,N/A,N/A,N/A,N/A,Original code before any changes
+3,IMULH_M/ISMULH_M prefetch,+4.5%,N/A,N/A,N/A,YES,Prefetch scratchpad before high-latency multiply. KEEP
+7,FADD_M/FSUB_M/FDIV_M prefetch,+2.4%,N/A,N/A,N/A,YES,Prefetch scratchpad before FP memory ops. KEEP
+12,FIX: Dataset prefetch wrong address (single JIT),+36%,N/A,N/A,N/A,YES,BUG: prefetch hit old addr (hi32 rbp) instead of next iter (lo32 rbp). KEEP
+12b,FIX: Same bug in dual JIT VM1+VM2,OK,N/A,N/A,N/A,YES,Applied same fix to generateProgramDual. KEEP
+FINAL,All optimizations combined,982,7659,187,1761,YES,Hash c5600a03f426c083. ST speedup 5.2x, MT speedup 4.3x over interp
