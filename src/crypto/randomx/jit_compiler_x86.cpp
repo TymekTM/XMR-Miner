@@ -345,7 +345,7 @@ struct JitCompiler {
         // 3. Prefetch next dataset line: lo32(rbp) = new_mem_ma (next iter's read addr)
         emitByte(0x89); emitByte(0xE8);                         // mov eax, ebp
         emitByte(0x25); emit32(0x7FFFFFC0);                     // and eax, 0x7FFFFFC0
-        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);  // prefetch [rdi+rax]
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);  // prefetcht1 [rdi+rax]
 
         // 4. Store r[0..7] to scratchpad[spAddr1], then f^e to scratchpad[spAddr0]
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
@@ -723,8 +723,7 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
         emitByte(0x48); emitByte(0x33); emitByte(0xE9);
         
-        emitByte(0x48); emitByte(0x89); emitByte(0xE8);
-        emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);
+        emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
         
@@ -805,8 +804,7 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
         emitByte(0x48); emitByte(0x33); emitByte(0xE9);
         
-        emitByte(0x48); emitByte(0x89); emitByte(0xE8);
-        emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);
+        emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
         
