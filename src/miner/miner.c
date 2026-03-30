@@ -8,6 +8,76 @@
 #include <string.h>
 #include <stdlib.h>
 
+#define MAX_CORES 64
+
+typedef struct {
+    int count;
+    int os_index[MAX_CORES];    // OS processor index for each physical core
+    int is_pcore[MAX_CORES];    // 1 = P-core, 0 = E-core
+} core_list_t;
+
+static int detect_physical_cores(core_list_t *cores) {
+    cores->count = 0;
+
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return 0;
+
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(len);
+    if (!buf) return 0;
+
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) {
+        free(buf);
+        return 0;
+    }
+
+    BYTE *ptr = (BYTE *)buf;
+    DWORD remaining = len;
+    while (remaining > 0) {
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
+        if (item->Relationship == RelationProcessorCore) {
+            GROUP_AFFINITY mask = item->Processor.GroupMask[0];
+            int os_idx = -1;
+            // Extract lowest set bit = first logical processor of this core
+            for (int b = 0; b < 64 && b < (int)sizeof(mask.Mask) * 8; b++) {
+                if (mask.Mask & (1ULL << b)) {
+                    os_idx = b + mask.Group * 64;
+                    break;
+                }
+            }
+            if (os_idx >= 0 && cores->count < MAX_CORES) {
+                cores->os_index[cores->count] = os_idx;
+                // Detect P-core vs E-core: P-core has 2 logical processors (HT),
+                // E-core has 1. Count bits in mask.
+                int bits = 0;
+                for (int b = 0; b < 64; b++) {
+                    if (mask.Mask & (1ULL << b)) bits++;
+                }
+                cores->is_pcore[cores->count] = (bits == 2) ? 1 : 0;
+                cores->count++;
+            }
+        }
+        ptr += item->Size;
+        remaining -= item->Size;
+    }
+
+    free(buf);
+    return cores->count;
+}
+
+static void sort_cores_pcore_first(core_list_t *cores) {
+    // Bubble sort: P-cores first, preserving relative order
+    for (int i = 0; i < cores->count - 1; i++) {
+        for (int j = 0; j < cores->count - 1 - i; j++) {
+            if (cores->is_pcore[j] < cores->is_pcore[j + 1]) {
+                int tmp;
+                tmp = cores->os_index[j]; cores->os_index[j] = cores->os_index[j + 1]; cores->os_index[j + 1] = tmp;
+                tmp = cores->is_pcore[j]; cores->is_pcore[j] = cores->is_pcore[j + 1]; cores->is_pcore[j + 1] = tmp;
+            }
+        }
+    }
+}
+
 struct miner_ctx {
     int num_threads;
     int huge_pages;
@@ -174,6 +244,19 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
 
+    core_list_t cores;
+    int num_physical = detect_physical_cores(&cores);
+    sort_cores_pcore_first(&cores);
+
+    if (num_physical > 0) {
+        int pcores = 0;
+        for (int c = 0; c < cores.count; c++) if (cores.is_pcore[c]) pcores++;
+        LOG_INFO("[AFFINITY] Detected %d physical cores (%d P-core, %d E-core)",
+                 num_physical, pcores, num_physical - pcores);
+    }
+
+    int threads_to_pin = (ctx->num_threads < num_physical) ? ctx->num_threads : num_physical;
+
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->thread_handles[i] = CreateThread(NULL, 0, thread_entry, &ctx->workers[i], 0, NULL);
         if (!ctx->thread_handles[i]) {
@@ -181,15 +264,14 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
             continue;
         }
         SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_TIME_CRITICAL);
-        if (ctx->num_threads == 1 && ctx->physical_cores > 0) {
+        if (num_physical > 0 && i < threads_to_pin) {
             GROUP_AFFINITY ga = {0};
-            ga.Group = 0;
-            ga.Mask = (KAFFINITY)1;
-            ga.Reserved[0] = ga.Reserved[1] = ga.Reserved[2] = 0;
+            int os_idx = cores.os_index[i];
+            ga.Group = (WORD)(os_idx / 64);
+            ga.Mask = (KAFFINITY)(1ULL << (os_idx % 64));
             SetThreadGroupAffinity(ctx->thread_handles[i], &ga, NULL);
-        } else if (i < ctx->physical_cores) {
-            DWORD_PTR mask = 1ULL << i;
-            SetThreadAffinityMask(ctx->thread_handles[i], mask);
+            LOG_DEBUG("[AFFINITY] W%d -> CPU%d (%s-core)", i, os_idx,
+                      cores.is_pcore[i] ? "P" : "E");
         }
     }
 
