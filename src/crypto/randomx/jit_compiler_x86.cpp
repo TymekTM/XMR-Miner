@@ -1179,7 +1179,8 @@ void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06); // vcvtdq2pd xmm12, [rsi+rax]
+    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
+    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
     emitByte(0xC4); emitByte(0xC1);
     emitByte(((15 - instr->dst) << 3) | 1);
     emitByte(0x58);
@@ -1198,6 +1199,7 @@ void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
+    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
     emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
     emitByte(0xC4); emitByte(0xC1);
     emitByte(((15 - instr->dst) << 3) | 1);
@@ -1225,13 +1227,14 @@ void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06); // vcvtdq2pd xmm12, [rsi+rax]
-    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x54); emitByte(0xE5); // vandps xmm12, xmm12, xmm13
-    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x56); emitByte(0xE6); // vorps xmm12, xmm12, xmm14
+    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
+    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
+    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x54); emitByte(0xE5);
+    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x56); emitByte(0xE6);
     emitByte(0xC4); emitByte(0xC1);
     emitByte(((11 - instr->dst) << 3) | 1);
     emitByte(0x5E);
-    emitByte(0xE4 | (instr->dst << 3)); // vdivpd xmm(dst+4), xmm(dst+4), xmm12
+    emitByte(0xE4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {

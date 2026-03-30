@@ -4,3 +4,6 @@ Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
 2,Dataset dual prefetch (T0+T1),370.23,N/A,YES,Hash correct but -37% regression. Bandwidth competition. REVERT
 3,IMULH_M/ISMULH_M prefetch,613.40,N/A,YES,Hash correct. ~613 vs ~587 on earlier run (+4.5%). KEEP (already in baseline)
 4,Loop load VEX vpxor/vmovq/vcvtdq2pd,594.51,N/A,BAD_HASH,Hash fd82263e != c5600a03. Zero-upper by VEX changes andps behavior. REVERT
+5,IADD_M/ISUB_M/IXOR_M/IMUL_M prefetch,614.68,196.58,YES,Hash correct but -1% vs baseline. Code bloat for low-latency ops. REVERT
+6,Loop store VEX vxorpd/vmovapd,607.49,N/A,BAD_HASH,Hash d2dbec97 != c5600a03. VEX zero-upper breaks xorpd. REVERT
+7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,Hash correct. +2.4% improvement. KEEP
