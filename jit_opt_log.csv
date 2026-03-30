@@ -9,3 +9,4 @@ Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
 7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,+2.4%. KEEP
 8,Epilogue VEX vmovdqa/vmovdqu,N/A,N/A,CRASH,Wrong VEX.R. REVERT
 9,Dataset prefetcht0,621.64,186.43,YES,-2.2% vs prefetcht1. REVERT
+10,BMI2 MULX for IMULH_R,N/A,N/A,CRASH,Illegal instruction - VEX encoding likely wrong or CPU lacks BMI2. REVERT
