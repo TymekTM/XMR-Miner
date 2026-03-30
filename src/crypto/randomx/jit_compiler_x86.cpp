@@ -346,7 +346,7 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0x89); emitByte(0xE8);         // mov rax, rbp
         emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);  // shr rax, 32
         emitByte(0x25); emit32(0x7FFFFFC0);                     // and eax, 0x7FFFFFC0
-        emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x07);  // prefetch [rdi+rax]
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);  // prefetch [rdi+rax]
 
         // 4. Store r[0..7] to scratchpad[spAddr1], then f^e to scratchpad[spAddr0]
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
@@ -863,67 +863,83 @@ void JitCompiler::h_ISWAP_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
-    emitByte(0x66); emitByte(0x0F); emitByte(0xC6); emitByte(0xC0 | (9 * instr->dst)); emitByte(1);
+    emitByte(0xC5);
+    emitByte(((15 - instr->dst) << 3) | 0x81);
+    emitByte(0xC6);
+    emitByte(0xC0 | (9 * instr->dst));
+    emitByte(1);
 }
 
 void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
-    emitByte(0xC0 | instr->src | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((15 - instr->dst) << 3) | 1);
+    emitByte(0x58);
+    emitByte(0xC0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0x7E); emitByte(0x24); emitByte(0x06);
-    emitByte(0xF3); emitByte(0x4D); emitByte(0x0F); emitByte(0xE6); emitByte(0xE4);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
-    emitByte(0xC4 | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06); // vcvtdq2pd xmm12, [rsi+rax]
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((15 - instr->dst) << 3) | 1);
+    emitByte(0x58);
+    emitByte(0xC4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
-    emitByte(0xC0 | instr->src | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((15 - instr->dst) << 3) | 1);
+    emitByte(0x5C);
+    emitByte(0xC0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0x7E); emitByte(0x24); emitByte(0x06);
-    emitByte(0xF3); emitByte(0x4D); emitByte(0x0F); emitByte(0xE6); emitByte(0xE4);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
-    emitByte(0xC4 | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((15 - instr->dst) << 3) | 1);
+    emitByte(0x5C);
+    emitByte(0xC4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x41); emitByte(0x0F); emitByte(0x57); emitByte(0xC7 | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((15 - instr->dst) << 3)); // pp=0
+    emitByte(0x57);
+    emitByte(0xC7 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x59);
-    emitByte(0xE0 | instr->src | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((11 - instr->dst) << 3) | 1);
+    emitByte(0x59);
+    emitByte(0xE0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0x7E); emitByte(0x24); emitByte(0x06);
-    emitByte(0xF3); emitByte(0x4D); emitByte(0x0F); emitByte(0xE6); emitByte(0xE4);
-    emitByte(0x45); emitByte(0x0F); emitByte(0x54); emitByte(0xE5);
-    emitByte(0x45); emitByte(0x0F); emitByte(0x56); emitByte(0xE6);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5E);
-    emitByte(0xE4 | (8 * instr->dst));
+    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06); // vcvtdq2pd xmm12, [rsi+rax]
+    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x54); emitByte(0xE5); // vandps xmm12, xmm12, xmm13
+    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x56); emitByte(0xE6); // vorps xmm12, xmm12, xmm14
+    emitByte(0xC4); emitByte(0xC1);
+    emitByte(((11 - instr->dst) << 3) | 1);
+    emitByte(0x5E);
+    emitByte(0xE4 | (instr->dst << 3)); // vdivpd xmm(dst+4), xmm(dst+4), xmm12
 }
 
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x0F); emitByte(0x51); emitByte(0xE4 | (9 * instr->dst));
+    emitByte(0xC5); emitByte(0xF9); emitByte(0x51); emitByte(0xE4 | (9 * instr->dst)); // vsqrtpd xmm(dst+4), xmm(dst+4)
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
