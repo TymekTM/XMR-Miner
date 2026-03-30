@@ -1,10 +1,11 @@
 Opt,Description,JIT_H/s,Interp_H/s,Hash_OK,Notes
 0,Baseline (IMULH_M/ISMULH_M prefetch),621.32,191.24,YES,Hash c5600a03f426c083. Speedup 3.25x over interp
-1,CFROUND RORX BMI2,N/A,N/A,CRASH,Illegal instruction - VEX encoding wrong for extended regs. REVERT
-2,Dataset dual prefetch (T0+T1),370.23,N/A,YES,Hash correct but -37% regression. Bandwidth competition. REVERT
-3,IMULH_M/ISMULH_M prefetch,613.40,N/A,YES,Hash correct. ~613 vs ~587 on earlier run (+4.5%). KEEP (already in baseline)
-4,Loop load VEX vpxor/vmovq/vcvtdq2pd,594.51,N/A,BAD_HASH,Hash fd82263e != c5600a03. Zero-upper by VEX changes andps behavior. REVERT
-5,IADD_M/ISUB_M/IXOR_M/IMUL_M prefetch,614.68,196.58,YES,Hash correct but -1% vs baseline. Code bloat for low-latency ops. REVERT
-6,Loop store VEX vxorpd/vmovapd,607.49,N/A,BAD_HASH,Hash d2dbec97 != c5600a03. VEX zero-upper breaks xorpd. REVERT
-7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,Hash correct. +2.4% improvement. KEEP
-8,Epilogue VEX vmovdqa/vmovdqu,N/A,N/A,CRASH,Segfault - wrong VEX.R bit for extended xmm regs. REVERT
+1,CFROUND RORX BMI2,N/A,N/A,CRASH,Illegal instruction. REVERT
+2,Dataset dual prefetch (T0+T1),370.23,N/A,YES,-37% regression. REVERT
+3,IMULH_M/ISMULH_M prefetch,613.40,N/A,YES,+4.5% vs raw baseline. KEEP
+4,Loop load VEX vpxor/vmovq/vcvtdq2pd,594.51,N/A,BAD_HASH,REVERT
+5,IADD_M/ISUB_M/IXOR_M/IMUL_M prefetch,614.68,196.58,YES,-1% code bloat. REVERT
+6,Loop store VEX vxorpd/vmovapd,607.49,N/A,BAD_HASH,REVERT
+7,FADD_M/FSUB_M/FDIV_M prefetch,635.99,198.17,YES,+2.4%. KEEP
+8,Epilogue VEX vmovdqa/vmovdqu,N/A,N/A,CRASH,Wrong VEX.R. REVERT
+9,Dataset prefetcht0,621.64,186.43,YES,-2.2% vs prefetcht1. REVERT
