@@ -103,7 +103,7 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
             ctx->workers[i].vm = NULL;
         }
-        ctx->workers[i].vm = rx_create_vm(1, 0, ctx->huge_pages, ctx->cache, ctx->dataset);
+        ctx->workers[i].vm = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
     }
     LeaveCriticalSection(&ctx->cache_lock);
 
@@ -159,13 +159,14 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].id = i;
-        ctx->workers[i].vm = rx_create_vm(1, 0, ctx->huge_pages, ctx->cache, ctx->dataset);
+        ctx->workers[i].vm = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
         ctx->workers[i].stratum = ctx->stratum;
         ctx->workers[i].miner = ctx;
         ctx->workers[i].hashes = 0;
         ctx->workers[i].start_time = 0;
         ctx->workers[i].should_stop = 0;
         ctx->workers[i].nonce_offset = (uint32_t)i;
+        ctx->workers[i].nonce_stride = (uint32_t)ctx->num_threads;
         ctx->workers[i].loop_count = 0;
         ctx->workers[i].extranonce2_counter = 0;
         strncpy(ctx->workers[i].initial_seed, ctx->current_seed_hex, sizeof(ctx->workers[i].initial_seed) - 1);

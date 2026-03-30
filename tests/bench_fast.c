@@ -10,16 +10,16 @@ extern void rx_vm_init_scratchpad(rx_vm *vm, void *seed);
 
 int main(void) {
     uint8_t key[32] = {0x01};
-    rx_cache *cache = rx_alloc_cache(0);
+    rx_cache *cache = rx_alloc_cache(1);
     rx_init_cache(cache, key, 32);
-    rx_dataset *dataset = rx_alloc_dataset(0);
+    rx_dataset *dataset = rx_alloc_dataset(1);
     rx_init_dataset_cached(dataset, cache, 0, RX_DATASET_ITEMS, 8, 8);
 
     uint8_t blob[76];
     memset(blob, 0x41, 76);
 
-    rx_vm *vm_jit = rx_create_vm(1, 1, 0, cache, dataset);
-    rx_vm *vm_interp = rx_create_vm(1, 0, 0, cache, dataset);
+    rx_vm *vm_jit = rx_create_vm(1, 1, 1, cache, dataset);
+    rx_vm *vm_interp = rx_create_vm(1, 0, 1, cache, dataset);
 
     const int iterations = 1000;
     
@@ -49,6 +49,7 @@ int main(void) {
 
     // JIT run
     printf("Running JIT benchmark (%d iterations)...\n", iterations);
+    
     QueryPerformanceCounter(&start);
     for(int i=0; i<iterations; i++) {
         blob[0] = (uint8_t)i;
@@ -58,6 +59,19 @@ int main(void) {
     QueryPerformanceCounter(&end);
     double timeJit = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
     double hrJit = iterations / timeJit;
+
+    // TIME JIT COMPILATION ALONE (after benchmark to not pollute cache)
+    LARGE_INTEGER j_start, j_end;
+    QueryPerformanceCounter(&j_start);
+    for(int i=0; i<100; i++) {
+        rx_fill_aes4rx4(vm_jit->tempHash, sizeof(rx_program), &vm_jit->program);
+        vm_initialize(vm_jit);
+        extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
+        rx_jit_generate_program(vm_jit->jit, &vm_jit->program, &vm_jit->config, vm_jit->cachePtr);
+    }
+    QueryPerformanceCounter(&j_end);
+    double jit_compile_time = (double)(j_end.QuadPart - j_start.QuadPart) / freq.QuadPart / 100.0;
+    printf("Average JIT compilation time per program: %.6f ms\n", jit_compile_time * 1000.0);
 
     printf("\n==== FINAL HASH (Iter %d) ====\n", iterations - 1);
     printf("INTERP: ");

@@ -387,6 +387,27 @@ typedef struct rx_vm {
     RX_ALIGNAS(16) uint64_t fillState[8];
 } rx_vm;
 
+typedef struct DualJitContext {
+    uint64_t vm1_rax, vm1_rdx, vm1_rbp, vm1_rsi;
+    double vm1_a[8];
+    double vm1_eMask[2];
+
+    uint64_t vm2_rax, vm2_rdx, vm2_rbp, vm2_rsi;
+    double vm2_a[8];
+    double vm2_eMask[2];
+
+    uint64_t dataset;
+    uint32_t iterations;
+    uint32_t pad;
+
+    rx_register_file* reg1;
+    rx_register_file* reg2;
+    rx_memory_regs* mem1;
+    rx_memory_regs* mem2;
+} DualJitContext;
+
+typedef void (*DualProgramFunc)(DualJitContext*);
+
 #ifdef __cplusplus
 extern "C" {
 #endif

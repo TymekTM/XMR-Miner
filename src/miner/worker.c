@@ -47,7 +47,23 @@ static int encode_varint(uint64_t val, uint8_t *out) {
 }
 
 #define BLOB_MAX_SIZE 256
-#define NONCE_OFFSET 39
+
+static int decode_varint(const uint8_t *p, int max_bytes) {
+    int val = 0, shift = 0, i;
+    for (i = 0; i < max_bytes && i < 9; i++) {
+        val |= (p[i] & 0x7F) << shift;
+        if (!(p[i] & 0x80)) return i + 1;
+        shift += 7;
+    }
+    return -1;
+}
+
+static int get_monero_nonce_offset(const uint8_t *blob, int blob_len) {
+    if (blob_len < 43) return -1;
+    int ts_len = decode_varint(blob + 2, blob_len - 2);
+    if (ts_len < 1) return -1;
+    return 2 + ts_len + 32;
+}
 
 static int build_hashing_blob(stratum_job_t *job, uint8_t *blob, uint32_t nonce) {
     memset(blob, 0, 76);
@@ -142,6 +158,7 @@ void worker_run(worker_t *w) {
     uint8_t blob[BLOB_MAX_SIZE];
     int blob_len = 0;
     uint32_t nonce = 0;
+    int nonce_off = 39;
     char current_job_id[128] = {0};
     uint64_t current_target = 0;
     int got_job = 0;
@@ -150,7 +167,6 @@ void worker_run(worker_t *w) {
     int is_monero_proto = 0;
     char saved_ntime[64] = {0};
     int saved_en2_size = 4;
-    int need_first = 1;
 
     uint64_t last_report_hashes = 0;
     uint64_t last_report_time = 0;
@@ -164,7 +180,6 @@ void worker_run(worker_t *w) {
             rx_vm *refreshed = (rx_vm *)w->vm;
             if (refreshed != vm) {
                 vm = refreshed;
-                need_first = 1;
             }
         }
         if (!vm) { Sleep(10); continue; }
@@ -212,7 +227,6 @@ void worker_run(worker_t *w) {
                 LOG_WARN("[W%d] Invalid seed_hash: %s", w->id, job->seed_hash);
             }
             got_job = 0;
-            need_first = 1;
         }
 
         if (strcmp(job->job_id, current_job_id) != 0) {
@@ -222,14 +236,16 @@ void worker_run(worker_t *w) {
                 int hex_len = (int)strlen(job->blob);
                 blob_len = hex_len / 2;
                 if (blob_len > BLOB_MAX_SIZE) blob_len = BLOB_MAX_SIZE;
-                if (blob_len < NONCE_OFFSET + 4) {
-                    LOG_ERR("[W%d] Blob too short: %d", w->id, blob_len);
+                hex_decode(job->blob, blob, blob_len);
+                int nonce_off = get_monero_nonce_offset(blob, blob_len);
+                if (nonce_off < 0 || nonce_off + 4 > blob_len) {
+                    LOG_ERR("[W%d] Bad blob format: len=%d nonce_off=%d", w->id, blob_len, nonce_off);
                     Sleep(500);
                     continue;
                 }
-                hex_decode(job->blob, blob, blob_len);
-                nonce = *(uint32_t *)(blob + NONCE_OFFSET);
+                nonce = *(uint32_t *)(blob + nonce_off);
                 nonce += w->nonce_offset;
+                LOG_DEBUG("[W%d] nonce_off=%d blob_len=%d", w->id, nonce_off, blob_len);
             } else {
                 char *safe_id = _strdup(job->job_id);
                 char *safe_coinb1 = _strdup(job->coinb1);
@@ -280,9 +296,8 @@ void worker_run(worker_t *w) {
             strncpy(current_job_id, job->job_id, sizeof(current_job_id) - 1);
             current_target = job->target_u64;
             got_job = 1;
-            need_first = 1;
 
-            LOG_INFO("[W%d] New job: %s blob_len=%d target=%016llx proto=%s",
+            LOG_DEBUG("[W%d] New job: %s blob_len=%d target=%016llx proto=%s",
                      w->id, current_job_id, blob_len, (unsigned long long)current_target,
                      is_monero_proto ? "Monero" : "Standard");
         }
@@ -290,20 +305,19 @@ void worker_run(worker_t *w) {
         if (!got_job) { Sleep(10); continue; }
 
         if (w->hashes == 0) {
-            LOG_INFO("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
+            LOG_DEBUG("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
         }
 
-        memcpy(blob + NONCE_OFFSET, &nonce, 4);
-
-        if (need_first) {
-            rx_calculate_hash_first(vm, blob, (size_t)blob_len);
-            need_first = 0;
-        }
+        memcpy(blob + nonce_off, &nonce, 4);
 
         uint8_t hash[32];
-        rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
+        rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
 
         uint32_t hash_val = read_u32_le(hash);
+        if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
+            LOG_DEBUG("[W0] sample: nonce=%u hash_val=%08x target=%08x blob_len=%d",
+                      nonce, hash_val, (uint32_t)current_target, blob_len);
+        }
         if (hash_val <= (uint32_t)current_target) {
             char nonce_hex[16];
             snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
@@ -326,7 +340,7 @@ void worker_run(worker_t *w) {
                                  result_hex, en2_hex, saved_ntime);
         }
 
-        nonce++;
+        nonce += w->nonce_stride;
         w->hashes++;
         w->loop_count++;
 

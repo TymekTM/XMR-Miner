@@ -781,9 +781,19 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
     rx_dataset *ds = (rx_dataset *)calloc(1, sizeof(rx_dataset));
     if (!ds) return NULL;
     ds->large_pages = large_pages;
+    
+    size_t alloc_size = (size_t)RX_DATASET_SIZE;
     if (large_pages) {
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, (size_t)RX_DATASET_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (!ds->memory) ds->large_pages = 0;
+        size_t large_page_min = 2097152; // 2MB
+        if ((alloc_size % large_page_min) != 0) {
+            alloc_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
+        }
+        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+        if (!ds->memory) {
+            // print error if VirtualAlloc fails
+            // printf("VirtualAlloc failed with error %lu\n", GetLastError());
+            ds->large_pages = 0;
+        }
     }
     if (!ds->memory)
         ds->memory = (uint8_t *)calloc(1, (size_t)RX_DATASET_SIZE);
@@ -861,4 +871,92 @@ void rx_destroy_vm(rx_vm *vm) {
         rx_jit_destroy(vm->jit);
     }
     free(vm);
+}
+
+void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t iterations) {
+    rx_fill_aes4rx4(seed1, sizeof(rx_program), &vm1->program);
+    rx_fill_aes4rx4(seed2, sizeof(rx_program), &vm2->program);
+    
+    vm_initialize(vm1);
+    vm_initialize(vm2);
+
+    if (vm1->useJit && vm1->jit && vm2->useJit && vm2->jit) {
+        extern void rx_jit_generate_program_dual(rx_jit*, rx_program*, rx_program_config*, rx_program*, rx_program_config*, rx_cache*);
+        extern void* rx_jit_get_program_func(rx_jit*);
+
+        rx_jit_generate_program_dual(vm1->jit, &vm1->program, &vm1->config, &vm2->program, &vm2->config, vm1->cachePtr);
+
+        DualProgramFunc func = (DualProgramFunc)rx_jit_get_program_func(vm1->jit);
+
+        if (func) {
+            DualJitContext ctx;
+            memset(&ctx, 0, sizeof(ctx));
+            
+            // VM1 Init
+            ctx.vm1_rbp = vm1->mem.mx_ma;
+            ctx.vm1_rsi = (uint64_t)vm1->scratchpad;
+            ctx.vm1_rax = vm1->mem.mx_ma & 0x1FFFC0;
+            ctx.vm1_rdx = (vm1->mem.mx_ma >> 32) & 0x1FFFC0;
+            memcpy(ctx.vm1_a, vm1->reg.a, sizeof(ctx.vm1_a));
+            
+            uint64_t eMask1[2];
+            eMask1[0] = vm1->config.eMask[0];
+            eMask1[1] = vm1->config.eMask[1];
+            memcpy(ctx.vm1_eMask, eMask1, sizeof(ctx.vm1_eMask));
+            
+            // VM2 Init
+            ctx.vm2_rbp = vm2->mem.mx_ma;
+            ctx.vm2_rsi = (uint64_t)vm2->scratchpad;
+            ctx.vm2_rax = vm2->mem.mx_ma & 0x1FFFC0;
+            ctx.vm2_rdx = (vm2->mem.mx_ma >> 32) & 0x1FFFC0;
+            memcpy(ctx.vm2_a, vm2->reg.a, sizeof(ctx.vm2_a));
+            
+            uint64_t eMask2[2];
+            eMask2[0] = vm2->config.eMask[0];
+            eMask2[1] = vm2->config.eMask[1];
+            memcpy(ctx.vm2_eMask, eMask2, sizeof(ctx.vm2_eMask));
+            
+            ctx.dataset = (uint64_t)(vm1->lightClient ? vm1->mem.memory : vm1->mem.memory + vm1->datasetOffset);
+            ctx.iterations = iterations;
+            
+            ctx.reg1 = &vm1->reg;
+            ctx.reg2 = &vm2->reg;
+            ctx.mem1 = &vm1->mem;
+            ctx.mem2 = &vm2->mem;
+            
+            func(&ctx);
+            
+            return;
+        }
+    }
+
+    // Fallback to sequential
+    rx_vm_run_n(vm1, seed1, iterations);
+    rx_vm_run_n(vm2, seed2, iterations);
+}
+
+void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2, const void *input1, size_t input1_size, const void *input2, size_t input2_size, void *output1, void *output2) {
+    uint32_t saved_mxcsr = _mm_getcsr();
+    
+    blake2b(vm1->tempHash, sizeof(vm1->tempHash), input1, input1_size, NULL, 0);
+    blake2b(vm2->tempHash, sizeof(vm2->tempHash), input2, input2_size, NULL, 0);
+    
+    rx_vm_init_scratchpad(vm1, vm1->tempHash);
+    rx_vm_init_scratchpad(vm2, vm2->tempHash);
+    
+    rx_reset_float_state();
+    
+    for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
+        rx_vm_run_dual(vm1, vm2, vm1->tempHash, vm2->tempHash, RX_PROGRAM_ITERATIONS);
+        
+        blake2b(vm1->tempHash, sizeof(vm1->tempHash), &vm1->reg, sizeof(rx_register_file), NULL, 0);
+        blake2b(vm2->tempHash, sizeof(vm2->tempHash), &vm2->reg, sizeof(rx_register_file), NULL, 0);
+    }
+    
+    rx_vm_run_dual(vm1, vm2, vm1->tempHash, vm2->tempHash, RX_PROGRAM_ITERATIONS);
+    
+    rx_vm_get_final_result(vm1, output1);
+    rx_vm_get_final_result(vm2, output2);
+    
+    _mm_setcsr(saved_mxcsr);
 }

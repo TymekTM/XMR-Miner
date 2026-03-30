@@ -1,53 +1,30 @@
 #include "crypto/randomx/randomx.h"
 #include "crypto/randomx/randomx_internal.h"
-#include "common/log.h"
 #include <stdio.h>
 #include <string.h>
-#include <stdlib.h>
-#include <windows.h>
 
-extern void rx_vm_run(rx_vm *vm, void *seed);
+extern void vm_initialize(rx_vm *vm);
+extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
+extern uint8_t* rx_jit_get_code_ptr(rx_jit* jit);
 
 int main(void) {
-    uint8_t key[32] = {0x01};
-    printf("[1] start\n"); fflush(stdout);
+    rx_cache *cache = rx_alloc_cache(1);
+    rx_init_cache(cache, "test", 4);
+    rx_dataset *dataset = rx_alloc_dataset(1);
+    rx_init_dataset_cached(dataset, cache, 0, RX_DATASET_ITEMS, 8, 8);
+    rx_vm *vm = rx_create_vm(1, 1, 1, cache, dataset);
 
-    rx_cache *cache = rx_alloc_cache(0);
-    printf("[2] cache alloc\n"); fflush(stdout);
-    rx_init_cache(cache, key, 32);
-    printf("[3] cache init\n"); fflush(stdout);
+    rx_fill_aes4rx4(vm->tempHash, sizeof(rx_program), &vm->program);
+    vm_initialize(vm);
+    rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
 
-    rx_vm *vm = rx_create_vm(0, 0, 0, cache, NULL);
-    printf("[4] vm created useJit=%d lightClient=%d\n", vm->useJit, vm->lightClient); fflush(stdout);
-
-    printf("[4a] fill\n"); fflush(stdout);
-    rx_fill_aes4rx4(key, sizeof(rx_program), &vm->program);
-    printf("[4b] fill done\n"); fflush(stdout);
-    printf("[4c] interpreter\n"); fflush(stdout);
-    rx_vm_run(vm, key);
-    printf("[4d] interpreter ok\n"); fflush(stdout);
-
-    printf("[5] JIT gen\n"); fflush(stdout);
-    rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
+    uint8_t* code = rx_jit_get_code_ptr(vm->jit);
     
-    typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
-    ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
+    // Dump to file
+    FILE* f = fopen("jit_dump.bin", "wb");
+    fwrite(code, 1, 16384, f); // dump first 16KB
+    fclose(f);
     
-    rx_memory_regs memRegs;
-    memRegs.mx = vm->mem.mx;
-    memRegs.ma = vm->mem.ma;
-    memRegs.memory = vm->mem.memory;
-    printf("[6] func=%p mem=%p\n", (void*)func, (void*)memRegs.memory); fflush(stdout);
-    
-    __try {
-        func(&vm->reg, &memRegs, vm->scratchpad, 1);
-        printf("[7] func returned\n"); fflush(stdout);
-    } __except(EXCEPTION_EXECUTE_HANDLER) {
-        printf("[7] SEH 0x%08lx\n", GetExceptionCode()); fflush(stdout);
-    }
-
-    rx_destroy_vm(vm);
-    rx_free_cache(cache);
-    printf("[8] done\n"); fflush(stdout);
+    printf("JIT code dumped to jit_dump.bin\n");
     return 0;
 }

@@ -14,6 +14,7 @@ typedef struct {
     u64 start_time;
     int should_stop;
     uint32_t nonce_offset;
+    uint32_t nonce_stride;
     uint32_t loop_count;
     uint64_t extranonce2_counter;
     char initial_seed[65];
