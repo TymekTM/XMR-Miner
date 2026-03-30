@@ -7,3 +7,5 @@ IADD_RS correctness fix,Fixed buggy JIT generation for dst==5 by completely anal
 2026-03-30,Evaluated AVX2 256-bit (ymm) for code_loop_load and code_loop_store.,~230 H/s (Regressed),256-bit ymm conversions didn't reduce uop count and caused upper-128 bit state penalties without complex vzeroupper tracking. Reverted.
 2026-03-30,Evaluated AVX2 vpxor for 64-byte dataset read in JIT epilogue.,N/A,Moving 8 GPRs (r8-r15) to YMM takes ~24 ops vs 8 ops for scalar xor. Memory latency is the true bottleneck.
 2026-03-30,Changed dataset prefetch from prefetchnta to prefetcht0 in JIT epilogue.,~305 H/s,Negligible difference; L1/L2 caching behavior for dataset items doesn't impact 2048-iteration latency hiding.
+Fixed Dataset Huge Pages allocation (aligned size to 2MB boundary),4574 H/s,Massive improvement in MT scaling due to reduced TLB misses
+Replaced Legacy SSE with VEX-128 in JIT code arrays,343 H/s (ST),Eliminated partial register stalls during AVX/SSE transitions

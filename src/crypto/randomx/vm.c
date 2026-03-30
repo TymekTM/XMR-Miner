@@ -3,6 +3,24 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifdef _WIN32
+static int enable_lock_pages_privilege(void) {
+    HANDLE token;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
+        return 0;
+    TOKEN_PRIVILEGES tp;
+    tp.PrivilegeCount = 1;
+    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    if (!LookupPrivilegeValueA(NULL, SE_LOCK_MEMORY_NAME, &tp.Privileges[0].Luid)) {
+        CloseHandle(token);
+        return 0;
+    }
+    int ok = AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL) && GetLastError() == 0;
+    CloseHandle(token);
+    return ok;
+}
+#endif
+
 
 static inline uint32_t load32_le(const void *p) {
     return *(const uint32_t *)p;
@@ -784,14 +802,25 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
     
     size_t alloc_size = (size_t)RX_DATASET_SIZE;
     if (large_pages) {
-        size_t large_page_min = 2097152; // 2MB
+#ifdef _WIN32
+        static int lock_pages_tried = 0;
+        if (!lock_pages_tried) {
+            lock_pages_tried = 1;
+            if (enable_lock_pages_privilege()) {
+                LOG_INFO("[DATASET] Lock Pages in Memory privilege enabled");
+            } else {
+                LOG_WARN("[DATASET] Cannot enable Lock Pages privilege - huge pages unavailable");
+            }
+        }
+#endif
+        size_t large_page_min = 2097152;
         if ((alloc_size % large_page_min) != 0) {
             alloc_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
         }
         ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (!ds->memory) {
-            // print error if VirtualAlloc fails
-            // printf("VirtualAlloc failed with error %lu\n", GetLastError());
+        if (ds->memory) {
+            LOG_INFO("[DATASET] Allocated %.0f MB with 2MB huge pages", (double)alloc_size / (1024*1024));
+        } else {
             ds->large_pages = 0;
         }
     }
