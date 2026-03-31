@@ -164,6 +164,69 @@ typedef struct {
     int thread_id;
 } ds_thread_arg_t;
 
+#define DS_MAX_CORES 128
+
+typedef struct {
+    int count;
+    int os_index[DS_MAX_CORES];
+    int is_pcore[DS_MAX_CORES];
+} ds_core_list_t;
+
+static int ds_detect_cores(ds_core_list_t *cores) {
+    cores->count = 0;
+    DWORD len = 0;
+    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
+    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return 0;
+
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(len);
+    if (!buf) return 0;
+    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) {
+        free(buf);
+        return 0;
+    }
+
+    BYTE *ptr = (BYTE *)buf;
+    DWORD remaining = len;
+    while (remaining > 0) {
+        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
+        if (item->Relationship == RelationProcessorCore) {
+            GROUP_AFFINITY mask = item->Processor.GroupMask[0];
+            int os_idx = -1;
+            for (int b = 0; b < 64 && b < (int)sizeof(mask.Mask) * 8; b++) {
+                if (mask.Mask & (1ULL << b)) {
+                    os_idx = b + mask.Group * 64;
+                    break;
+                }
+            }
+            if (os_idx >= 0 && cores->count < DS_MAX_CORES) {
+                cores->os_index[cores->count] = os_idx;
+                int bits = 0;
+                for (int b = 0; b < 64; b++) {
+                    if (mask.Mask & (1ULL << b)) bits++;
+                }
+                cores->is_pcore[cores->count] = (bits == 2) ? 1 : 0;
+                cores->count++;
+            }
+        }
+        ptr += item->Size;
+        remaining -= item->Size;
+    }
+    free(buf);
+    return cores->count;
+}
+
+static void ds_sort_pcore_first(ds_core_list_t *cores) {
+    for (int i = 0; i < cores->count - 1; i++) {
+        for (int j = 0; j < cores->count - 1 - i; j++) {
+            if (cores->is_pcore[j] < cores->is_pcore[j + 1]) {
+                int tmp;
+                tmp = cores->os_index[j]; cores->os_index[j] = cores->os_index[j + 1]; cores->os_index[j + 1] = tmp;
+                tmp = cores->is_pcore[j]; cores->is_pcore[j] = cores->is_pcore[j + 1]; cores->is_pcore[j + 1] = tmp;
+            }
+        }
+    }
+}
+
 static DWORD WINAPI ds_init_thread(LPVOID param) {
     ds_thread_arg_t *arg = (ds_thread_arg_t *)param;
     uint8_t *ptr = arg->ds->memory + (size_t)arg->start * RX_CACHE_LINE_SIZE;
@@ -190,6 +253,11 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
     } else {
         LOG_INFO("[DATASET] Initializing with %d threads...", num_threads);
 
+        ds_core_list_t cores;
+        int num_cores = ds_detect_cores(&cores);
+        ds_sort_pcore_first(&cores);
+        int pin_count = (num_cores > 0 && num_cores < num_threads) ? num_cores : num_threads;
+
         HANDLE *threads = (HANDLE *)malloc(num_threads * sizeof(HANDLE));
         ds_thread_arg_t *args = (ds_thread_arg_t *)malloc(num_threads * sizeof(ds_thread_arg_t));
 
@@ -206,9 +274,12 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
             offset += args[t].count;
             threads[t] = CreateThread(NULL, 0, ds_init_thread, &args[t], 0, NULL);
             SetThreadPriority(threads[t], THREAD_PRIORITY_ABOVE_NORMAL);
-            if (t < num_physical_cores) {
-                DWORD_PTR mask = 1ULL << t;
-                SetThreadAffinityMask(threads[t], mask);
+            if (t < pin_count && num_cores > 0) {
+                int os_idx = cores.os_index[t];
+                GROUP_AFFINITY ga = {0};
+                ga.Group = (WORD)(os_idx / 64);
+                ga.Mask = (KAFFINITY)(1ULL << (os_idx % 64));
+                SetThreadGroupAffinity(threads[t], &ga, NULL);
             }
         }
 

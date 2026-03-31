@@ -385,28 +385,23 @@ typedef struct rx_vm {
     uint8_t datasetItem[64];
     RX_ALIGNAS(16) uint64_t tempHash[8];
     RX_ALIGNAS(16) uint64_t fillState[8];
+    uint32_t mxcsrState;
 } rx_vm;
 
-typedef struct DualJitContext {
-    uint64_t vm1_rax, vm1_rdx, vm1_rbp, vm1_rsi;
-    double vm1_a[8];
-    double vm1_eMask[2];
-
-    uint64_t vm2_rax, vm2_rdx, vm2_rbp, vm2_rsi;
-    double vm2_a[8];
-    double vm2_eMask[2];
-
-    uint64_t dataset;
+typedef struct {
+    rx_register_file *reg1;
+    rx_register_file *reg2;
+    uint64_t mx_ma1;
+    uint64_t mx_ma2;
+    uint8_t *sp1;
+    uint8_t *sp2;
+    uint8_t *dataset1;
+    uint8_t *dataset2;
     uint32_t iterations;
     uint32_t pad;
-
-    rx_register_file* reg1;
-    rx_register_file* reg2;
-    rx_memory_regs* mem1;
-    rx_memory_regs* mem2;
-} DualJitContext;
-
-typedef void (*DualProgramFunc)(DualJitContext*);
+    uint32_t mxcsr1;
+    uint32_t mxcsr2;
+} RxDualParams;
 
 #ifdef __cplusplus
 extern "C" {

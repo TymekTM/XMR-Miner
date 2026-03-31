@@ -625,89 +625,409 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x100);
         emitByte(0xC3);
     }
-    void generateProgramDual(rx_program* prog1, rx_program_config* pcfg1, rx_program* prog2, rx_program_config* pcfg2, rx_cache* cache) {
-        int pos_local = 0;
-        this->cache = cache;
-        
-        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);
-        
-        // --- PROLOGUE ---
-        // push rbx, rbp, rdi, rsi, r12, r13, r14, r15
-        uint8_t dual_prologue[] = {
-            0x53, 0x55, 0x57, 0x56, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57,
-            0x48, 0x81, 0xEC, 0x50, 0x00, 0x00, 0x00, // sub rsp, 0x50
-            0x48, 0x89, 0x4C, 0x24, 0x30, // mov [rsp+0x30], rcx (save DualJitContext*)
-            // Initialize rounding modes and constants on stack
-            0xC7, 0x04, 0x24, 0xC0, 0x9F, 0x00, 0x00, // mov dword [rsp], 0x9FC0
-            0xC7, 0x44, 0x24, 0x04, 0xC0, 0xBF, 0x00, 0x00, // mov dword [rsp+4], 0xBFC0
-            0xC7, 0x44, 0x24, 0x08, 0xC0, 0xDF, 0x00, 0x00, // mov dword [rsp+8], 0xDFC0
-            0xC7, 0x44, 0x24, 0x0C, 0xC0, 0xFF, 0x00, 0x00, // mov dword [rsp+12], 0xFFC0
-            0xC7, 0x44, 0x24, 0x20, 0xFF, 0xFF, 0xFF, 0xFF, // mov dword [rsp+0x20], 0xFFFFFFFF
-            // Load dataset pointer
-            0x48, 0x8B, 0xB9, 0xE0, 0x00, 0x00, 0x00, // mov rdi, [rcx + 0xE0]
-            // Load loop counter
-            0x8B, 0x99, 0xE8, 0x00, 0x00, 0x00, // mov ebx, [rcx + 0xE8]
-        };
-        memcpy(code + pos_local, dual_prologue, sizeof(dual_prologue));
-        pos_local += sizeof(dual_prologue);
-        
-        pos = pos_local;
-        
-        emitByte(0xE9);
-        emit32(CONSTANTS_SIZE);
+    void generateProgramSingleIter(rx_program* prog, rx_program_config* pcfg) {
+        int pos = 0;
+
+        memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
+        pos += PROLOGUE_SIZE;
+
+        memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
+        pos += FIRST_LOAD_SIZE;
+
+        pos = ((pos + 63) & ~63);
+
         int constantsPos = pos;
         memcpy(code + pos, code_constants, CONSTANTS_SIZE);
         pos += CONSTANTS_SIZE;
-        
-        // Load xmm13 and xmm15
-        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x2D);
-        int32_t rel = constantsPos - (pos + 4);
-        emit32(rel);
-        
-        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
-        rel = (constantsPos + 32) - (pos + 4);
-        emit32(rel);
-        
-        emitByte(0xE9);
-        emit32(IMUL_RCP_SIZE);
+
+        pos = ((pos + 63) & ~63);
+
         int imulRcpPos = pos;
         memcpy(code + pos, code_imul_rcp, IMUL_RCP_SIZE);
         pos += IMUL_RCP_SIZE;
-        
+
+        pos = ((pos + 63) & ~63);
+
         int loopBeginPos = pos;
-        emitByte(0x90);
-        
-        // Load VM1 State
-        uint8_t load_vm1[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x8B, 0x01, // mov rax, [rcx+0x00]
-            0x48, 0x8B, 0x51, 0x08, // mov rdx, [rcx+0x08]
-            0x48, 0x8B, 0x69, 0x10, // mov rbp, [rcx+0x10]
-            0x48, 0x8B, 0x71, 0x18, // mov rsi, [rcx+0x18]
-            0xC5, 0x79, 0x28, 0x41, 0x20, // vmovapd xmm8, [rcx+0x20]
-            0xC5, 0x79, 0x28, 0x49, 0x30, // vmovapd xmm9, [rcx+0x30]
-            0xC5, 0x79, 0x28, 0x51, 0x40, // vmovapd xmm10, [rcx+0x40]
-            0xC5, 0x79, 0x28, 0x59, 0x50, // vmovapd xmm11, [rcx+0x50]
-            0xC5, 0x79, 0x28, 0x71, 0x60, // vmovapd xmm14, [rcx+0x60]
-        };
-        emit(load_vm1, sizeof(load_vm1));
-        
+        code[pos] = 0x90;
+        pos += 1;
+
+        int movapd13_patch = 189;
+        int32_t rel = constantsPos - (movapd13_patch + 4);
+        memcpy(code + movapd13_patch, &rel, 4);
+
+        int movapd14_patch = 198;
+        rel = (constantsPos + 16) - (movapd14_patch + 4);
+        memcpy(code + movapd14_patch, &rel, 4);
+
+        int movapd15_patch = 207;
+        rel = (constantsPos + 32) - (movapd15_patch + 4);
+        memcpy(code + movapd15_patch, &rel, 4);
+
+        int jmpImulPos = PROLOGUE_SIZE + FIRST_LOAD_SIZE - 4;
+        rel = imulRcpPos - (jmpImulPos + 4);
+        memcpy(code + jmpImulPos, &rel, 4);
+
+        int jmpLoopPos = imulRcpPos + IMUL_RCP_SIZE - 4;
+        rel = loopBeginPos - (jmpLoopPos + 4);
+        memcpy(code + jmpLoopPos, &rel, 4);
+
+        memcpy(code + constantsPos + EMASK_OFFSET_IN_CONSTANTS, pcfg->eMask, sizeof(pcfg->eMask));
+
+        pos = loopBeginPos + 1;
+        this->pos = pos;
+        generateProgramPrologue(prog, pcfg, loopBeginPos);
+
+        generateProgramEpilogueSingleIter(pcfg);
+    }
+
+    void generateProgramEpilogueSingleIter(rx_program_config* pcfg) {
+        emitByte(0x89); emitByte(0xE9);
+        emitByte(0x81); emitByte(0xE1); emit32(0x7FFFFFC0);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x4C); emitByte(0x0F); emitByte(0x08);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x54); emitByte(0x0F); emitByte(0x10);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x5C); emitByte(0x0F); emitByte(0x18);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x64); emitByte(0x0F); emitByte(0x20);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
+
+        emitByte(0x89); emitByte(0xC1);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
+        emitByte(0x48); emitByte(0x33); emitByte(0xE9);
+
+        emitByte(0x89); emitByte(0xE8);
+        emitByte(0x25); emit32(0x7FFFFFC0);
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
+
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
+
+        emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
+        emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
+        emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+
+        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
+        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
+
+        memcpy(code + pos, code_epilogue, EPILOGUE_SIZE);
+        pos += EPILOGUE_SIZE;
+    }
+
+    void emitSaveVmState(int base) {
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x89); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + i * 8);
+        }
+        for (int i = 0; i < 8; i++) {
+            emitByte(0xC5); emitByte(0xFD); emitByte(0x11); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + 64 + i * 16);
+        }
+        emitByte(0x48); emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 192);
+        emitByte(0x48); emitByte(0x89); emitByte(0x8C); emitByte(0x24); emit32(base + 200);
+        emitByte(0x48); emitByte(0x89); emitByte(0x94); emitByte(0x24); emit32(base + 208);
+        emitByte(0x48); emitByte(0x89); emitByte(0xB4); emitByte(0x24); emit32(base + 216);
+        emitByte(0x48); emitByte(0x89); emitByte(0xBC); emitByte(0x24); emit32(base + 224);
+        emitByte(0x48); emitByte(0x89); emitByte(0xAC); emitByte(0x24); emit32(base + 256);
+        emitByte(0x8B); emitByte(0x04); emitByte(0x24);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 232);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x04);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 236);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x08);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 240);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x0C);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 244);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 248);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x9C); emitByte(0x24); emit32(base + 252);
+    }
+
+    void emitLoadVmState(int base) {
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x8B); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + i * 8);
+        }
+        for (int i = 0; i < 8; i++) {
+            emitByte(0xC5); emitByte(0xFD); emitByte(0x10); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + 64 + i * 16);
+        }
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(base + 200);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x94); emitByte(0x24); emit32(base + 208);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xB4); emitByte(0x24); emit32(base + 216);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xBC); emitByte(0x24); emit32(base + 224);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xAC); emitByte(0x24); emit32(base + 256);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 232);
+        emitByte(0x89); emitByte(0x04); emitByte(0x24);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 236);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x04);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 240);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x08);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 244);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x0C);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 248);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x94); emitByte(0x24); emit32(base + 252);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 192);
+    }
+
+    void emitSaveVmStateSlim(int base) {
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x89); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + i * 8);
+        }
+        for (int i = 0; i < 8; i++) {
+            emitByte(0xC5); emitByte(0xFD); emitByte(0x11); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + 64 + i * 16);
+        }
+        emitByte(0x48); emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 192);
+        emitByte(0x48); emitByte(0x89); emitByte(0x94); emitByte(0x24); emit32(base + 208);
+        emitByte(0x48); emitByte(0x89); emitByte(0xB4); emitByte(0x24); emit32(base + 216);
+        emitByte(0x48); emitByte(0x89); emitByte(0xBC); emitByte(0x24); emit32(base + 224);
+        emitByte(0x48); emitByte(0x89); emitByte(0xAC); emitByte(0x24); emit32(base + 256);
+        emitByte(0x8B); emitByte(0x04); emitByte(0x24);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 232);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x04);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 236);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x08);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 240);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x0C);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 244);
+        emitByte(0x8B); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0x89); emitByte(0x84); emitByte(0x24); emit32(base + 248);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x9C); emitByte(0x24); emit32(base + 252);
+    }
+
+    void emitLoadVmStateSlim(int base) {
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x8B); emitByte(0x84 + i * 8); emitByte(0x24);
+            emit32(base + i * 8);
+        }
+        emitByte(0x48); emitByte(0x8B); emitByte(0x94); emitByte(0x24); emit32(base + 208);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xB4); emitByte(0x24); emit32(base + 216);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xBC); emitByte(0x24); emit32(base + 224);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xAC); emitByte(0x24); emit32(base + 256);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 232);
+        emitByte(0x89); emitByte(0x04); emitByte(0x24);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 236);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x04);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 240);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x08);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 244);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x0C);
+        emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 248);
+        emitByte(0x89); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x94); emitByte(0x24); emit32(base + 252);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x84); emitByte(0x24); emit32(base + 192);
+    }
+
+    void emitXmmSave(int reg, int disp) {
+        if (reg < 8) {
+            emitByte(0xC5); emitByte(0xFD); emitByte(0x7F); emitByte(0x84); emitByte(0x24);
+        } else {
+            emitByte(0xC5); emitByte(0x79); emitByte(0x7F); emitByte(0x84); emitByte(0x24);
+        }
+        emit32(disp);
+    }
+
+    void emitXmmLoad(int reg, int disp) {
+        if (reg < 8) {
+            emitByte(0xC5); emitByte(0xFD); emitByte(0x6F); emitByte(0x84); emitByte(0x24);
+        } else {
+            emitByte(0xC5); emitByte(0x79); emitByte(0x6F); emitByte(0x84); emitByte(0x24);
+        }
+        emit32(disp);
+    }
+
+    void emitSaveCalleeXmm() {
+        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x50);
+        emitByte(0xf3); emitByte(0x0f); emitByte(0x7f); emitByte(0x74); emitByte(0x24); emitByte(0x40);
+        emitByte(0xf3); emitByte(0x0f); emitByte(0x7f); emitByte(0x7c); emitByte(0x24); emitByte(0x30);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x4c); emitByte(0x24); emitByte(0x10);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x54); emitByte(0x24); emitByte(0x00);
+        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(0x50);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x5c); emitByte(0x24); emitByte(0x40);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x64); emitByte(0x24); emitByte(0x30);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x6c); emitByte(0x24); emitByte(0x20);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x74); emitByte(0x24); emitByte(0x10);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x7f); emitByte(0x7c); emitByte(0x24); emitByte(0x00);
+    }
+
+    void emitLoadCalleeXmm() {
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x5c); emitByte(0x24); emitByte(0x40);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x64); emitByte(0x24); emitByte(0x30);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x6c); emitByte(0x24); emitByte(0x20);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x74); emitByte(0x24); emitByte(0x10);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x7c); emitByte(0x24); emitByte(0x00);
+        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x50);
+        emitByte(0xf3); emitByte(0x0f); emitByte(0x6f); emitByte(0x74); emitByte(0x24); emitByte(0x40);
+        emitByte(0xf3); emitByte(0x0f); emitByte(0x6f); emitByte(0x7c); emitByte(0x24); emitByte(0x30);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x44); emitByte(0x24); emitByte(0x20);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x4c); emitByte(0x24); emitByte(0x10);
+        emitByte(0xf3); emitByte(0x44); emitByte(0x0f); emitByte(0x6f); emitByte(0x54); emitByte(0x24); emitByte(0x00);
+        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(0x50);
+    }
+
+    void generateProgramDualInterleaved(rx_program* prog1, rx_program_config* pcfg1,
+                                        rx_program* prog2, rx_program_config* pcfg2) {
+        this->cache = cache;
+        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);
+        pos = 0;
+
+        static const int VM_STATE_SIZE = 0x110;
+        static const int XMM_SAVE = 0xA0;
+        static const int FRAME_WORK = 0x260;
+        static const int VM1_SAVE = 0x30;
+        static const int VM2_SAVE = VM1_SAVE + VM_STATE_SIZE;
+        static const int PARAMS_OFF = VM2_SAVE + VM_STATE_SIZE;
+
+        emitByte(0x53); emitByte(0x55); emitByte(0x57); emitByte(0x56);
+        emitByte(0x41); emitByte(0x54); emitByte(0x41); emitByte(0x55);
+        emitByte(0x41); emitByte(0x56); emitByte(0x41); emitByte(0x57);
+        emitSaveCalleeXmm();
+        emitByte(0x48); emitByte(0x81); emitByte(0xEC); emit32(FRAME_WORK);
+
+        emitByte(0x48); emitByte(0x89); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+
+        emitByte(0xE9); int jmpOverConsts1 = pos; emit32(0);
+
+        pos = ((pos + 63) & ~63);
+
+        int constantsPos1 = pos;
+        memcpy(code + pos, code_constants, CONSTANTS_SIZE);
+        pos += CONSTANTS_SIZE;
+        memcpy(code + constantsPos1 + EMASK_OFFSET_IN_CONSTANTS, pcfg1->eMask, sizeof(pcfg1->eMask));
+
+        int32_t rel;
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x2D); rel = (constantsPos1 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos1 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos1 + 32) - (pos + 4); emit32(rel);
+
+        rel = pos - (jmpOverConsts1 + 4);
+        memcpy(code + jmpOverConsts1, &rel, 4);
+
+        emitByte(0xE9); int jmpOverConsts2 = pos; emit32(0);
+
+        pos = ((pos + 63) & ~63);
+
+        int constantsPos2 = pos;
+        memcpy(code + pos, code_constants, CONSTANTS_SIZE);
+        pos += CONSTANTS_SIZE;
+        memcpy(code + constantsPos2 + EMASK_OFFSET_IN_CONSTANTS, pcfg2->eMask, sizeof(pcfg2->eMask));
+
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x35); rel = (constantsPos2 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos2 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos2 + 32) - (pos + 4); emit32(rel);
+
+        rel = pos - (jmpOverConsts2 + 4);
+        memcpy(code + jmpOverConsts2, &rel, 4);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x69); emitByte(0x10);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x79); emitByte(0x30);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x71); emitByte(0x20);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x09);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xC5);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);
+        emitByte(0x25); emitByte(0xC0); emitByte(0xFF); emitByte(0xFF); emitByte(0x7F);
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xC5);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xC0);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xC9);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xD2);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xDB);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xE4);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xED);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xF6);
+        emitByte(0x4D); emitByte(0x33); emitByte(0xFF);
+        emitByte(0x48); emitByte(0x8D); emitByte(0x49); emitByte(0x78);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x41); emitByte(0x48);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x49); emitByte(0x58);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x51); emitByte(0x68);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x59); emitByte(0x78);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xD0);
+        emitByte(0x25); emitByte(0xC0); emitByte(0xFF); emitByte(0x1F); emitByte(0x00);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCA); emitByte(0x20);
+        emitByte(0x81); emitByte(0xE2); emitByte(0xC0); emitByte(0xFF); emitByte(0x1F); emitByte(0x00);
+        emitByte(0xC7); emitByte(0x04); emitByte(0x24); emit32(0x9FC0);
+        emitByte(0xC7); emitByte(0x44); emitByte(0x24); emitByte(0x04); emit32(0xBFC0);
+        emitByte(0xC7); emitByte(0x44); emitByte(0x24); emitByte(0x08); emit32(0xDFC0);
+        emitByte(0xC7); emitByte(0x44); emitByte(0x24); emitByte(0x0C); emit32(0xFFC0);
+        emitByte(0xC7); emitByte(0x44); emitByte(0x24); emitByte(0x20); emit32(0xFFFFFFFF);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x51); emitByte(0x48);
+
+        emitSaveVmState(VM1_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x69); emitByte(0x18);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x79); emitByte(0x38);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x71); emitByte(0x28);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x49); emitByte(0x08);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xC5);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xE8); emitByte(0x20);
+        emitByte(0x25); emitByte(0xC0); emitByte(0xFF); emitByte(0xFF); emitByte(0x7F);
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xC5);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
+        emitByte(0x48); emitByte(0x8B); emitByte(0xD0);
+        emitByte(0x25); emitByte(0xC0); emitByte(0xFF); emitByte(0x1F); emitByte(0x00);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCA); emitByte(0x20);
+        emitByte(0x81); emitByte(0xE2); emitByte(0xC0); emitByte(0xFF); emitByte(0x1F); emitByte(0x00);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x51); emitByte(0x4C);
+
+        emitSaveVmState(VM2_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x8B); emitByte(0x99); emit32(0x40);
+
+        int outerLoopStart = pos;
+
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x2D); rel = (constantsPos1 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos1 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos1 + 32) - (pos + 4); emit32(rel);
+
+        emitLoadVmStateSlim(VM1_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x09);
+        emitByte(0x48); emitByte(0x8D); emitByte(0x49); emitByte(0x78);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x41); emitByte(0x48);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x49); emitByte(0x58);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x51); emitByte(0x68);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x59); emitByte(0x78);
+
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
-        
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
-        
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
             rx_instruction* instr = &prog1->programBuffer[i];
             instr->src %= RX_REGISTERS_COUNT;
             instr->dst %= RX_REGISTERS_COUNT;
             generateCode(instr, i);
         }
-        
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg2);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg3);
-        
+
         emitByte(0x89); emitByte(0xE9);
         emitByte(0x81); emitByte(0xE1); emit32(0x7FFFFFC0);
         emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);
@@ -718,77 +1038,53 @@ struct JitCompiler {
         emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
         emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
         emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
-        
         emitByte(0x89); emitByte(0xC1);
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
         emitByte(0x48); emitByte(0x33); emitByte(0xE9);
-        
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
-        
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
-        
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
-        
+
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
-        
-        emitByte(0x83); emitByte(0xFB); emitByte(0x01);
-        emitByte(0x0F); emitByte(0x84);
-        int vm1_last_patch = pos;
-        emit32(0);
-        
-        uint8_t save_vm1[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x89, 0x01, // mov [rcx+0x00], rax
-            0x48, 0x89, 0x51, 0x08, // mov [rcx+0x08], rdx
-            0x48, 0x89, 0x69, 0x10, // mov [rcx+0x10], rbp
-            0x48, 0x89, 0x71, 0x18, // mov [rcx+0x18], rsi
-            0xC5, 0x79, 0x29, 0x41, 0x20, // vmovapd [rcx+0x20], xmm8
-            0xC5, 0x79, 0x29, 0x49, 0x30, // vmovapd [rcx+0x30], xmm9
-            0xC5, 0x79, 0x29, 0x51, 0x40, // vmovapd [rcx+0x40], xmm10
-            0xC5, 0x79, 0x29, 0x59, 0x50, // vmovapd [rcx+0x50], xmm11
-        };
-        emit(save_vm1, sizeof(save_vm1));
-        
-        int vm1_resume_pos = pos;
-        
-        uint8_t load_vm2[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x8B, 0x41, 0x70, // mov rax, [rcx+0x70]
-            0x48, 0x8B, 0x51, 0x78, // mov rdx, [rcx+0x78]
-            0x48, 0x8B, 0x69, 0x80, // mov rbp, [rcx+0x80]
-            0x48, 0x8B, 0xB1, 0x88, 0x00, 0x00, 0x00, // mov rsi, [rcx+0x88]
-            0xC5, 0x79, 0x28, 0x81, 0x90, 0x00, 0x00, 0x00, // vmovapd xmm8, [rcx+0x90]
-            0xC5, 0x79, 0x28, 0x89, 0xA0, 0x00, 0x00, 0x00, // vmovapd xmm9, [rcx+0xA0]
-            0xC5, 0x79, 0x28, 0x91, 0xB0, 0x00, 0x00, 0x00, // vmovapd xmm10, [rcx+0xB0]
-            0xC5, 0x79, 0x28, 0x99, 0xC0, 0x00, 0x00, 0x00, // vmovapd xmm11, [rcx+0xC0]
-            0xC5, 0x79, 0x28, 0xB1, 0xD0, 0x00, 0x00, 0x00, // vmovapd xmm14, [rcx+0xD0]
-        };
-        emit(load_vm2, sizeof(load_vm2));
-        
-        // VM2 Code Generation
-        int instructionCount_vm1 = instructionCount;
+
+        emitSaveVmStateSlim(VM1_SAVE);
+
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x35); rel = (constantsPos2 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos2 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos2 + 32) - (pos + 4); emit32(rel);
+
+        emitLoadVmStateSlim(VM2_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x49); emitByte(0x08);
+        emitByte(0x48); emitByte(0x8D); emitByte(0x49); emitByte(0x78);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x41); emitByte(0x48);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x49); emitByte(0x58);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x51); emitByte(0x68);
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28); emitByte(0x59); emitByte(0x78);
+
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
-        
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
-        
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
             rx_instruction* instr = &prog2->programBuffer[i];
             instr->src %= RX_REGISTERS_COUNT;
             instr->dst %= RX_REGISTERS_COUNT;
             generateCode(instr, i);
         }
-        
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg2);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg3);
-        
+
         emitByte(0x89); emitByte(0xE9);
         emitByte(0x81); emitByte(0xE1); emit32(0x7FFFFFC0);
         emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);
@@ -799,124 +1095,97 @@ struct JitCompiler {
         emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
         emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
         emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
-        
         emitByte(0x89); emitByte(0xC1);
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
         emitByte(0x48); emitByte(0x33); emitByte(0xE9);
-        
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
-        
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
-        
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
-        
+
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
-        
-        emitByte(0x83); emitByte(0xFB); emitByte(0x01);
-        emitByte(0x0F); emitByte(0x84);
-        int vm2_last_patch = pos;
-        emit32(0);
-        
-        uint8_t save_vm2[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x89, 0x41, 0x70, // mov [rcx+0x70], rax
-            0x48, 0x89, 0x51, 0x78, // mov [rcx+0x78], rdx
-            0x48, 0x89, 0x69, 0x80, // mov [rcx+0x80], rbp
-            0x48, 0x89, 0xB1, 0x88, 0x00, 0x00, 0x00, // mov [rcx+0x88], rsi
-            0xC5, 0x79, 0x29, 0x81, 0x90, 0x00, 0x00, 0x00, // vmovapd [rcx+0x90], xmm8
-            0xC5, 0x79, 0x29, 0x89, 0xA0, 0x00, 0x00, 0x00, // vmovapd [rcx+0xA0], xmm9
-            0xC5, 0x79, 0x29, 0x91, 0xB0, 0x00, 0x00, 0x00, // vmovapd [rcx+0xB0], xmm10
-            0xC5, 0x79, 0x29, 0x99, 0xC0, 0x00, 0x00, 0x00, // vmovapd [rcx+0xC0], xmm11
-        };
-        emit(save_vm2, sizeof(save_vm2));
-        
-        emitByte(0x83); emitByte(0xEB); emitByte(0x01); // sub ebx, 1
+
+        emitSaveVmStateSlim(VM2_SAVE);
+
+        emitByte(0x83); emitByte(0xEB); emitByte(0x01);
         emitByte(0x0F); emitByte(0x85);
-        int32_t loop_patch = loopBeginPos - (pos + 4);
-        emit32(loop_patch);
-        
-        emitByte(0xE9);
-        int final_exit_patch = pos;
+        int loopBackPatch = pos;
         emit32(0);
-        
-        // EXIT BLOCKS
-        int32_t patch_vm1_last = pos - (vm1_last_patch + 4);
-        memcpy(code + vm1_last_patch, &patch_vm1_last, 4);
-        
-        uint8_t exit_vm1[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x8B, 0x81, 0xF0, 0x00, 0x00, 0x00, // mov rax, [rcx + 0xF0] (reg1)
-            0x4C, 0x89, 0x00, 0x4C, 0x89, 0x48, 0x08, 0x4C, 0x89, 0x50, 0x10, 0x4C, 0x89, 0x58, 0x18,
-            0x4C, 0x89, 0x60, 0x20, 0x4C, 0x89, 0x68, 0x28, 0x4C, 0x89, 0x70, 0x30, 0x4C, 0x89, 0x78, 0x38,
-            0xC5, 0xF9, 0x7F, 0x40, 0x40, 0xC5, 0xF9, 0x7F, 0x48, 0x50,
-            0xC5, 0xF9, 0x7F, 0x50, 0x60, 0xC5, 0xF9, 0x7F, 0x58, 0x70,
-            0xC5, 0xF9, 0x7F, 0xA0, 0x80, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xA8, 0x90, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xB0, 0xA0, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xB8, 0xB0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x80, 0xC0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x88, 0xD0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x90, 0xE0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x98, 0xF0, 0x00, 0x00, 0x00,
-            0x48, 0x8B, 0x81, 0x00, 0x01, 0x00, 0x00, // mov rax, [rcx + 0x100] (mem1)
-            0x48, 0x89, 0x28, // mov [rax], rbp
-        };
-        emit(exit_vm1, sizeof(exit_vm1));
-        emitByte(0xE9);
-        int32_t patch_resume = vm1_resume_pos - (pos + 4);
-        emit32(patch_resume);
-        
-        int32_t patch_vm2_last = pos - (vm2_last_patch + 4);
-        memcpy(code + vm2_last_patch, &patch_vm2_last, 4);
-        
-        uint8_t exit_vm2[] = {
-            0x48, 0x8B, 0x4C, 0x24, 0x30, // mov rcx, [rsp+0x30]
-            0x48, 0x8B, 0x81, 0xF8, 0x00, 0x00, 0x00, // mov rax, [rcx + 0xF8] (reg2)
-            0x4C, 0x89, 0x00, 0x4C, 0x89, 0x48, 0x08, 0x4C, 0x89, 0x50, 0x10, 0x4C, 0x89, 0x58, 0x18,
-            0x4C, 0x89, 0x60, 0x20, 0x4C, 0x89, 0x68, 0x28, 0x4C, 0x89, 0x70, 0x30, 0x4C, 0x89, 0x78, 0x38,
-            0xC5, 0xF9, 0x7F, 0x40, 0x40, 0xC5, 0xF9, 0x7F, 0x48, 0x50,
-            0xC5, 0xF9, 0x7F, 0x50, 0x60, 0xC5, 0xF9, 0x7F, 0x58, 0x70,
-            0xC5, 0xF9, 0x7F, 0xA0, 0x80, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xA8, 0x90, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xB0, 0xA0, 0x00, 0x00, 0x00,
-            0xC5, 0xF9, 0x7F, 0xB8, 0xB0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x80, 0xC0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x88, 0xD0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x90, 0xE0, 0x00, 0x00, 0x00,
-            0xC5, 0x79, 0x7F, 0x98, 0xF0, 0x00, 0x00, 0x00,
-            0x48, 0x8B, 0x81, 0x08, 0x01, 0x00, 0x00, // mov rax, [rcx + 0x108] (mem2)
-            0x48, 0x89, 0x28, // mov [rax], rbp
-        };
-        emit(exit_vm2, sizeof(exit_vm2));
-        
-        int32_t patch_final = pos - (final_exit_patch + 4);
-        memcpy(code + final_exit_patch, &patch_final, 4);
-        
-        uint8_t epilogue_end[] = {
-            0x48, 0x81, 0xC4, 0x50, 0x00, 0x00, 0x00, // add rsp, 0x50
-            0x41, 0x5F, 0x41, 0x5E, 0x41, 0x5D, 0x41, 0x5C, 0x5E, 0x5F, 0x5D, 0x5B, 0xC3
-        };
-        emit(epilogue_end, sizeof(epilogue_end));
-        
-        // Important: patch imul_rcp jumps
-        // For dual loop, all imul_rcp generated jumps need to go to imulRcpPos
-        // We will scan the generated code from loopBeginPos to pos and patch E8 (CALLs)
-        // Wait, RandomX uses calls to imul_rcp!
-        // We just need to fixup calls to imulRcpPos.
-        for (int i = loopBeginPos; i < pos - 4; i++) {
-            if (code[i] == 0xE8) {
-                // Not all E8 are imul_rcp, but in RandomX JIT, they are!
-                // Actually, wait, `h_IMUL_RCP` uses `0x48 0xB8` (mov rax, imm64) and `imul`, not `call`!
-                // Ah, superscalar hash uses `call`, but normal programs use `mov` + `imul`!
-                // So there are no calls to fix up in normal program mode!
-            }
+        rel = outerLoopStart - (loopBackPatch + 4);
+        memcpy(code + loopBackPatch, &rel, 4);
+
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x2D); rel = (constantsPos1 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos1 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos1 + 32) - (pos + 4); emit32(rel);
+        emitLoadVmState(VM1_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x09);
+
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x89); emitByte(0x41 + i * 8); emitByte(i * 8);
         }
+        for (int i = 0; i < 4; i++) {
+            emitByte(0x66); emitByte(0x0f); emitByte(0x7f);
+            emitByte(0x41 | (i << 3));
+            emitByte(0x40 | (i * 16));
+        }
+        emitByte(0x48); emitByte(0x8D); emitByte(0x49); emitByte(0x40);
+        for (int i = 0; i < 4; i++) {
+            emitByte(0x66); emitByte(0x0f); emitByte(0x7f);
+            emitByte(0x41 | ((i + 4) << 3));
+            emitByte(0x40 | (i * 16));
+        }
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x89); emitByte(0x69); emitByte(0x10);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x59); emitByte(0x48);
+
+        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
+        emitByte(0x35); rel = (constantsPos2 + 0) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos2 + 16) - (pos + 4); emit32(rel);
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
+        rel = (constantsPos2 + 32) - (pos + 4); emit32(rel);
+        emitLoadVmState(VM2_SAVE);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x8B); emitByte(0x49); emitByte(0x08);
+        for (int i = 0; i < 8; i++) {
+            emitByte(0x4C); emitByte(0x89); emitByte(0x41 + i * 8); emitByte(i * 8);
+        }
+        for (int i = 0; i < 4; i++) {
+            emitByte(0x66); emitByte(0x0f); emitByte(0x7f);
+            emitByte(0x41 | (i << 3));
+            emitByte(0x40 | (i * 16));
+        }
+        emitByte(0x48); emitByte(0x8D); emitByte(0x49); emitByte(0x40);
+        for (int i = 0; i < 4; i++) {
+            emitByte(0x66); emitByte(0x0f); emitByte(0x7f);
+            emitByte(0x41 | ((i + 4) << 3));
+            emitByte(0x40 | (i * 16));
+        }
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x48); emitByte(0x89); emitByte(0x69); emitByte(0x18);
+
+        emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
+        emitByte(0x0F); emitByte(0xAE); emitByte(0x59); emitByte(0x4C);
+
+        emitByte(0x48); emitByte(0x81); emitByte(0xC4); emit32(FRAME_WORK);
+        emitLoadCalleeXmm();
+        emitByte(0x41); emitByte(0x5F); emitByte(0x41); emitByte(0x5E);
+        emitByte(0x41); emitByte(0x5D); emitByte(0x41); emitByte(0x5C);
+        emitByte(0x5E); emitByte(0x5F); emitByte(0x5D); emitByte(0x5B);
+        emitByte(0xC3);
     }
 };
 
@@ -1351,7 +1620,22 @@ int rx_jit_get_num_instructions(rx_jit* jit) {
 }
 
 extern "C" {
-void rx_jit_generate_program_dual(rx_jit* jit, rx_program* prog1, rx_program_config* pcfg1, rx_program* prog2, rx_program_config* pcfg2, rx_cache* cache) {
-    jit->compiler->generateProgramDual(prog1, pcfg1, prog2, pcfg2, cache);
+void rx_jit_generate_program_single_iter(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
+    jit->compiler->cache = cache;
+    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
+    jit->compiler->generateProgramSingleIter(prog, pcfg);
+    if (cache) {
+        jit->compiler->generateSuperscalarHash(cache);
+    }
+}
+
+void rx_jit_generate_program_dual_interleaved(rx_jit* jit, rx_program* prog1, rx_program_config* pcfg1,
+                                               rx_program* prog2, rx_program_config* pcfg2, rx_cache* cache) {
+    jit->compiler->cache = cache;
+    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
+    jit->compiler->generateProgramDualInterleaved(prog1, pcfg1, prog2, pcfg2);
+    if (cache) {
+        jit->compiler->generateSuperscalarHash(cache);
+    }
 }
 }

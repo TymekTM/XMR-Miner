@@ -880,6 +880,7 @@ rx_vm *rx_create_vm(int full_mem, int use_jit, int large_pages, rx_cache *cache,
     if (!vm->scratchpad)
         vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
     if (!vm->scratchpad) { free(vm); return NULL; }
+    vm->mxcsrState = RX_MXCSR_DEFAULT;
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
         vm->jit = rx_jit_create();
@@ -910,62 +911,52 @@ void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t i
     vm_initialize(vm2);
 
     if (vm1->useJit && vm1->jit && vm2->useJit && vm2->jit) {
-        extern void rx_jit_generate_program_dual(rx_jit*, rx_program*, rx_program_config*, rx_program*, rx_program_config*, rx_cache*);
+        extern void rx_jit_generate_program_dual_interleaved(rx_jit*, rx_program*, rx_program_config*, rx_program*, rx_program_config*, rx_cache*);
         extern void* rx_jit_get_program_func(rx_jit*);
 
-        rx_jit_generate_program_dual(vm1->jit, &vm1->program, &vm1->config, &vm2->program, &vm2->config, vm1->cachePtr);
+        rx_jit_generate_program_dual_interleaved(vm1->jit, &vm1->program, &vm1->config,
+                                                  &vm2->program, &vm2->config, vm1->cachePtr);
 
-        DualProgramFunc func = (DualProgramFunc)rx_jit_get_program_func(vm1->jit);
+        typedef void (*DualInterleavedFunc)(RxDualParams*);
+        DualInterleavedFunc func = (DualInterleavedFunc)rx_jit_get_program_func(vm1->jit);
 
         if (func) {
-            DualJitContext ctx;
-            memset(&ctx, 0, sizeof(ctx));
-            
-            // VM1 Init
-            ctx.vm1_rbp = vm1->mem.mx_ma;
-            ctx.vm1_rsi = (uint64_t)vm1->scratchpad;
-            ctx.vm1_rax = vm1->mem.mx_ma & 0x1FFFC0;
-            ctx.vm1_rdx = (vm1->mem.mx_ma >> 32) & 0x1FFFC0;
-            memcpy(ctx.vm1_a, vm1->reg.a, sizeof(ctx.vm1_a));
-            
-            uint64_t eMask1[2];
-            eMask1[0] = vm1->config.eMask[0];
-            eMask1[1] = vm1->config.eMask[1];
-            memcpy(ctx.vm1_eMask, eMask1, sizeof(ctx.vm1_eMask));
-            
-            // VM2 Init
-            ctx.vm2_rbp = vm2->mem.mx_ma;
-            ctx.vm2_rsi = (uint64_t)vm2->scratchpad;
-            ctx.vm2_rax = vm2->mem.mx_ma & 0x1FFFC0;
-            ctx.vm2_rdx = (vm2->mem.mx_ma >> 32) & 0x1FFFC0;
-            memcpy(ctx.vm2_a, vm2->reg.a, sizeof(ctx.vm2_a));
-            
-            uint64_t eMask2[2];
-            eMask2[0] = vm2->config.eMask[0];
-            eMask2[1] = vm2->config.eMask[1];
-            memcpy(ctx.vm2_eMask, eMask2, sizeof(ctx.vm2_eMask));
-            
-            ctx.dataset = (uint64_t)(vm1->lightClient ? vm1->mem.memory : vm1->mem.memory + vm1->datasetOffset);
-            ctx.iterations = iterations;
-            
-            ctx.reg1 = &vm1->reg;
-            ctx.reg2 = &vm2->reg;
-            ctx.mem1 = &vm1->mem;
-            ctx.mem2 = &vm2->mem;
-            
-            func(&ctx);
-            
+            uint8_t *ds1 = vm1->lightClient ? vm1->mem.memory : vm1->mem.memory + vm1->datasetOffset;
+            uint8_t *ds2 = vm2->lightClient ? vm2->mem.memory : vm2->mem.memory + vm2->datasetOffset;
+
+            RxDualParams params;
+            params.reg1 = &vm1->reg;
+            params.reg2 = &vm2->reg;
+            params.mx_ma1 = vm1->mem.mx_ma;
+            params.mx_ma2 = vm2->mem.mx_ma;
+            params.sp1 = vm1->scratchpad;
+            params.sp2 = vm2->scratchpad;
+            params.dataset1 = ds1;
+            params.dataset2 = ds2;
+            params.iterations = iterations;
+            params.pad = 0;
+            params.mxcsr1 = vm1->mxcsrState;
+            params.mxcsr2 = vm2->mxcsrState;
+
+            func(&params);
+
+            vm1->mem.mx_ma = params.mx_ma1;
+            vm2->mem.mx_ma = params.mx_ma2;
+            vm1->mxcsrState = params.mxcsr1;
+            vm2->mxcsrState = params.mxcsr2;
             return;
         }
     }
 
-    // Fallback to sequential
     rx_vm_run_n(vm1, seed1, iterations);
     rx_vm_run_n(vm2, seed2, iterations);
 }
 
 void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2, const void *input1, size_t input1_size, const void *input2, size_t input2_size, void *output1, void *output2) {
     uint32_t saved_mxcsr = _mm_getcsr();
+
+    vm1->mxcsrState = RX_MXCSR_DEFAULT;
+    vm2->mxcsrState = RX_MXCSR_DEFAULT;
     
     blake2b(vm1->tempHash, sizeof(vm1->tempHash), input1, input1_size, NULL, 0);
     blake2b(vm2->tempHash, sizeof(vm2->tempHash), input2, input2_size, NULL, 0);
