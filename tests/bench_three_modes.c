@@ -84,12 +84,12 @@ int main(void) {
     }
     rx_init_dataset_cached(dataset, cache, 0, RX_DATASET_ITEMS, 8, 8);
 
-    rx_vm *vm_interp1 = rx_create_vm(1, 0, 1, cache, dataset);
-    rx_vm *vm_interp2 = rx_create_vm(1, 0, 1, cache, dataset);
-    rx_vm *vm_single1 = rx_create_vm(1, 1, 1, cache, dataset);
-    rx_vm *vm_single2 = rx_create_vm(1, 1, 1, cache, dataset);
-    rx_vm *vm_dual1 = rx_create_vm(1, 1, 1, cache, dataset);
-    rx_vm *vm_dual2 = rx_create_vm(1, 1, 1, cache, dataset);
+    rx_vm *vm_interp1 = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+    rx_vm *vm_interp2 = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+    rx_vm *vm_single1 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
+    rx_vm *vm_single2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
+    rx_vm *vm_dual1 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
+    rx_vm *vm_dual2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
 
     if (!vm_interp1 || !vm_interp2 || !vm_single1 || !vm_single2 || !vm_dual1 || !vm_dual2) {
         printf("[FAIL] VM allocation failed\n");

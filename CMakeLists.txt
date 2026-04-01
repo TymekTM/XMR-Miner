@@ -56,17 +56,6 @@ set_target_properties(xmr-miner PROPERTIES
     LINK_FLAGS "/LTCG /OPT:ICF /OPT:REF"
 )
 
-set(TEST_SOURCES
-    tests/test_blake2.c
-    tests/test_aes.c
-    tests/test_argon2.c
-    tests/test_randomx.c
-    tests/bench_jit.c
-    tests/bench_compare.c
-    tests/quick_jit_test.c
-    tests/test_full_jit.c
-)
-
 set(RANDOMX_SOURCES
     src/crypto/randomx/reciprocal.c
     src/crypto/randomx/aes_hash.c
@@ -78,32 +67,7 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/jit_compiler_x86.cpp
 )
 
-foreach(test_src ${TEST_SOURCES})
-    get_filename_component(test_name ${test_src} NAME_WE)
-    add_executable(${test_name} ${test_src}
-        src/crypto/blake2/blake2b.c
-        src/crypto/blake2/blake2_generator.c
-        src/crypto/aes/aes_ni.c
-        src/crypto/argon2/argon2.c
-        src/crypto/keccak/keccak.c
-        ${RANDOMX_SOURCES}
-        src/common/log.c
-        src/common/cpu.c
-    )
-    target_include_directories(${test_name} PRIVATE src)
-    target_link_libraries(${test_name} ws2_32)
-endforeach()
-
-
-add_executable(bench_aes tests/bench_aes.c
-    src/crypto/randomx/aes_hash.c
-    src/crypto/aes/aes_ni.c
-    src/common/cpu.c
-    src/common/log.c
-)
-target_include_directories(bench_aes PRIVATE src)
-
-add_executable(bench_fast tests/bench_fast.c
+set(COMMON_LIBS
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
@@ -113,99 +77,13 @@ add_executable(bench_fast tests/bench_fast.c
     src/common/log.c
     src/common/cpu.c
 )
-target_include_directories(bench_fast PRIVATE src)
-target_link_libraries(bench_fast ws2_32)
 
-# JIT crash isolation test
-add_executable(test_jit_crash2 tests/test_jit_crash2.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    ${RANDOMX_SOURCES}
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(test_jit_crash2 PRIVATE src)
-target_link_libraries(test_jit_crash2 ws2_32)
+macro(add_bench_target NAME SRC EXTRA_LIBS)
+    add_executable(${NAME} ${SRC} ${COMMON_LIBS})
+    target_include_directories(${NAME} PRIVATE src)
+    target_link_libraries(${NAME} ws2_32 ${EXTRA_LIBS})
+endmacro()
 
-add_executable(test_dataset_bench tests/test_dataset_bench.c
-    src/crypto/blake2/blake2b.c
-    src/crypto/blake2/blake2_generator.c
-    src/crypto/aes/aes_ni.c
-    src/crypto/argon2/argon2.c
-    src/crypto/keccak/keccak.c
-    ${RANDOMX_SOURCES}
-    src/common/log.c
-    src/common/cpu.c
-)
-target_include_directories(test_dataset_bench PRIVATE src)
-target_link_libraries(test_dataset_bench ws2_32)
-set_target_properties(bench_fast PROPERTIES LINK_FLAGS_RELEASE "/LTCG /OPT:ICF /OPT:REF")
-add_executable(bench_profile tests/bench_profile.c
-    src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_profile PRIVATE src)
-target_link_libraries(bench_profile ws2_32)
-add_executable(bench_mt tests/bench_mt.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_mt PRIVATE src)
-target_link_libraries(bench_mt ws2_32)
-
-add_executable(bench_mt_sweep tests/bench_mt_sweep.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_mt_sweep PRIVATE src)
-target_link_libraries(bench_mt_sweep ws2_32)
-add_executable(test_hash_next_multi tests/test_hash_next_multi.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(test_hash_next_multi PRIVATE src)
-target_link_libraries(test_hash_next_multi ws2_32)
-add_executable(test_calc_hash tests/test_calc_hash.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(test_calc_hash PRIVATE src)
-target_link_libraries(test_calc_hash ws2_32)
-add_executable(test_1gb_pages tests/test_1gb_pages.c)
-target_link_libraries(test_1gb_pages ws2_32)
-add_executable(bench_dual tests/bench_dual.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_dual PRIVATE src)
-target_link_libraries(bench_dual ws2_32)
-
-add_executable(test_dual_minimal tests/test_dual_minimal.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(test_dual_minimal PRIVATE src)
-target_link_libraries(test_dual_minimal ws2_32)
-
-add_executable(bench_mt_dual tests/bench_mt_dual.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_mt_dual PRIVATE src)
-target_link_libraries(bench_mt_dual ws2_32)
-
-add_executable(bench_unified tests/bench_unified.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_unified PRIVATE src)
-target_link_libraries(bench_unified ws2_32)
-
-add_executable(bench_three_modes tests/bench_three_modes.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_three_modes PRIVATE src)
-target_link_libraries(bench_three_modes ws2_32)
-
-add_executable(bench_profile2 tests/bench_profile2.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_profile2 PRIVATE src)
-target_link_libraries(bench_profile2 ws2_32 psapi)
-
-add_executable(bench_memcheck tests/bench_memcheck.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_memcheck PRIVATE src)
-target_link_libraries(bench_memcheck ws2_32 psapi)
-
-add_executable(bench_pool_verify tests/bench_pool_verify.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_pool_verify PRIVATE src)
-target_link_libraries(bench_pool_verify ws2_32)
-
-add_executable(bench_randomx_vector tests/bench_randomx_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_randomx_vector PRIVATE src)
-target_link_libraries(bench_randomx_vector ws2_32)
-
-add_executable(bench_dataset_vector tests/bench_dataset_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(bench_dataset_vector PRIVATE src)
-target_link_libraries(bench_dataset_vector ws2_32)
-
-add_executable(test_hash_vector tests/test_hash_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(test_hash_vector PRIVATE src)
-target_link_libraries(test_hash_vector ws2_32)
-
-add_executable(test_hash_debug tests/test_hash_debug.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
-target_include_directories(test_hash_debug PRIVATE src)
-target_link_libraries(test_hash_debug ws2_32)
+add_bench_target(test_hash_vector tests/test_hash_vector.c "")
+add_bench_target(bench_three_modes tests/bench_three_modes.c "")
+add_bench_target(bench_unified tests/bench_unified.c "")
