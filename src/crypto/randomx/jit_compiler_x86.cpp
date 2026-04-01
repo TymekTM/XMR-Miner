@@ -1506,14 +1506,7 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     emit32(imm);
     emitByte(0x49); emitByte(0xF7); emitByte(0xC0 | reg);
     emit32(RX_CONDITION_MASK << shift);
-    int32_t jzOffset = instructionOffsets[target] - (pos + 2);
-    if (jzOffset >= -128 && jzOffset <= 127) {
-        emitByte(0x74);
-        emitByte((uint8_t)jzOffset);
-    } else {
-        jzOffset = instructionOffsets[target] - (pos + 6);
-        emitByte(0x0F); emitByte(0x84); emit32(jzOffset);
-    }
+    emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
         registerUsage[j] = i;
 }
@@ -1567,7 +1560,7 @@ void rx_jit_destroy(rx_jit* jit) {
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
     jit->compiler->cache = cache;
-    memset(jit->compiler->code, 0xCC, RX_PROGRAM_CODE_SIZE);
+    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
     jit->compiler->generateProgram(prog, pcfg);
     if (cache && cache != jit->compiler->superscalar_cache) {
         jit->compiler->superscalar_cache = cache;

@@ -65,3 +65,6 @@ Desktop.ini
 out.txt
 err.txt
 nul
+
+# Mining config (contains wallet)
+mining.conf

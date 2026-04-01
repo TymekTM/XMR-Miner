@@ -826,25 +826,19 @@ void rx_init_dataset_cached(rx_dataset *ds, rx_cache *cache, uint32_t start, uin
                               int num_threads, int num_physical_cores) {
     if (rx_try_load_dataset_cache(ds, cache->seed, cache->seed_len, start, count)) {
 #ifdef _WIN32
-        HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
-        typedef BOOL (WINAPI *PFN_PrefetchVirtualMemory)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
-        PFN_PrefetchVirtualMemory pPrefetch = (PFN_PrefetchVirtualMemory)GetProcAddress(hKernel32, "PrefetchVirtualMemory");
-        if (pPrefetch) {
-            WIN32_MEMORY_RANGE_ENTRY entry;
-            entry.VirtualAddress = ds->memory;
-            entry.NumberOfBytes = (size_t)RX_DATASET_SIZE;
-            LARGE_INTEGER t0, t1, freq;
-            QueryPerformanceFrequency(&freq);
-            QueryPerformanceCounter(&t0);
-            BOOL ok = pPrefetch(GetCurrentProcess(), 1, &entry, 0);
-            QueryPerformanceCounter(&t1);
-            double dt = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
-            if (ok) {
-                LOG_INFO("[DATASET] PrefetchVirtualMemory OK (%.1f s)", dt);
-            } else {
-                LOG_WARN("[DATASET] PrefetchVirtualMemory failed (error=%lu)", GetLastError());
-            }
+        LARGE_INTEGER t0, t1, freq;
+        QueryPerformanceFrequency(&freq);
+        QueryPerformanceCounter(&t0);
+        volatile uint8_t touch = 0;
+        size_t page_size = 4096;
+        size_t total = (size_t)RX_DATASET_SIZE;
+        for (size_t i = 0; i < total; i += page_size) {
+            touch = ds->memory[i];
         }
+        (void)touch;
+        QueryPerformanceCounter(&t1);
+        double dt = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
+        LOG_INFO("[DATASET] Touched %.0f MB pages (%.1f s)", (double)total / (1024*1024), dt);
 #endif
         return;
     }

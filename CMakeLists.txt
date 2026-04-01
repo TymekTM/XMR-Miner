@@ -189,3 +189,7 @@ target_link_libraries(bench_profile2 ws2_32 psapi)
 add_executable(bench_memcheck tests/bench_memcheck.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
 target_include_directories(bench_memcheck PRIVATE src)
 target_link_libraries(bench_memcheck ws2_32 psapi)
+
+add_executable(bench_pool_verify tests/bench_pool_verify.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_pool_verify PRIVATE src)
+target_link_libraries(bench_pool_verify ws2_32)
