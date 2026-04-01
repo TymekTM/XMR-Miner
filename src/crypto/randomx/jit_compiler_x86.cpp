@@ -157,6 +157,7 @@ struct JitCompiler {
     int32_t instructionOffsets[RX_PROGRAM_SIZE]; int instructionCount;
     int registerUsage[RX_REGISTERS_COUNT];
     rx_cache* cache;
+    rx_cache* superscalar_cache;
 
     void emitByte(uint8_t b) { code[pos++] = b; }
     void emit32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
@@ -1538,6 +1539,7 @@ rx_jit* rx_jit_create(void) {
     init_engine();
     rx_jit* jit = (rx_jit*)calloc(1, sizeof(rx_jit));
     jit->compiler = new JitCompiler();
+    jit->compiler->superscalar_cache = NULL;
 
     jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
         MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_EXECUTE_READWRITE);
@@ -1558,9 +1560,10 @@ void rx_jit_destroy(rx_jit* jit) {
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
     jit->compiler->cache = cache;
-    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
+    memset(jit->compiler->code, 0xCC, RX_PROGRAM_CODE_SIZE);
     jit->compiler->generateProgram(prog, pcfg);
-    if (cache) {
+    if (cache && cache != jit->compiler->superscalar_cache) {
+        jit->compiler->superscalar_cache = cache;
         jit->compiler->generateSuperscalarHash(cache);
     }
     memcpy(jit->compiler->code + EPILOGUE_OFFSET, code_epilogue, EPILOGUE_SIZE);

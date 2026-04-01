@@ -181,3 +181,11 @@ target_link_libraries(bench_unified ws2_32)
 add_executable(bench_three_modes tests/bench_three_modes.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
 target_include_directories(bench_three_modes PRIVATE src)
 target_link_libraries(bench_three_modes ws2_32)
+
+add_executable(bench_profile2 tests/bench_profile2.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_profile2 PRIVATE src)
+target_link_libraries(bench_profile2 ws2_32 psapi)
+
+add_executable(bench_memcheck tests/bench_memcheck.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_memcheck PRIVATE src)
+target_link_libraries(bench_memcheck ws2_32 psapi)

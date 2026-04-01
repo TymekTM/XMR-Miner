@@ -81,12 +81,16 @@ static int detect_cores(core_list_t *cores) {
 static int build_affinity_order(int *order, int max_order) {
     if (!g_affinity_ready || g_cores.count <= 0) return 0;
     int n = 0;
+    int has_ecores = 0;
+    for (int i = 0; i < g_cores.count; i++) if (!g_cores.is_pcore[i]) has_ecores = 1;
 
     for (int i = 0; i < g_cores.count && n < max_order; i++) {
         if (g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];
     }
-    for (int i = 0; i < g_cores.count && n < max_order; i++) {
-        if (g_cores.is_pcore[i] && g_cores.sibling[i] >= 0) order[n++] = g_cores.sibling[i];
+    if (!has_ecores) {
+        for (int i = 0; i < g_cores.count && n < max_order; i++) {
+            if (g_cores.is_pcore[i] && g_cores.sibling[i] >= 0) order[n++] = g_cores.sibling[i];
+        }
     }
     for (int i = 0; i < g_cores.count && n < max_order; i++) {
         if (!g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];

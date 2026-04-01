@@ -798,34 +798,34 @@ void rx_free_cache(rx_cache *cache) {
 rx_dataset *rx_alloc_dataset(int large_pages) {
     rx_dataset *ds = (rx_dataset *)calloc(1, sizeof(rx_dataset));
     if (!ds) return NULL;
-    ds->large_pages = large_pages;
-    
+    ds->large_pages = 0;
+    (void)large_pages;
+
     size_t alloc_size = (size_t)RX_DATASET_SIZE;
-    if (large_pages) {
 #ifdef _WIN32
-        static int lock_pages_tried = 0;
-        if (!lock_pages_tried) {
-            lock_pages_tried = 1;
-            if (enable_lock_pages_privilege()) {
-                LOG_INFO("[DATASET] Lock Pages in Memory privilege enabled");
-            } else {
-                LOG_WARN("[DATASET] Cannot enable Lock Pages privilege - huge pages unavailable");
-            }
-        }
-#endif
-        size_t large_page_min = 2097152;
-        if ((alloc_size % large_page_min) != 0) {
-            alloc_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
-        }
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (ds->memory) {
-            LOG_INFO("[DATASET] Allocated %.0f MB with 2MB huge pages", (double)alloc_size / (1024*1024));
-        } else {
-            ds->large_pages = 0;
+    static int lock_pages_tried = 0;
+    if (!lock_pages_tried) {
+        lock_pages_tried = 1;
+        if (enable_lock_pages_privilege()) {
+            LOG_INFO("[DATASET] Lock Pages in Memory privilege enabled");
         }
     }
-    if (!ds->memory)
-        ds->memory = (uint8_t *)calloc(1, (size_t)RX_DATASET_SIZE);
+    size_t large_page_min = 2097152;
+    if ((alloc_size % large_page_min) != 0) {
+        alloc_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
+    }
+    ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+    if (ds->memory) {
+        ds->large_pages = 1;
+        LOG_INFO("[DATASET] Allocated %.0f MB with 2MB huge pages", (double)alloc_size / (1024*1024));
+    } else {
+        LOG_WARN("[DATASET] Huge pages failed, using regular pages");
+        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+        if (ds->memory) {
+            LOG_INFO("[DATASET] Allocated %.0f MB (regular pages)", (double)alloc_size / (1024*1024));
+        }
+    }
+#endif
     if (!ds->memory) { free(ds); return NULL; }
     return ds;
 }
@@ -842,6 +842,27 @@ extern int rx_save_dataset_cache(rx_dataset *ds, const uint8_t *seed, size_t see
 void rx_init_dataset_cached(rx_dataset *ds, rx_cache *cache, uint32_t start, uint32_t count,
                               int num_threads, int num_physical_cores) {
     if (rx_try_load_dataset_cache(ds, cache->seed, cache->seed_len, start, count)) {
+#ifdef _WIN32
+        HMODULE hKernel32 = GetModuleHandleA("kernel32.dll");
+        typedef BOOL (WINAPI *PFN_PrefetchVirtualMemory)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+        PFN_PrefetchVirtualMemory pPrefetch = (PFN_PrefetchVirtualMemory)GetProcAddress(hKernel32, "PrefetchVirtualMemory");
+        if (pPrefetch) {
+            WIN32_MEMORY_RANGE_ENTRY entry;
+            entry.VirtualAddress = ds->memory;
+            entry.NumberOfBytes = (size_t)RX_DATASET_SIZE;
+            LARGE_INTEGER t0, t1, freq;
+            QueryPerformanceFrequency(&freq);
+            QueryPerformanceCounter(&t0);
+            BOOL ok = pPrefetch(GetCurrentProcess(), 1, &entry, 0);
+            QueryPerformanceCounter(&t1);
+            double dt = (double)(t1.QuadPart - t0.QuadPart) / freq.QuadPart;
+            if (ok) {
+                LOG_INFO("[DATASET] PrefetchVirtualMemory OK (%.1f s)", dt);
+            } else {
+                LOG_WARN("[DATASET] PrefetchVirtualMemory failed (error=%lu)", GetLastError());
+            }
+        }
+#endif
         return;
     }
     rx_init_dataset_internal(ds, cache, start, count, num_threads, num_physical_cores);
@@ -853,10 +874,7 @@ void *rx_get_dataset_memory(rx_dataset *ds) { return ds->memory; }
 void rx_free_dataset(rx_dataset *ds) {
     if (!ds) return;
     if (ds->memory) {
-        if (ds->large_pages)
-            VirtualFree(ds->memory, 0, MEM_RELEASE);
-        else
-            free(ds->memory);
+        VirtualFree(ds->memory, 0, MEM_RELEASE);
     }
     free(ds);
 }
