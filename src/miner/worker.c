@@ -149,6 +149,7 @@ static int build_hashing_blob(stratum_job_t *job, uint8_t *blob, uint32_t nonce)
 
 void worker_run(worker_t *w) {
     rx_vm *vm = (rx_vm *)w->vm;
+    rx_vm *vm2 = (rx_vm *)w->vm2;
     stratum_ctx_t *stratum = w->stratum;
     miner_ctx_t *miner = w->miner;
 
@@ -180,6 +181,10 @@ void worker_run(worker_t *w) {
             rx_vm *refreshed = (rx_vm *)w->vm;
             if (refreshed != vm) {
                 vm = refreshed;
+            }
+            rx_vm *refreshed2 = (rx_vm *)w->vm2;
+            if (refreshed2 != vm2) {
+                vm2 = refreshed2;
             }
         }
         if (!vm) { Sleep(10); continue; }
@@ -308,40 +313,100 @@ void worker_run(worker_t *w) {
             LOG_DEBUG("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
         }
 
-        memcpy(blob + nonce_off, &nonce, 4);
+        if (w->use_dual && vm2) {
+            uint8_t blob2[BLOB_MAX_SIZE];
+            memcpy(blob2, blob, (size_t)blob_len);
+            uint32_t nonce2 = nonce + w->nonce_stride;
+            memcpy(blob + nonce_off, &nonce, 4);
+            memcpy(blob2 + nonce_off, &nonce2, 4);
 
-        uint8_t hash[32];
-        rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+            uint8_t hash1[32], hash2[32];
+            rx_calculate_hash_dual(vm, vm2, blob, (size_t)blob_len, blob2, (size_t)blob_len, hash1, hash2);
 
-        uint32_t hash_val = read_u32_le(hash);
-        if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
-            LOG_DEBUG("[W0] sample: nonce=%u hash_val=%08x target=%08x blob_len=%d",
-                      nonce, hash_val, (uint32_t)current_target, blob_len);
-        }
-        if (hash_val <= (uint32_t)current_target) {
-            char nonce_hex[16];
-            snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
-            char result_hex[65];
-            hex_encode(hash, 32, result_hex);
-
-            char en2_hex[32];
-            int en2_size = saved_en2_size * 2;
-            for (int i = en2_size - 1; i >= 0; i--) {
-                int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
-                en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+            uint32_t hash_val1 = read_u32_le(hash1);
+            uint32_t hash_val2 = read_u32_le(hash2);
+            if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
+                LOG_DEBUG("[W0] sample dual: n1=%u h1=%08x n2=%u h2=%08x target=%08x",
+                          nonce, hash_val1, nonce2, hash_val2, (uint32_t)current_target);
             }
-            en2_hex[en2_size] = '\0';
-            w->extranonce2_counter++;
 
-            LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
-            total_shares++;
+            if (hash_val1 <= (uint32_t)current_target || hash_val2 <= (uint32_t)current_target) {
+                int en2_size = saved_en2_size * 2;
 
-            stratum_submit_share(stratum, current_job_id, nonce_hex,
-                                 result_hex, en2_hex, saved_ntime);
+                if (hash_val1 <= (uint32_t)current_target) {
+                    char nonce_hex[16];
+                    char result_hex[65];
+                    char en2_hex[32];
+                    snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
+                    hex_encode(hash1, 32, result_hex);
+                    for (int i = en2_size - 1; i >= 0; i--) {
+                        int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
+                        en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+                    }
+                    en2_hex[en2_size] = '\0';
+                    w->extranonce2_counter++;
+                    LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
+                    total_shares++;
+                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime);
+                }
+
+                if (hash_val2 <= (uint32_t)current_target) {
+                    char nonce_hex[16];
+                    char result_hex[65];
+                    char en2_hex[32];
+                    snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce2);
+                    hex_encode(hash2, 32, result_hex);
+                    for (int i = en2_size - 1; i >= 0; i--) {
+                        int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
+                        en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+                    }
+                    en2_hex[en2_size] = '\0';
+                    w->extranonce2_counter++;
+                    LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
+                    total_shares++;
+                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime);
+                }
+            }
+
+            nonce += w->nonce_stride * 2;
+            w->hashes += 2;
+        } else {
+            memcpy(blob + nonce_off, &nonce, 4);
+
+            uint8_t hash[32];
+            rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+
+            uint32_t hash_val = read_u32_le(hash);
+            if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
+                LOG_DEBUG("[W0] sample: nonce=%u hash_val=%08x target=%08x blob_len=%d",
+                          nonce, hash_val, (uint32_t)current_target, blob_len);
+            }
+            if (hash_val <= (uint32_t)current_target) {
+                char nonce_hex[16];
+                snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
+                char result_hex[65];
+                hex_encode(hash, 32, result_hex);
+
+                char en2_hex[32];
+                int en2_size = saved_en2_size * 2;
+                for (int i = en2_size - 1; i >= 0; i--) {
+                    int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
+                    en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+                }
+                en2_hex[en2_size] = '\0';
+                w->extranonce2_counter++;
+
+                LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
+                total_shares++;
+
+                stratum_submit_share(stratum, current_job_id, nonce_hex,
+                                     result_hex, en2_hex, saved_ntime);
+            }
+
+            nonce += w->nonce_stride;
+            w->hashes++;
         }
 
-        nonce += w->nonce_stride;
-        w->hashes++;
         w->loop_count++;
 
         if ((w->loop_count & 0xFF) == 0) {

@@ -316,16 +316,11 @@ struct JitCompiler {
     }
 
     void generateProgramEpilogue(rx_program* prog, rx_program_config* pcfg, int loopBeginPos) {
-        // rax = r[readReg2] ^ r[readReg3] (from prologue)
-        // rbp: lo32=mem_ma, hi32=mem_mx (after prologue ror rbp,32)
-        // rdi = dataset memory pointer, rsi = scratchpad
 
-        // 1. Dataset read: r[0..7] ^= dataset[mem_ma & RX_CACHE_LINE_ALIGN_MASK]
-        //    lo32(rbp) = mem_ma after ror
-        emitByte(0x89); emitByte(0xE9);                         // mov ecx, ebp
+        emitByte(0x89); emitByte(0xE9);
         emitByte(0x81); emitByte(0xE1);
-        emit32(0x7FFFFFC0);                                     // and ecx, 0x7FFFFFC0
-        emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);  // xor r8, [rdi+rcx]
+        emit32(0x7FFFFFC0);
+        emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);
         emitByte(0x4C); emitByte(0x33); emitByte(0x4C); emitByte(0x0F); emitByte(0x08);
         emitByte(0x4C); emitByte(0x33); emitByte(0x54); emitByte(0x0F); emitByte(0x10);
         emitByte(0x4C); emitByte(0x33); emitByte(0x5C); emitByte(0x0F); emitByte(0x18);
@@ -334,37 +329,26 @@ struct JitCompiler {
         emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
         emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
 
-        // 2. mem_mx ^= (uint32_t)(r[readReg2] ^ r[readReg3])
-        //    ror rbp,32: lo32=mem_mx, hi32=mem_ma
-        //    xor rbp, rcx where rcx=(uint32_t)rax: lo32^=val, hi32 unchanged
-        //    Result: lo32=new_mem_ma=mem_mx^val, hi32=old_mem_ma
-        emitByte(0x89); emitByte(0xC1);                         // mov ecx, eax
-        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);  // ror rbp, 32
-        emitByte(0x48); emitByte(0x33); emitByte(0xE9);         // xor rbp, rcx
+        emitByte(0x89); emitByte(0xC1);
+        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
+        emitByte(0x48); emitByte(0x33); emitByte(0xE9);
 
-        // 3. Prefetch next dataset line: lo32(rbp) = new_mem_ma (next iter's read addr)
-        emitByte(0x89); emitByte(0xE8);                         // mov eax, ebp
-        emitByte(0x25); emit32(0x7FFFFFC0);                     // and eax, 0x7FFFFFC0
-        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);  // prefetcht1 [rdi+rax]
+        emitByte(0x89); emitByte(0xE8);
+        emitByte(0x25); emit32(0x7FFFFFC0);
+        emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
+        emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x07); emitByte(0x40);
 
-        // 4. Store r[0..7] to scratchpad[spAddr1], then f^e to scratchpad[spAddr0]
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
 
-        // 5. spAddr for next iteration: rax = r[readReg0] ^ r[readReg1]
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
 
-        // 6. Reset spAddr: clear [rsp+0x10] and [rsp+0x18]
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00); // and qword [rsp+0x10], 0
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00); // and qword [rsp+0x18], 0
-
-        // 7. Loop branch
-        emitByte(0x83); emitByte(0xEB); emitByte(0x01);         // sub ebx, 1
+        emitByte(0x83); emitByte(0xEB); emitByte(0x01);
         int jnzPos = pos;
-        emitByte(0x0F); emitByte(0x85); emit32(0);              // jnz loopBeginPos
-        emitByte(0xE9); emit32(0);                              // jmp EPILOGUE_OFFSET
+        emitByte(0x0F); emitByte(0x85); emit32(0);
+        emitByte(0xE9); emit32(0);
 
         {
             int32_t patch = loopBeginPos - (jnzPos + 6);
@@ -996,16 +980,17 @@ struct JitCompiler {
         emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
         emitByte(0x8B); emitByte(0x99); emit32(0x40);
 
-        int outerLoopStart = pos;
-
         emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
         emitByte(0x2D); rel = (constantsPos1 + 0) - (pos + 4); emit32(rel);
-        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
-        rel = (constantsPos1 + 16) - (pos + 4); emit32(rel);
         emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
         rel = (constantsPos1 + 32) - (pos + 4); emit32(rel);
 
+        int outerLoopStart = pos;
+
         emitLoadVmStateSlim(VM1_SAVE);
+
+        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
+        rel = (constantsPos1 + 16) - (pos + 4); emit32(rel);
 
         emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
         emitByte(0x48); emitByte(0x8B); emitByte(0x09);
@@ -1050,19 +1035,12 @@ struct JitCompiler {
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
 
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
-
         emitSaveVmStateSlim(VM1_SAVE);
 
-        emitByte(0x66); emitByte(0x44); emitByte(0x0f); emitByte(0x28);
-        emitByte(0x35); rel = (constantsPos2 + 0) - (pos + 4); emit32(rel);
+        emitLoadVmStateSlim(VM2_SAVE);
+
         emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x35);
         rel = (constantsPos2 + 16) - (pos + 4); emit32(rel);
-        emitByte(0xC5); emitByte(0x79); emitByte(0x28); emitByte(0x3D);
-        rel = (constantsPos2 + 32) - (pos + 4); emit32(rel);
-
-        emitLoadVmStateSlim(VM2_SAVE);
 
         emitByte(0x48); emitByte(0x8B); emitByte(0x8C); emitByte(0x24); emit32(PARAMS_OFF);
         emitByte(0x48); emitByte(0x8B); emitByte(0x49); emitByte(0x08);
@@ -1106,9 +1084,6 @@ struct JitCompiler {
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
-
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
-        emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
 
         emitSaveVmStateSlim(VM2_SAVE);
 

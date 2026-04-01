@@ -8,6 +8,8 @@ typedef struct stratum_ctx stratum_ctx_t;
 typedef struct {
     int id;
     volatile void *vm;
+    volatile void *vm2;
+    int use_dual;
     stratum_ctx_t *stratum;
     miner_ctx_t *miner;
     u64 hashes;

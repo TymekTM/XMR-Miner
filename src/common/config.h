@@ -7,6 +7,10 @@
 #define MAX_WORKER_NAME 64
 #define MAX_POOL_PASS   64
 
+#define MINER_MODE_AUTO   0
+#define MINER_MODE_SINGLE 1
+#define MINER_MODE_DUAL   2
+
 typedef struct {
     char pool_url[MAX_STRATUM_URL];
     int  pool_port;
@@ -15,6 +19,7 @@ typedef struct {
     char password[MAX_POOL_PASS];
     int  threads;
     int  huge_pages;
+    int  mode;
     int  log_level;
     int  verbose;
 } config_t;

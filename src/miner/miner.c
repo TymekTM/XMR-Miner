@@ -2,6 +2,7 @@
 #include "worker.h"
 #include "stratum/stratum.h"
 #include "crypto/randomx/randomx.h"
+#include "common/config.h"
 #include "common/log.h"
 #include "common/cpu.h"
 #include <windows.h>
@@ -9,6 +10,10 @@
 #include <stdlib.h>
 
 #define MAX_CORES 64
+#define MODE_SINGLE 0
+#define MODE_DUAL 1
+
+static int g_best_mode = MODE_SINGLE;
 
 typedef struct {
     int count;
@@ -91,15 +96,17 @@ struct miner_ctx {
     CRITICAL_SECTION cache_lock;
     char current_seed_hex[65];
     int cache_initialized;
+    int mode;
 };
 
-miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores, stratum_ctx_t *stratum) {
+miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores, int mode, stratum_ctx_t *stratum) {
     miner_ctx_t *ctx = (miner_ctx_t *)calloc(1, sizeof(miner_ctx_t));
     if (!ctx) return NULL;
     ctx->num_threads = num_threads;
     ctx->huge_pages = huge_pages;
     ctx->physical_cores = physical_cores;
     ctx->stratum = stratum;
+    ctx->mode = mode;
     ctx->running = 0;
     ctx->cache_initialized = 0;
     InitializeCriticalSection(&ctx->cache_lock);
@@ -132,6 +139,118 @@ static void seed_to_hex(const uint8_t *seed, int seed_len, char *out) {
     for (int i = 0; i < seed_len; i++)
         snprintf(out + i * 2, 3, "%02x", seed[i]);
     out[seed_len * 2] = '\0';
+}
+
+typedef struct {
+    rx_vm *vm1;
+    rx_vm *vm2;
+    int dual;
+    uint32_t seed0;
+} bench_thread_arg;
+
+static DWORD WINAPI bench_thread_entry(LPVOID arg) {
+    bench_thread_arg *a = (bench_thread_arg *)arg;
+    uint8_t in1[32] = {0};
+    uint8_t in2[32] = {0};
+    uint8_t out1[32], out2[32];
+    const int warmup = 2;
+    const int iters = 24;
+
+    memcpy(in1, &a->seed0, sizeof(a->seed0));
+    uint32_t seed2 = a->seed0 ^ 0x9E3779B9u;
+    memcpy(in2, &seed2, sizeof(seed2));
+
+    if (a->dual) {
+        for (int i = 0; i < warmup; i++) {
+            rx_calculate_hash_dual(a->vm1, a->vm2, in1, sizeof(in1), in2, sizeof(in2), out1, out2);
+        }
+        for (int i = 0; i < iters; i++) {
+            rx_calculate_hash_dual(a->vm1, a->vm2, in1, sizeof(in1), in2, sizeof(in2), out1, out2);
+        }
+    } else {
+        for (int i = 0; i < warmup; i++) rx_calculate_hash(a->vm1, in1, sizeof(in1), out1);
+        for (int i = 0; i < iters; i++) rx_calculate_hash(a->vm1, in1, sizeof(in1), out1);
+    }
+
+    return 0;
+}
+
+static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_dataset *dataset) {
+    const int iters = 24;
+    int bench_threads = num_threads;
+    if (bench_threads < 1) bench_threads = 1;
+    if (bench_threads > 16) bench_threads = 16;
+
+    bench_thread_arg *args = (bench_thread_arg *)calloc((size_t)bench_threads, sizeof(bench_thread_arg));
+    HANDLE *threads = (HANDLE *)calloc((size_t)bench_threads, sizeof(HANDLE));
+    if (!args || !threads) {
+        free(args);
+        free(threads);
+        return 0.0;
+    }
+
+    for (int i = 0; i < bench_threads; i++) {
+        args[i].dual = dual;
+        args[i].seed0 = 0xA5A50000u + (uint32_t)i;
+        args[i].vm1 = rx_create_vm(1, 1, 1, cache, dataset);
+        if (!args[i].vm1) {
+            for (int j = 0; j <= i; j++) {
+                if (args[j].vm1) rx_destroy_vm(args[j].vm1);
+                if (args[j].vm2) rx_destroy_vm(args[j].vm2);
+            }
+            free(args);
+            free(threads);
+            return 0.0;
+        }
+        if (dual) {
+            args[i].vm2 = rx_create_vm(1, 1, 1, cache, dataset);
+            if (!args[i].vm2) {
+                for (int j = 0; j <= i; j++) {
+                    if (args[j].vm1) rx_destroy_vm(args[j].vm1);
+                    if (args[j].vm2) rx_destroy_vm(args[j].vm2);
+                }
+                free(args);
+                free(threads);
+                return 0.0;
+            }
+        }
+    }
+
+    LARGE_INTEGER freq, start, end;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&start);
+
+    for (int i = 0; i < bench_threads; i++) {
+        threads[i] = CreateThread(NULL, 0, bench_thread_entry, &args[i], 0, NULL);
+    }
+    WaitForMultipleObjects((DWORD)bench_threads, threads, TRUE, 30000);
+    QueryPerformanceCounter(&end);
+
+    for (int i = 0; i < bench_threads; i++) {
+        if (threads[i]) CloseHandle(threads[i]);
+        if (args[i].vm1) rx_destroy_vm(args[i].vm1);
+        if (args[i].vm2) rx_destroy_vm(args[i].vm2);
+    }
+    free(args);
+    free(threads);
+
+    double dt = (double)(end.QuadPart - start.QuadPart) / (double)freq.QuadPart;
+    if (dt <= 0.0) return 0.0;
+    double hashes = (double)bench_threads * (double)iters * (dual ? 2.0 : 1.0);
+    return hashes / dt;
+}
+
+static int select_best_mode(int num_threads, rx_cache *cache, rx_dataset *dataset) {
+    double single = run_mode_bench(num_threads, 0, cache, dataset);
+    double dual = run_mode_bench(num_threads, 1, cache, dataset);
+
+    LOG_INFO("[BENCH] Single %.0f H/s | Dual %.0f H/s (threads=%d)", single, dual, num_threads);
+    if (dual > single * 1.02) {
+        LOG_INFO("[BENCH] Selected DUAL mode");
+        return MODE_DUAL;
+    }
+    LOG_INFO("[BENCH] Selected SINGLE mode");
+    return MODE_SINGLE;
 }
 
 void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
@@ -173,7 +292,14 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
             ctx->workers[i].vm = NULL;
         }
+        if (ctx->workers[i].vm2) {
+            rx_destroy_vm((rx_vm *)ctx->workers[i].vm2);
+            ctx->workers[i].vm2 = NULL;
+        }
         ctx->workers[i].vm = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
+        if (ctx->workers[i].use_dual) {
+            ctx->workers[i].vm2 = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
+        }
     }
     LeaveCriticalSection(&ctx->cache_lock);
 
@@ -182,7 +308,7 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
 
 void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
     if (worker_id < 0 || worker_id >= ctx->num_threads) return NULL;
-    return ctx->workers[worker_id].vm;
+    return (void *)ctx->workers[worker_id].vm;
 }
 
 int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_len) {
@@ -191,6 +317,10 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     ctx->workers = (worker_t *)calloc(ctx->num_threads, sizeof(worker_t));
     ctx->thread_handles = (HANDLE *)calloc(ctx->num_threads, sizeof(HANDLE));
+    if (!ctx->workers || !ctx->thread_handles) {
+        LOG_ERR("[MINER] Failed to allocate worker structures");
+        return -1;
+    }
 
     const uint8_t *cache_seed = initial_seed;
     int cache_seed_len = initial_seed_len;
@@ -227,9 +357,18 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     rx_init_dataset_cached(ctx->dataset, ctx->cache, 0, 33554432, ctx->num_threads, ctx->physical_cores);
     LOG_INFO("[MINER] Dataset initialized");
 
+    if (ctx->mode == MINER_MODE_SINGLE) g_best_mode = MODE_SINGLE;
+    else if (ctx->mode == MINER_MODE_DUAL) g_best_mode = MODE_DUAL;
+    else g_best_mode = select_best_mode(ctx->num_threads, ctx->cache, ctx->dataset);
+
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].id = i;
         ctx->workers[i].vm = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
+        ctx->workers[i].vm2 = NULL;
+        ctx->workers[i].use_dual = (g_best_mode == MODE_DUAL) ? 1 : 0;
+        if (ctx->workers[i].use_dual) {
+            ctx->workers[i].vm2 = rx_create_vm(1, 1, ctx->huge_pages, ctx->cache, ctx->dataset);
+        }
         ctx->workers[i].stratum = ctx->stratum;
         ctx->workers[i].miner = ctx;
         ctx->workers[i].hashes = 0;
@@ -299,6 +438,10 @@ void miner_stop(miner_ctx_t *ctx) {
         if (ctx->workers[i].vm) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
             ctx->workers[i].vm = NULL;
+        }
+        if (ctx->workers[i].vm2) {
+            rx_destroy_vm((rx_vm *)ctx->workers[i].vm2);
+            ctx->workers[i].vm2 = NULL;
         }
     }
     if (total > 0) {
