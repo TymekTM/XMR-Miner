@@ -336,7 +336,6 @@ struct JitCompiler {
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x0C); emitByte(0x07);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x07); emitByte(0x40);
 
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
