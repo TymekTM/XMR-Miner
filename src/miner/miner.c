@@ -367,6 +367,7 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
             ctx->workers[i].vm2 = NULL;
         }
         int flags = ctx->workers[i].current_rx_flags ? ctx->workers[i].current_rx_flags : RX_FLAG_DEFAULT;
+        flags |= RX_FLAG_JIT;
         ctx->workers[i].vm = rx_create_vm(flags, ctx->cache, ctx->dataset);
         if (ctx->mode == MODE_DUAL) {
             ctx->workers[i].vm2 = rx_create_vm(flags, ctx->cache, ctx->dataset);
@@ -394,9 +395,9 @@ void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm2);
             ctx->workers[i].vm2 = NULL;
         }
-        ctx->workers[i].vm = rx_create_vm(rx_flags, ctx->cache, ctx->dataset);
+        ctx->workers[i].vm = rx_create_vm(RX_FLAG_JIT | rx_flags, ctx->cache, ctx->dataset);
         if (ctx->workers[i].use_dual) {
-            ctx->workers[i].vm2 = rx_create_vm(rx_flags, ctx->cache, ctx->dataset);
+            ctx->workers[i].vm2 = rx_create_vm(RX_FLAG_JIT | rx_flags, ctx->cache, ctx->dataset);
         }
     }
     LeaveCriticalSection(&ctx->cache_lock);
@@ -455,11 +456,11 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].id = i;
-        ctx->workers[i].vm = rx_create_vm(RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
+        ctx->workers[i].vm = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
         ctx->workers[i].vm2 = NULL;
         ctx->workers[i].use_dual = (g_best_mode == MODE_DUAL) ? 1 : 0;
         if (ctx->workers[i].use_dual) {
-            ctx->workers[i].vm2 = rx_create_vm(RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
+            ctx->workers[i].vm2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
         }
         ctx->workers[i].stratum = ctx->stratum;
         ctx->workers[i].miner = ctx;
