@@ -193,3 +193,19 @@ target_link_libraries(bench_memcheck ws2_32 psapi)
 add_executable(bench_pool_verify tests/bench_pool_verify.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
 target_include_directories(bench_pool_verify PRIVATE src)
 target_link_libraries(bench_pool_verify ws2_32)
+
+add_executable(bench_randomx_vector tests/bench_randomx_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_randomx_vector PRIVATE src)
+target_link_libraries(bench_randomx_vector ws2_32)
+
+add_executable(bench_dataset_vector tests/bench_dataset_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_dataset_vector PRIVATE src)
+target_link_libraries(bench_dataset_vector ws2_32)
+
+add_executable(test_hash_vector tests/test_hash_vector.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(test_hash_vector PRIVATE src)
+target_link_libraries(test_hash_vector ws2_32)
+
+add_executable(test_hash_debug tests/test_hash_debug.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(test_hash_debug PRIVATE src)
+target_link_libraries(test_hash_debug ws2_32)

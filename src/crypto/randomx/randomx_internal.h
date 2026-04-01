@@ -31,12 +31,13 @@
 #define RX_DATASET_BASE_SIZE  2147483648ULL
 #define RX_DATASET_EXTRA_SIZE 33554368ULL
 #define RX_DATASET_SIZE       (RX_DATASET_BASE_SIZE + RX_DATASET_EXTRA_SIZE)
-#define RX_DATASET_EXTRA_ITEMS (RX_DATASET_EXTRA_SIZE / RX_CACHE_LINE_SIZE)
-#define RX_DATASET_ITEMS      (RX_DATASET_BASE_SIZE / RX_CACHE_LINE_SIZE)
 
+#define RX_PROGRAM_SIZE_V1    256
+#define RX_PROGRAM_SIZE_V2    384
 #define RX_PROGRAM_SIZE       256
 #define RX_PROGRAM_ITERATIONS 2048
 #define RX_PROGRAM_COUNT      8
+#define RX_PROGRAM_MAX_SIZE   384
 
 #define RX_SCRATCHPAD_L3      2097152
 #define RX_SCRATCHPAD_L2      262144
@@ -307,7 +308,7 @@ typedef struct {
 
 typedef struct {
     uint64_t entropyBuffer[16];
-    rx_instruction programBuffer[RX_PROGRAM_SIZE];
+    rx_instruction programBuffer[RX_PROGRAM_MAX_SIZE];
 } rx_program;
 
 typedef struct {
@@ -381,6 +382,7 @@ typedef struct rx_vm {
     int lightClient;
     int useJit;
     int large_pages;
+    int flagV2;
     rx_jit *jit;
     uint8_t datasetItem[64];
     RX_ALIGNAS(16) uint64_t tempHash[8];
@@ -417,7 +419,6 @@ static inline int is_zero_or_power_of_2(uint32_t x) {
 
 void rx_init_cache_internal(rx_cache *cache, const void *key, size_t key_size);
 void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads, int num_physical_cores);
-void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number);
 void generate_superscalar(rx_superscalar_program *prog, blake2_gen *gen);
 void ss_jit_compile(rx_superscalar_program *prog, const uint64_t *reciprocals);
 void ss_jit_free(rx_superscalar_program *prog);

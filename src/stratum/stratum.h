@@ -45,7 +45,8 @@ void stratum_disconnect(stratum_ctx_t *ctx);
 int stratum_login(stratum_ctx_t *ctx);
 int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
                          const char *nonce_hex, const char *result_hex,
-                         const char *en2_hex, const char *ntime_hex);
+                         const char *en2_hex, const char *ntime_hex,
+                         const char *commitment_hex);
 stratum_job_t *stratum_get_job(stratum_ctx_t *ctx);
 void stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out);
 void stratum_free_job_copy(stratum_job_t *job);

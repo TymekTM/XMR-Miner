@@ -25,6 +25,12 @@ static void hex_encode(const uint8_t *data, int len, char *out) {
     out[len * 2] = '\0';
 }
 
+static void hex_encode_rev(const uint8_t *data, int len, char *out) {
+    for (int i = 0; i < len; i++)
+        snprintf(out + i * 2, 3, "%02x", data[len - 1 - i]);
+    out[len * 2] = '\0';
+}
+
 static int hex_decode_seed(const char *hex, uint8_t *out) {
     int hex_len = (int)strlen(hex);
     if (hex_len != 64) return -1;
@@ -33,6 +39,12 @@ static int hex_decode_seed(const char *hex, uint8_t *out) {
         out[i] = (uint8_t)strtoul(h, NULL, 16);
     }
     return 0;
+}
+
+static int algo_to_rx_flags(const char *algo) {
+    if (algo && (strcmp(algo, "rx/1") == 0 || strcmp(algo, "rx/v2") == 0))
+        return RX_FLAG_V2;
+    return RX_FLAG_DEFAULT;
 }
 
 static int encode_varint(uint64_t val, uint8_t *out) {
@@ -63,6 +75,25 @@ static int get_monero_nonce_offset(const uint8_t *blob, int blob_len) {
     int ts_len = decode_varint(blob + 2, blob_len - 2);
     if (ts_len < 1) return -1;
     return 2 + ts_len + 32;
+}
+
+static void format_nonce_hex(uint32_t nonce, int is_monero, char *out, size_t out_size) {
+    if (is_monero) {
+        snprintf(out, out_size, "%02x%02x%02x%02x",
+                 (unsigned)(nonce & 0xFF),
+                 (unsigned)((nonce >> 8) & 0xFF),
+                 (unsigned)((nonce >> 16) & 0xFF),
+                 (unsigned)((nonce >> 24) & 0xFF));
+    } else {
+        snprintf(out, out_size, "%08x", nonce);
+    }
+}
+
+static int share_meets_target(const uint8_t *hash, uint64_t target, int is_monero) {
+    if (is_monero) {
+        return read_u64_le(hash + 24) <= target;
+    }
+    return read_u32_le(hash) <= (uint32_t)target;
 }
 
 static int build_hashing_blob(stratum_job_t *job, uint8_t *blob, uint32_t nonce) {
@@ -237,12 +268,29 @@ void worker_run(worker_t *w) {
         if (strcmp(job->job_id, current_job_id) != 0) {
             is_monero_proto = (proto == STRATUM_PROTO_MONERO);
 
+            int new_rx_flags = algo_to_rx_flags(job->algo);
+            if (new_rx_flags != w->current_rx_flags) {
+                LOG_INFO("[W%d] Algo changed: %s -> flags=0x%x (was 0x%x), recreating VM...",
+                         w->id, job->algo ? job->algo : "(none)", new_rx_flags, w->current_rx_flags);
+                w->current_rx_flags = new_rx_flags;
+                strncpy(w->current_algo, job->algo ? job->algo : "", sizeof(w->current_algo) - 1);
+                if (w->id == 0) {
+                    miner_recreate_vms(miner, new_rx_flags);
+                }
+                Sleep(100);
+                vm = (rx_vm *)miner_get_vm(miner, w->id);
+                w->vm = vm;
+                if (w->use_dual) {
+                    w->vm2 = (rx_vm *)miner_get_vm(miner, w->id);
+                }
+            }
+
             if (is_monero_proto) {
                 int hex_len = (int)strlen(job->blob);
                 blob_len = hex_len / 2;
                 if (blob_len > BLOB_MAX_SIZE) blob_len = BLOB_MAX_SIZE;
                 hex_decode(job->blob, blob, blob_len);
-                int nonce_off = get_monero_nonce_offset(blob, blob_len);
+                nonce_off = get_monero_nonce_offset(blob, blob_len);
                 if (nonce_off < 0 || nonce_off + 4 > blob_len) {
                     LOG_ERR("[W%d] Bad blob format: len=%d nonce_off=%d", w->id, blob_len, nonce_off);
                     Sleep(500);
@@ -323,22 +371,30 @@ void worker_run(worker_t *w) {
             uint8_t hash1[32], hash2[32];
             rx_calculate_hash_dual(vm, vm2, blob, (size_t)blob_len, blob2, (size_t)blob_len, hash1, hash2);
 
-            uint32_t hash_val1 = read_u32_le(hash1);
-            uint32_t hash_val2 = read_u32_le(hash2);
-            if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
-                LOG_DEBUG("[W0] sample dual: n1=%u h1=%08x n2=%u h2=%08x target=%08x",
-                          nonce, hash_val1, nonce2, hash_val2, (uint32_t)current_target);
+            uint8_t commit1[32], commit2[32];
+            if (is_monero_proto) {
+                rx_calculate_commitment(blob, (size_t)blob_len, hash1, commit1);
+                rx_calculate_commitment(blob2, (size_t)blob_len, hash2, commit2);
             }
 
-            if (hash_val1 <= (uint32_t)current_target || hash_val2 <= (uint32_t)current_target) {
+            int ok1 = share_meets_target(is_monero_proto ? hash1 : hash1, current_target, is_monero_proto);
+            int ok2 = share_meets_target(is_monero_proto ? hash2 : hash2, current_target, is_monero_proto);
+            if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
+                LOG_DEBUG("[W0] sample dual: n1=%u h1=%08x n2=%u h2=%08x target=%08x",
+                          nonce, read_u32_le(hash1), nonce2, read_u32_le(hash2), (uint32_t)current_target);
+            }
+
+            if (ok1 || ok2) {
                 int en2_size = saved_en2_size * 2;
 
-                if (hash_val1 <= (uint32_t)current_target) {
+                if (ok1) {
                     char nonce_hex[16];
                     char result_hex[65];
+                    char commit_hex[65];
                     char en2_hex[32];
-                    snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
+                    format_nonce_hex(nonce, is_monero_proto, nonce_hex, sizeof(nonce_hex));
                     hex_encode(hash1, 32, result_hex);
+                    if (is_monero_proto) hex_encode(commit1, 32, commit_hex);
                     for (int i = en2_size - 1; i >= 0; i--) {
                         int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
                         en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
@@ -347,15 +403,21 @@ void worker_run(worker_t *w) {
                     w->extranonce2_counter++;
                     LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
                     total_shares++;
-                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime);
+                    if (is_monero_proto) {
+                        stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, NULL, NULL, commit_hex);
+                    } else {
+                        stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime, NULL);
+                    }
                 }
 
-                if (hash_val2 <= (uint32_t)current_target) {
+                if (ok2) {
                     char nonce_hex[16];
                     char result_hex[65];
+                    char commit_hex[65];
                     char en2_hex[32];
-                    snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce2);
+                    format_nonce_hex(nonce2, is_monero_proto, nonce_hex, sizeof(nonce_hex));
                     hex_encode(hash2, 32, result_hex);
+                    if (is_monero_proto) hex_encode(commit2, 32, commit_hex);
                     for (int i = en2_size - 1; i >= 0; i--) {
                         int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
                         en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
@@ -364,7 +426,11 @@ void worker_run(worker_t *w) {
                     w->extranonce2_counter++;
                     LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
                     total_shares++;
-                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime);
+                    if (is_monero_proto) {
+                        stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, NULL, NULL, commit_hex);
+                    } else {
+                        stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime, NULL);
+                    }
                 }
             }
 
@@ -376,14 +442,19 @@ void worker_run(worker_t *w) {
             uint8_t hash[32];
             rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
 
-            uint32_t hash_val = read_u32_le(hash);
+            uint8_t commitment[32];
+            if (is_monero_proto) {
+                rx_calculate_commitment(blob, (size_t)blob_len, hash, commitment);
+            }
+
+            int ok = share_meets_target(hash, current_target, is_monero_proto);
             if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
                 LOG_DEBUG("[W0] sample: nonce=%u hash_val=%08x target=%08x blob_len=%d",
-                          nonce, hash_val, (uint32_t)current_target, blob_len);
+                          nonce, read_u32_le(hash), (uint32_t)current_target, blob_len);
             }
-            if (hash_val <= (uint32_t)current_target) {
+            if (ok) {
                 char nonce_hex[16];
-                snprintf(nonce_hex, sizeof(nonce_hex), "%08x", nonce);
+                format_nonce_hex(nonce, is_monero_proto, nonce_hex, sizeof(nonce_hex));
                 char result_hex[65];
                 hex_encode(hash, 32, result_hex);
 
@@ -399,8 +470,14 @@ void worker_run(worker_t *w) {
                 LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
                 total_shares++;
 
-                stratum_submit_share(stratum, current_job_id, nonce_hex,
-                                     result_hex, en2_hex, saved_ntime);
+                if (is_monero_proto) {
+                    char commit_hex[65];
+                    hex_encode(commitment, 32, commit_hex);
+                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, NULL, NULL, commit_hex);
+                } else {
+                    stratum_submit_share(stratum, current_job_id, nonce_hex,
+                                         result_hex, en2_hex, saved_ntime, NULL);
+                }
             }
 
             nonce += w->nonce_stride;

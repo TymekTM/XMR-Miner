@@ -22,6 +22,7 @@ struct stratum_ctx {
     int extranonce2_size;
     char send_buf[STRATUM_BUF_SIZE];
     char recv_buf[STRATUM_BUF_SIZE];
+    char line_buf[STRATUM_BUF_SIZE];
     int recv_len;
     stratum_job_t job;
     CRITICAL_SECTION lock;
@@ -55,12 +56,18 @@ static char *recv_line(stratum_ctx_t *ctx) {
     char *end = ctx->recv_buf + ctx->recv_len;
     char *nl = memchr(start, '\n', end - start);
     if (!nl) return NULL;
-    *nl = '\0';
+
     int line_len = (int)(nl - start);
+    if (line_len >= STRATUM_BUF_SIZE) line_len = STRATUM_BUF_SIZE - 1;
+
+    memcpy(ctx->line_buf, start, (size_t)line_len);
+    ctx->line_buf[line_len] = '\0';
+
     ctx->recv_len -= line_len + 1;
     if (ctx->recv_len > 0)
         memmove(ctx->recv_buf, nl + 1, ctx->recv_len);
-    return start;
+
+    return ctx->line_buf;
 }
 
 static int recv_more(stratum_ctx_t *ctx) {
@@ -91,10 +98,17 @@ static uint64_t parse_target_le(const char *hex) {
         char h[3] = { hex[i * 2], hex[i * 2 + 1], 0 };
         buf[i] = (uint8_t)strtoul(h, NULL, 16);
     }
-    return (uint64_t)buf[0] | ((uint64_t)buf[1] << 8) |
-           ((uint64_t)buf[2] << 16) | ((uint64_t)buf[3] << 24) |
-           ((uint64_t)buf[4] << 32) | ((uint64_t)buf[5] << 40) |
-           ((uint64_t)buf[6] << 48) | ((uint64_t)buf[7] << 56);
+
+    if (bytes <= 4) {
+        uint32_t target = read_u32_le(buf);
+        if (target == 0) return 0;
+
+        uint64_t base = 0xFFFFFFFFULL / (uint64_t)target;
+        if (base == 0) base = 1;
+        return 0xFFFFFFFFFFFFFFFFULL / base;
+    }
+
+    return read_u64_le(buf);
 }
 
 static void free_job_fields(stratum_job_t *job) {
@@ -323,7 +337,11 @@ void stratum_disconnect(stratum_ctx_t *ctx) {
 
 static int try_monero_login(stratum_ctx_t *ctx) {
     char user[256];
-    snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
+    if (ctx->cfg.worker_name && ctx->cfg.worker_name[0]) {
+        snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
+    } else {
+        snprintf(user, sizeof(user), "%s", ctx->cfg.wallet);
+    }
 
     char msg[1024];
     int id = InterlockedIncrement(&ctx->id_counter) - 1;
@@ -485,18 +503,42 @@ int stratum_login(stratum_ctx_t *ctx) {
 
 int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
                          const char *nonce_hex, const char *result_hex,
-                         const char *en2_hex, const char *ntime_hex) {
+                         const char *en2_hex, const char *ntime_hex,
+                         const char *commitment_hex) {
     char msg[2048];
     int id = InterlockedIncrement(&ctx->id_counter) - 1;
 
     if (ctx->protocol == STRATUM_PROTO_MONERO) {
-        snprintf(msg, sizeof(msg),
-            "{\"id\":%d,\"method\":\"submit\",\"params\":"
-            "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\"}}",
-            id, ctx->session_id, job_id, nonce_hex, result_hex);
+        if (commitment_hex && commitment_hex[0]) {
+            if (ctx->job.algo && ctx->job.algo[0]) {
+                snprintf(msg, sizeof(msg),
+                    "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                    "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\",\"commitment\":\"%s\"}}",
+                    id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo, commitment_hex);
+            } else {
+                snprintf(msg, sizeof(msg),
+                    "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                    "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"commitment\":\"%s\"}}",
+                    id, ctx->session_id, job_id, nonce_hex, result_hex, commitment_hex);
+            }
+        } else if (ctx->job.algo && ctx->job.algo[0]) {
+            snprintf(msg, sizeof(msg),
+                "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\"}}",
+                id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo);
+        } else {
+            snprintf(msg, sizeof(msg),
+                "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\"}}",
+                id, ctx->session_id, job_id, nonce_hex, result_hex);
+        }
     } else {
         char user[256];
-        snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
+        if (ctx->cfg.worker_name && ctx->cfg.worker_name[0]) {
+            snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
+        } else {
+            snprintf(user, sizeof(user), "%s", ctx->cfg.wallet);
+        }
         snprintf(msg, sizeof(msg),
             "{\"id\":%d,\"method\":\"mining.submit\",\"params\":"
             "[\"%s\",\"%s\",\"%s\",\"%s\",\"%s\"]}",

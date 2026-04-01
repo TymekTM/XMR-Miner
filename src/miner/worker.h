@@ -20,6 +20,8 @@ typedef struct {
     uint32_t loop_count;
     uint64_t extranonce2_counter;
     char initial_seed[65];
+    int current_rx_flags;
+    char current_algo[32];
 } worker_t;
 
 void worker_run(worker_t *w);

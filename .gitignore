@@ -68,3 +68,4 @@ nul
 
 # Mining config (contains wallet)
 mining.conf
+/tools/xmrig-win64

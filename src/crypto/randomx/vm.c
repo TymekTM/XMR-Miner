@@ -1,5 +1,6 @@
 #include "randomx_internal.h"
 #include "common/log.h"
+#include "crypto/blake2/blake2b.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -34,12 +35,12 @@ static inline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
 
 static uint64_t rx_zero_val = 0;
 
-void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_SIZE],
+void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_MAX_SIZE],
                               uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a) {
     int reg_usage[RX_REGISTERS_COUNT];
     for (int i = 0; i < RX_REGISTERS_COUNT; i++) reg_usage[i] = -1;
 
-    for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
+    for (unsigned i = 0; i < RX_PROGRAM_MAX_SIZE; i++) {
         rx_instruction *instr = &prog->programBuffer[i];
         rx_bytecode *ibc = &bc[i];
         int opcode = instr->opcode;
@@ -453,7 +454,8 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
     }
     memset(r, 0, sizeof(r));
 
-    rx_bytecode bc[RX_PROGRAM_SIZE];
+    rx_bytecode bc[RX_PROGRAM_MAX_SIZE];
+    int progSize = vm->flagV2 ? RX_PROGRAM_SIZE_V2 : RX_PROGRAM_SIZE_V1;
     compile_program(&vm->program, bc, r, f, e, a);
 
     uint32_t spAddr0 = (uint32_t)vm->mem.mx_ma;
@@ -511,7 +513,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
             e[3] = rx_or_f128(rx_and_f128(raw3, fdiv_mm), fdiv_em);
         }
 
-        for (int pc = 0; pc < RX_PROGRAM_SIZE; pc++) {
+        for (int pc = 0; pc < progSize; pc++) {
             rx_bytecode *ibc = &bc[pc];
             switch (ibc->type) {
             case RX_OP_IADD_RS:
@@ -622,7 +624,9 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_CFROUND: {
                 uint64_t isrc_val = rx_rotr(*ibc->isrc, (unsigned int)ibc->imm);
-                rx_set_rounding_mode((uint32_t)(isrc_val & 3));
+                if (!vm->flagV2 || (isrc_val & 60) == 0) {
+                    rx_set_rounding_mode((uint32_t)(isrc_val & 3));
+                }
                 break;
             }
             case RX_OP_ISTORE: {
@@ -637,9 +641,14 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
         }
 
         uint64_t readPtr = vm->datasetOffset + (mem_ma & RX_CACHE_LINE_ALIGN_MASK);
-        mem_mx ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
+        if (vm->flagV2) {
+            mem_ma ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
+        } else {
+            mem_mx ^= r[vm->config.readReg2] ^ r[vm->config.readReg3];
+        }
 
-        uint64_t prefetchAddr = vm->datasetOffset + (mem_mx & RX_CACHE_LINE_ALIGN_MASK);
+        uint32_t prefetchReg = vm->flagV2 ? mem_ma : mem_mx;
+        uint64_t prefetchAddr = vm->datasetOffset + (prefetchReg & RX_CACHE_LINE_ALIGN_MASK);
         _mm_prefetch((const char *)(mem + prefetchAddr), _MM_HINT_T0);
         _mm_prefetch((const char *)(mem + prefetchAddr) + 64, _MM_HINT_T2);
 
@@ -679,10 +688,26 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
             _mm_storeu_si128((__m128i *)(sp1s + 6), _mm_loadu_si128((__m128i *)(r + 6)));
         }
 
-        f[0] = rx_xor_f128(f[0], e[0]);
-        f[1] = rx_xor_f128(f[1], e[1]);
-        f[2] = rx_xor_f128(f[2], e[2]);
-        f[3] = rx_xor_f128(f[3], e[3]);
+        if (vm->flagV2) {
+            rx_vec_i128 freg[RX_REG_FLT_COUNT];
+            rx_vec_i128 ekey;
+            for (int i = 0; i < RX_REG_FLT_COUNT; i++)
+                freg[i] = rx_cast_f2i(f[i]);
+            for (int i = 0; i < RX_REG_FLT_COUNT; i++) {
+                ekey = rx_cast_f2i(e[i]);
+                freg[0] = _mm_aesenc_si128(freg[0], ekey);
+                freg[1] = _mm_aesdec_si128(freg[1], ekey);
+                freg[2] = _mm_aesenc_si128(freg[2], ekey);
+                freg[3] = _mm_aesdec_si128(freg[3], ekey);
+            }
+            for (int i = 0; i < RX_REG_FLT_COUNT; i++)
+                f[i] = rx_cast_i2f(freg[i]);
+        } else {
+            f[0] = rx_xor_f128(f[0], e[0]);
+            f[1] = rx_xor_f128(f[1], e[1]);
+            f[2] = rx_xor_f128(f[2], e[2]);
+            f[3] = rx_xor_f128(f[3], e[3]);
+        }
 
         rx_store_f128((double *)(sp + spAddr0), f[0]);
         rx_store_f128((double *)(sp + spAddr0 + 16), f[1]);
@@ -856,12 +881,15 @@ void rx_free_dataset(rx_dataset *ds) {
     free(ds);
 }
 
-rx_vm *rx_create_vm(int full_mem, int use_jit, int large_pages, rx_cache *cache, rx_dataset *dataset) {
+rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     rx_vm *vm = (rx_vm *)calloc(1, sizeof(rx_vm));
     if (!vm) return NULL;
-    vm->fullMem = full_mem;
+    int use_jit = (flags & RX_FLAG_JIT) != 0;
+    int large_pages = 0;
+    vm->fullMem = (dataset != NULL) ? 1 : 0;
     vm->useJit = use_jit;
     vm->lightClient = (!dataset && cache) ? 1 : 0;
+    vm->flagV2 = (flags & RX_FLAG_V2) != 0;
     vm->cachePtr = cache;
     vm->datasetPtr = dataset;
     if (dataset) vm->mem.memory = dataset->memory;
@@ -974,4 +1002,12 @@ void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2, const void *input1, size_t i
     rx_vm_get_final_result(vm2, output2);
     
     _mm_setcsr(saved_mxcsr);
+}
+
+void rx_calculate_commitment(const void *input, size_t input_size, const void *hash_in, void *com_out) {
+    blake2b_state state;
+    blake2b_init(&state, RX_HASH_SIZE);
+    blake2b_update(&state, input, input_size);
+    blake2b_update(&state, hash_in, RX_HASH_SIZE);
+    blake2b_final(&state, com_out, RX_HASH_SIZE);
 }
