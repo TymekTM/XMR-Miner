@@ -6,14 +6,52 @@
 #include "common/log.h"
 #include "common/cpu.h"
 #include <windows.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
 #define MAX_CORES 64
 #define MODE_SINGLE 0
 #define MODE_DUAL 1
+#define MODE_CACHE_MAX_THREADS 128
+#define MODE_CACHE_FILE "mode_cache.csv"
 
 static int g_best_mode = MODE_SINGLE;
+static int g_mode_cache_loaded = 0;
+static int g_mode_cache[MODE_CACHE_MAX_THREADS + 1];
+
+static void mode_cache_load(void) {
+    if (g_mode_cache_loaded) return;
+    for (int i = 0; i <= MODE_CACHE_MAX_THREADS; i++) g_mode_cache[i] = -1;
+
+    FILE *f = fopen(MODE_CACHE_FILE, "r");
+    if (!f) {
+        g_mode_cache_loaded = 1;
+        return;
+    }
+
+    int threads = 0;
+    int mode = 0;
+    while (fscanf(f, "%d,%d", &threads, &mode) == 2) {
+        if (threads >= 1 && threads <= MODE_CACHE_MAX_THREADS && (mode == MODE_SINGLE || mode == MODE_DUAL)) {
+            g_mode_cache[threads] = mode;
+        }
+    }
+    fclose(f);
+    g_mode_cache_loaded = 1;
+}
+
+static void mode_cache_save(void) {
+    FILE *f = fopen(MODE_CACHE_FILE, "w");
+    if (!f) return;
+
+    for (int t = 1; t <= MODE_CACHE_MAX_THREADS; t++) {
+        if (g_mode_cache[t] == MODE_SINGLE || g_mode_cache[t] == MODE_DUAL) {
+            fprintf(f, "%d,%d\n", t, g_mode_cache[t]);
+        }
+    }
+    fclose(f);
+}
 
 typedef struct {
     int count;
@@ -241,15 +279,33 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
 }
 
 static int select_best_mode(int num_threads, rx_cache *cache, rx_dataset *dataset) {
+    mode_cache_load();
+    if (num_threads >= 1 && num_threads <= MODE_CACHE_MAX_THREADS) {
+        int cached = g_mode_cache[num_threads];
+        if (cached == MODE_SINGLE || cached == MODE_DUAL) {
+            LOG_INFO("[BENCH] Using cached mode for %d threads: %s",
+                num_threads, cached == MODE_DUAL ? "dual" : "single");
+            return cached;
+        }
+    }
+
     double single = run_mode_bench(num_threads, 0, cache, dataset);
     double dual = run_mode_bench(num_threads, 1, cache, dataset);
 
     LOG_INFO("[BENCH] Single %.0f H/s | Dual %.0f H/s (threads=%d)", single, dual, num_threads);
     if (dual > single * 1.02) {
         LOG_INFO("[BENCH] Selected DUAL mode");
+        if (num_threads >= 1 && num_threads <= MODE_CACHE_MAX_THREADS) {
+            g_mode_cache[num_threads] = MODE_DUAL;
+            mode_cache_save();
+        }
         return MODE_DUAL;
     }
     LOG_INFO("[BENCH] Selected SINGLE mode");
+    if (num_threads >= 1 && num_threads <= MODE_CACHE_MAX_THREADS) {
+        g_mode_cache[num_threads] = MODE_SINGLE;
+        mode_cache_save();
+    }
     return MODE_SINGLE;
 }
 
