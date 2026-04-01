@@ -803,27 +803,10 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
 
     size_t alloc_size = (size_t)RX_DATASET_SIZE;
 #ifdef _WIN32
-    static int lock_pages_tried = 0;
-    if (!lock_pages_tried) {
-        lock_pages_tried = 1;
-        if (enable_lock_pages_privilege()) {
-            LOG_INFO("[DATASET] Lock Pages in Memory privilege enabled");
-        }
-    }
-    size_t large_page_min = 2097152;
-    if ((alloc_size % large_page_min) != 0) {
-        alloc_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
-    }
-    ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
+    LOG_INFO("[DATASET] Using regular pages");
+    ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (ds->memory) {
-        ds->large_pages = 1;
-        LOG_INFO("[DATASET] Allocated %.0f MB with 2MB huge pages", (double)alloc_size / (1024*1024));
-    } else {
-        LOG_WARN("[DATASET] Huge pages failed, using regular pages");
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        if (ds->memory) {
-            LOG_INFO("[DATASET] Allocated %.0f MB (regular pages)", (double)alloc_size / (1024*1024));
-        }
+        LOG_INFO("[DATASET] Allocated %.0f MB (regular pages)", (double)alloc_size / (1024*1024));
     }
 #endif
     if (!ds->memory) { free(ds); return NULL; }
