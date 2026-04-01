@@ -25,6 +25,10 @@ void rx_free_dataset(rx_dataset *ds);
 rx_vm *rx_create_vm(int full_mem, int use_jit, int large_pages, rx_cache *cache, rx_dataset *dataset);
 void rx_destroy_vm(rx_vm *vm);
 void rx_calculate_hash(rx_vm *vm, const void *input, size_t input_size, void *output);
+void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2,
+    const void *input1, size_t input1_size,
+    const void *input2, size_t input2_size,
+    void *output1, void *output2);
 void rx_calculate_hash_first(rx_vm *vm, const void *input, size_t input_size);
 void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input_size, void *output);
 void rx_calculate_hash_last(rx_vm *vm, void *output);

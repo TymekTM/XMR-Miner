@@ -231,6 +231,14 @@ add_executable(test_dual_minimal tests/test_dual_minimal.c src/crypto/blake2/bla
 target_include_directories(test_dual_minimal PRIVATE src)
 target_link_libraries(test_dual_minimal ws2_32)
 
+add_executable(bench_mt_dual tests/bench_mt_dual.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_mt_dual PRIVATE src)
+target_link_libraries(bench_mt_dual ws2_32)
+
+add_executable(bench_unified tests/bench_unified.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
+target_include_directories(bench_unified PRIVATE src)
+target_link_libraries(bench_unified ws2_32)
+
 add_executable(bench_three_modes tests/bench_three_modes.c src/crypto/blake2/blake2b.c src/crypto/blake2/blake2_generator.c src/crypto/aes/aes_ni.c src/crypto/argon2/argon2.c src/crypto/keccak/keccak.c ${RANDOMX_SOURCES} src/common/log.c src/common/cpu.c)
 target_include_directories(bench_three_modes PRIVATE src)
 target_link_libraries(bench_three_modes ws2_32)
