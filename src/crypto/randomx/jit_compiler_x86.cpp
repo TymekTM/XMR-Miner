@@ -364,10 +364,15 @@ struct JitCompiler {
         int pos = 0;
 
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
-
         pos += PROLOGUE_SIZE;
 
+        code[pos++] = 0x44; code[pos++] = 0x89; code[pos++] = 0xC2;
+        code[pos++] = 0x41; code[pos++] = 0x81; code[pos++] = 0xE2;
+        code[pos++] = 0xC0; code[pos++] = 0xFF; code[pos++] = 0xFF; code[pos++] = 0x7F;
+        code[pos++] = 0x41; code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x37;
+
         memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
+        int firstLoadStart = pos;
         pos += FIRST_LOAD_SIZE;
 
         pos = ((pos + 63) & ~63);
@@ -402,7 +407,7 @@ struct JitCompiler {
         rel = (constantsPos + 32) - (movapd15_patch + 4);
         memcpy(code + movapd15_patch, &rel, 4);
 
-        int jmpImulPos = PROLOGUE_SIZE + FIRST_LOAD_SIZE - 4;
+        int jmpImulPos = firstLoadStart + FIRST_LOAD_SIZE - 4;
         rel = imulRcpPos - (jmpImulPos + 4);
         memcpy(code + jmpImulPos, &rel, 4);
 
@@ -563,7 +568,6 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
-        memset(code, 0x90, RX_TOTAL_CODE_SIZE);
         pos = 0;
 
         // Prologue: set up registers for light mode
@@ -615,7 +619,13 @@ struct JitCompiler {
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
         pos += PROLOGUE_SIZE;
 
+        code[pos++] = 0x44; code[pos++] = 0x89; code[pos++] = 0xC2;
+        code[pos++] = 0x41; code[pos++] = 0x81; code[pos++] = 0xE2;
+        code[pos++] = 0xC0; code[pos++] = 0xFF; code[pos++] = 0xFF; code[pos++] = 0x7F;
+        code[pos++] = 0x41; code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x37;
+
         memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
+        int firstLoadStart = pos;
         pos += FIRST_LOAD_SIZE;
 
         pos = ((pos + 63) & ~63);
@@ -648,7 +658,7 @@ struct JitCompiler {
         rel = (constantsPos + 32) - (movapd15_patch + 4);
         memcpy(code + movapd15_patch, &rel, 4);
 
-        int jmpImulPos = PROLOGUE_SIZE + FIRST_LOAD_SIZE - 4;
+        int jmpImulPos = firstLoadStart + FIRST_LOAD_SIZE - 4;
         rel = imulRcpPos - (jmpImulPos + 4);
         memcpy(code + jmpImulPos, &rel, 4);
 
@@ -854,9 +864,9 @@ struct JitCompiler {
     }
 
     void generateProgramDualInterleaved(rx_program* prog1, rx_program_config* pcfg1,
-                                        rx_program* prog2, rx_program_config* pcfg2) {
+                                         rx_program* prog2, rx_program_config* pcfg2) {
         this->cache = cache;
-        memset(code, 0xCC, RX_TOTAL_CODE_SIZE);
+        pos = 0;
         pos = 0;
 
         static const int VM_STATE_SIZE = 0x110;
@@ -1302,7 +1312,6 @@ void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x0E);
         emitMov64RM(0, instr->dst);
         emitByte(0x48); emitByte(0xF7); emitByte(0x24); emitByte(0x0E);
     } else {
@@ -1324,7 +1333,6 @@ void JitCompiler::h_ISMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x0E);
         emitMov64RM(0, instr->dst);
         emitByte(0x48); emitByte(0xF7); emitByte(0x2C); emitByte(0x0E);
     } else {
@@ -1420,7 +1428,6 @@ void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
     emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
     emitByte(0xC4); emitByte(0xC1);
     emitByte(((15 - instr->dst) << 3) | 1);
@@ -1440,7 +1447,6 @@ void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
     emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
     emitByte(0xC4); emitByte(0xC1);
     emitByte(((15 - instr->dst) << 3) | 1);
@@ -1468,7 +1474,6 @@ void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x06);
     emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
     emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x54); emitByte(0xE5);
     emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x56); emitByte(0xE6);
@@ -1560,7 +1565,6 @@ void rx_jit_destroy(rx_jit* jit) {
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
     jit->compiler->cache = cache;
-    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
     jit->compiler->generateProgram(prog, pcfg);
     if (cache && cache != jit->compiler->superscalar_cache) {
         jit->compiler->superscalar_cache = cache;
@@ -1599,7 +1603,6 @@ int rx_jit_get_num_instructions(rx_jit* jit) {
 extern "C" {
 void rx_jit_generate_program_single_iter(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
     jit->compiler->cache = cache;
-    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
     jit->compiler->generateProgramSingleIter(prog, pcfg);
     if (cache) {
         jit->compiler->generateSuperscalarHash(cache);
@@ -1607,9 +1610,8 @@ void rx_jit_generate_program_single_iter(rx_jit* jit, rx_program* prog, rx_progr
 }
 
 void rx_jit_generate_program_dual_interleaved(rx_jit* jit, rx_program* prog1, rx_program_config* pcfg1,
-                                               rx_program* prog2, rx_program_config* pcfg2, rx_cache* cache) {
+                                                rx_program* prog2, rx_program_config* pcfg2, rx_cache* cache) {
     jit->compiler->cache = cache;
-    memset(jit->compiler->code, 0xCC, RX_TOTAL_CODE_SIZE);
     jit->compiler->generateProgramDualInterleaved(prog1, pcfg1, prog2, pcfg2);
     if (cache) {
         jit->compiler->generateSuperscalarHash(cache);
