@@ -476,6 +476,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     }
 
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     core_list_t cores;
     int num_physical = detect_physical_cores(&cores);
