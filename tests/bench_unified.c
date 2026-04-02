@@ -141,7 +141,7 @@ DWORD WINAPI bench_thread(LPVOID arg) {
     QueryPerformanceFrequency(&freq);
 
     if (d->mode == 0) {
-        rx_vm* vm = rx_create_vm(1, 0, 1, cache, dataset);
+        rx_vm* vm = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
         uint8_t hash[32];
         for (int i = 0; i < 2; i++) rx_calculate_hash(vm, seed, sizeof(seed), hash);
         QueryPerformanceCounter(&start);
@@ -150,7 +150,7 @@ DWORD WINAPI bench_thread(LPVOID arg) {
         memcpy(d->hash1, hash, 32);
         rx_destroy_vm(vm);
     } else if (d->mode == 1) {
-        rx_vm* vm = rx_create_vm(1, 1, 1, cache, dataset);
+        rx_vm* vm = rx_create_vm(RX_FLAG_JIT, cache, dataset);
         uint8_t hash[32];
         for (int i = 0; i < 2; i++) rx_calculate_hash(vm, seed, sizeof(seed), hash);
         QueryPerformanceCounter(&start);
@@ -159,8 +159,8 @@ DWORD WINAPI bench_thread(LPVOID arg) {
         memcpy(d->hash1, hash, 32);
         rx_destroy_vm(vm);
     } else {
-        rx_vm* vm1 = rx_create_vm(1, 1, 1, cache, dataset);
-        rx_vm* vm2 = rx_create_vm(1, 1, 1, cache, dataset);
+        rx_vm* vm1 = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        rx_vm* vm2 = rx_create_vm(RX_FLAG_JIT, cache, dataset);
         uint8_t seed2[32] = {0};
         seed2[0] = (uint8_t)(tid + 200);
         uint8_t h1[32], h2[32];
@@ -269,14 +269,14 @@ int main(int argc, char** argv) {
 
     printf("[REF] Computing reference hashes (single interp)...\n");
     {
-        rx_vm* vm_ref = rx_create_vm(1, 0, 1, cache, dataset);
+        rx_vm* vm_ref = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
         uint8_t seed[32] = {0};
         rx_calculate_hash(vm_ref, seed, sizeof(seed), ref_hash1);
         print_hash("  ref hash1", ref_hash1);
         rx_destroy_vm(vm_ref);
     }
     {
-        rx_vm* vm_ref = rx_create_vm(1, 0, 1, cache, dataset);
+        rx_vm* vm_ref = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
         uint8_t seed[32] = {0};
         seed[0] = 200;
         rx_calculate_hash(vm_ref, seed, sizeof(seed), ref_hash2);
