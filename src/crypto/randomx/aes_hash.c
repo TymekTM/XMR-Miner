@@ -31,7 +31,6 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash) {
     rx_vec_i128 s3 = rx_set_i128(AES_HASH_1R_STATE3);
 
     while (inptr < inputEnd) {
-        _mm_prefetch((const char *)(inptr + 128), _MM_HINT_T0);
         s0 = rx_aesenc_i128(s0, rx_load_i128((const rx_vec_i128 *)inptr + 0));
         s1 = rx_aesdec_i128(s1, rx_load_i128((const rx_vec_i128 *)inptr + 1));
         s2 = rx_aesenc_i128(s2, rx_load_i128((const rx_vec_i128 *)inptr + 2));
