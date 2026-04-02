@@ -2,6 +2,7 @@
 #include "log.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static const char *mode_to_str(int mode) {
     switch (mode) {
@@ -9,6 +10,68 @@ static const char *mode_to_str(int mode) {
     case MINER_MODE_DUAL: return "dual";
     default: return "auto";
     }
+}
+
+static void set_config_value(config_t *cfg, const char *key, const char *val) {
+    if (strcmp(key, "pool") == 0) {
+        char *colon = strchr(val, ':');
+        if (colon) {
+            size_t host_len = colon - val;
+            if (host_len >= MAX_STRATUM_URL) host_len = MAX_STRATUM_URL - 1;
+            memcpy(cfg->pool_url, val, host_len);
+            cfg->pool_url[host_len] = '\0';
+            cfg->pool_port = atoi(colon + 1);
+        } else {
+            strncpy(cfg->pool_url, val, MAX_STRATUM_URL - 1);
+        }
+    } else if (strcmp(key, "wallet") == 0) {
+        strncpy(cfg->wallet, val, MAX_WALLET_ADDR - 1);
+    } else if (strcmp(key, "password") == 0 || strcmp(key, "pass") == 0) {
+        strncpy(cfg->password, val, MAX_POOL_PASS - 1);
+    } else if (strcmp(key, "threads") == 0 || strcmp(key, "t") == 0) {
+        cfg->threads = atoi(val);
+    } else if (strcmp(key, "mode") == 0) {
+        if (strcmp(val, "auto") == 0) cfg->mode = MINER_MODE_AUTO;
+        else if (strcmp(val, "single") == 0) cfg->mode = MINER_MODE_SINGLE;
+        else if (strcmp(val, "dual") == 0) cfg->mode = MINER_MODE_DUAL;
+    } else if (strcmp(key, "huge_pages") == 0) {
+        cfg->huge_pages = (atoi(val) != 0);
+    } else if (strcmp(key, "verbose") == 0 || strcmp(key, "v") == 0) {
+        cfg->verbose = (atoi(val) != 0);
+        cfg->log_level = LOG_DEBUG;
+    }
+}
+
+static int config_parse_file(config_t *cfg, const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char line[512];
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '#' || *p == '\n' || *p == '\r' || *p == '\0') continue;
+
+        char *eq = strchr(p, '=');
+        if (!eq) continue;
+
+        *eq = '\0';
+        char *key = p;
+        char *val = eq + 1;
+
+        while (*key == ' ' || *key == '\t') key++;
+        char *kend = key + strlen(key) - 1;
+        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+
+        while (*val == ' ' || *val == '\t') val++;
+        char *vend = val + strlen(val) - 1;
+        while (vend > val && (*vend == ' ' || *vend == '\t' || *vend == '\n' || *vend == '\r')) *vend-- = '\0';
+
+        set_config_value(cfg, key, val);
+    }
+
+    fclose(f);
+    return 0;
 }
 
 void config_set_defaults(config_t *cfg) {
@@ -22,8 +85,9 @@ void config_set_defaults(config_t *cfg) {
 }
 
 static void print_usage(const char *prog) {
-    printf("Usage: %s [options]\n", prog);
+    printf("Usage: %s [options] [-c config.conf]\n", prog);
     printf("Options:\n");
+    printf("  -c, --config <file>      Load config from file\n");
     printf("  -o, --pool <host:port>   Mining pool (default: supportxmr.com:3333)\n");
     printf("  -u, --user <wallet>      Monero wallet address\n");
     printf("  -p, --pass <password>    Worker password (default: x)\n");
@@ -39,7 +103,13 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
     strncpy(cfg->password, "x", MAX_POOL_PASS);
 
     for (int i = 1; i < argc; i++) {
-        if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--pool") == 0) && i + 1 < argc) {
+        if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) && i + 1 < argc) {
+            i++;
+            if (config_parse_file(cfg, argv[i]) != 0) {
+                LOG_ERR("Cannot open config file: %s", argv[i]);
+                return RX_ERROR;
+            }
+        } else if ((strcmp(argv[i], "-o") == 0 || strcmp(argv[i], "--pool") == 0) && i + 1 < argc) {
             i++;
             char *colon = strchr(argv[i], ':');
             if (colon) {
@@ -85,7 +155,7 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
     }
 
     if (cfg->wallet[0] == '\0') {
-        LOG_ERR("Wallet address required (-u)");
+        LOG_ERR("Wallet address required (-u or wallet= in config)");
         return RX_ERROR;
     }
 
