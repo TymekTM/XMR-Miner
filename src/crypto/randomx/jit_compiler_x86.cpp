@@ -28,7 +28,6 @@ static const int IMUL_RCP_SIZE = 188;
 static const int LOOP_LOAD_SIZE = 152;
 static const int PREFETCH_SP_SIZE = 26;
 static const int LOOP_STORE_SIZE = 76;
-static const int READ_DATASET_SIZE = 66;
 static const int EPILOGUE_SIZE = 184;
 static const int EMASK_OFFSET_IN_CONSTANTS = 16;
 
@@ -109,14 +108,6 @@ static const uint8_t code_loop_store[] = {
     0x4c, 0x89, 0x79, 0x38, 0x48, 0x8b, 0x4c, 0x24, 0x10, 0x66, 0x0f, 0x57, 0xc4, 0x66, 0x0f, 0x57,
     0xcd, 0x66, 0x0f, 0x57, 0xd6, 0x66, 0x0f, 0x57, 0xdf, 0x66, 0x0f, 0x29, 0x01, 0x66, 0x0f, 0x29,
     0x49, 0x10, 0x66, 0x0f, 0x29, 0x51, 0x20, 0x66, 0x0f, 0x29, 0x59, 0x30,
-};
-
-static const uint8_t code_read_dataset[] = {
-    0x89, 0xcd, 0x81, 0xe1, 0xc0, 0xff, 0xff, 0x7f,     0x4c, 0x33, 0x04, 0x0f, 0x48, 0xc1, 0xcd, 0x20,
-    0x48, 0x33, 0xe8, 0x8b, 0xd5, 0x81, 0xe2, 0xc0, 0xff, 0xff, 0x7f, 0x0f, 0x18, 0x04, 0x17, 0x4c,
-    0x33, 0x4c, 0x0f, 0x08, 0x4c, 0x33, 0x54, 0x0f, 0x10, 0x4c, 0x33, 0x5c, 0x0f, 0x18, 0x4c, 0x33,
-    0x64, 0x0f, 0x20, 0x4c, 0x33, 0x6c, 0x0f, 0x28, 0x4c, 0x33, 0x74, 0x0f, 0x30, 0x4c, 0x33, 0x7c,
-    0x0f, 0x38,
 };
 
 static const uint8_t code_epilogue[] = {
@@ -366,10 +357,10 @@ struct JitCompiler {
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
         pos += PROLOGUE_SIZE;
 
-        code[pos++] = 0x44; code[pos++] = 0x89; code[pos++] = 0xC2;
-        code[pos++] = 0x41; code[pos++] = 0x81; code[pos++] = 0xE2;
+        code[pos++] = 0x89; code[pos++] = 0xC2;
+        code[pos++] = 0x81; code[pos++] = 0xE2;
         code[pos++] = 0xC0; code[pos++] = 0xFF; code[pos++] = 0xFF; code[pos++] = 0x7F;
-        code[pos++] = 0x41; code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x37;
+        code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x17;
 
         memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
         int firstLoadStart = pos;
@@ -619,10 +610,10 @@ struct JitCompiler {
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
         pos += PROLOGUE_SIZE;
 
-        code[pos++] = 0x44; code[pos++] = 0x89; code[pos++] = 0xC2;
-        code[pos++] = 0x41; code[pos++] = 0x81; code[pos++] = 0xE2;
+        code[pos++] = 0x89; code[pos++] = 0xC2;
+        code[pos++] = 0x81; code[pos++] = 0xE2;
         code[pos++] = 0xC0; code[pos++] = 0xFF; code[pos++] = 0xFF; code[pos++] = 0x7F;
-        code[pos++] = 0x41; code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x37;
+        code[pos++] = 0x0F; code[pos++] = 0x18; code[pos++] = 0x14; code[pos++] = 0x17;
 
         memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
         int firstLoadStart = pos;
@@ -1409,9 +1400,7 @@ void JitCompiler::h_ISWAP_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
-    emitByte(0xC5);
-    emitByte(((15 - instr->dst) << 3) | 0x81);
-    emitByte(0xC6);
+    emitByte(0x66); emitByte(0x0F); emitByte(0xC6);
     emitByte(0xC0 | (9 * instr->dst));
     emitByte(1);
 }
@@ -1419,73 +1408,60 @@ void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
 void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((15 - instr->dst) << 3) | 1);
-    emitByte(0x58);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
     emitByte(0xC0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((15 - instr->dst) << 3) | 1);
-    emitByte(0x58);
+    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
     emitByte(0xC4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((15 - instr->dst) << 3) | 1);
-    emitByte(0x5C);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
     emitByte(0xC0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((15 - instr->dst) << 3) | 1);
-    emitByte(0x5C);
+    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
     emitByte(0xC4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((15 - instr->dst) << 3)); // pp=0
-    emitByte(0x57);
+    emitByte(0x41); emitByte(0x0F); emitByte(0x57);
     emitByte(0xC7 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((11 - instr->dst) << 3) | 1);
-    emitByte(0x59);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x59);
     emitByte(0xE0 | (instr->dst << 3) | instr->src);
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
-    emitByte(0xC4); emitByte(0x61); emitByte(0x7A); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x54); emitByte(0xE5);
-    emitByte(0xC4); emitByte(0x41); emitByte(0x18); emitByte(0x56); emitByte(0xE6);
-    emitByte(0xC4); emitByte(0xC1);
-    emitByte(((11 - instr->dst) << 3) | 1);
-    emitByte(0x5E);
+    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
+    emitByte(0x45); emitByte(0x0F); emitByte(0x54); emitByte(0xE5);
+    emitByte(0x45); emitByte(0x0F); emitByte(0x56); emitByte(0xE6);
+    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5E);
     emitByte(0xE4 | (instr->dst << 3));
 }
 
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0xC5); emitByte(0xF9); emitByte(0x51); emitByte(0xE4 | (9 * instr->dst)); // vsqrtpd xmm(dst+4), xmm(dst+4)
+    emitByte(0x66); emitByte(0x0F); emitByte(0x51);
+    emitByte(0xE4 | (9 * instr->dst));
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
