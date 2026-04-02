@@ -246,8 +246,8 @@ int main(int argc, char** argv) {
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     enable_huge_pages();
 
-    int num_threads = 16;
-    if (argc > 1) num_threads = atoi(argv[1]);
+    int max_threads = 8;
+    if (argc > 1) max_threads = atoi(argv[1]);
 
     g_affinity_ready = detect_cores(&g_cores) > 0;
     if (g_affinity_ready) {
@@ -255,8 +255,6 @@ int main(int argc, char** argv) {
         for (int i = 0; i < g_cores.count; i++) if (g_cores.is_pcore[i]) p++;
         printf("[AFFINITY] detected %d cores (%d P, %d E)\n", g_cores.count, p, g_cores.count - p);
     }
-
-    printf("=== UNIFIED BENCH: Interp vs Single JIT vs Dual JIT (%d threads) ===\n\n", num_threads);
 
     cache = rx_alloc_cache(1);
     uint8_t key[] = "test_key_123456";
@@ -284,19 +282,35 @@ int main(int argc, char** argv) {
         rx_destroy_vm(vm_ref);
     }
 
-    printf("\n[1/3] Interpreter (useJit=0):\n");
-    double hr_interp = run_mode(num_threads, 0, "Interp", ref_hash1, NULL);
+    printf("\n======================================================================\n");
+    printf("  BENCH 1-%d THREADS  (dataset allocated once, large pages)\n", max_threads);
+    printf("======================================================================\n\n");
 
-    printf("[2/3] Single JIT:\n");
-    double hr_single = run_mode(num_threads, 1, "Single JIT", ref_hash1, NULL);
+    double res_interp[16], res_single[16], res_dual[16];
+    memset(res_interp, 0, sizeof(res_interp));
+    memset(res_single, 0, sizeof(res_single));
+    memset(res_dual, 0, sizeof(res_dual));
 
-    printf("[3/3] Dual JIT:\n");
-    double hr_dual = run_mode(num_threads, 2, "Dual JIT", ref_hash1, ref_hash2);
+    for (int t = 1; t <= max_threads; t++) {
+        printf("--- %d thread%s ---\n", t, t > 1 ? "s" : "");
+        res_interp[t] = run_mode(t, 0, "Interp", ref_hash1, NULL);
+        res_single[t] = run_mode(t, 1, "Single JIT", ref_hash1, NULL);
+        res_dual[t]   = run_mode(t, 2, "Dual JIT", ref_hash1, ref_hash2);
+        printf("\n");
+    }
 
-    printf("\n=== SUMMARY ===\n");
-    printf("Interpreter : %8.1f H/s\n", hr_interp);
-    printf("Single JIT  : %8.1f H/s  (%.2fx vs interp)\n", hr_single, hr_single / hr_interp);
-    printf("Dual JIT    : %8.1f H/s  (%.2fx vs interp, %.2fx vs single)\n", hr_dual, hr_dual / hr_interp, hr_dual / hr_single);
+    printf("======================================================================\n");
+    printf("  SUMMARY TABLE\n");
+    printf("======================================================================\n");
+    printf("%-6s  %-12s  %-12s  %-12s  %-8s  %-8s\n",
+           "Thr", "Interp", "Single JIT", "Dual JIT", "S/I", "D/I");
+    printf("------  ------------  ------------  ------------  --------  --------\n");
+    for (int t = 1; t <= max_threads; t++) {
+        printf("%-6d  %8.1f H/s  %8.1f H/s  %8.1f H/s  %6.2fx  %6.2fx\n",
+               t, res_interp[t], res_single[t], res_dual[t],
+               res_interp[t] > 0 ? res_single[t] / res_interp[t] : 0,
+               res_interp[t] > 0 ? res_dual[t] / res_interp[t] : 0);
+    }
 
     rx_free_dataset(dataset);
     rx_free_cache(cache);

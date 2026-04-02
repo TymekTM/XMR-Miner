@@ -9,15 +9,15 @@
 
 #define HASHES_PER_RUN 500
 
-rx_cache *cache = NULL;
-rx_dataset *dataset = NULL;
-
 typedef struct {
     int thread_id;
     int mode;
     double hashrate;
     double wall_time;
 } thread_data_t;
+
+rx_cache *cache = NULL;
+rx_dataset *dataset = NULL;
 
 #define MAX_CORES 128
 
@@ -146,6 +146,47 @@ DWORD WINAPI bench_thread(LPVOID arg) {
         }
         QueryPerformanceCounter(&end);
         rx_destroy_vm(vm);
+    } else if (d->mode == 3) {
+        rx_vm *vm = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        uint8_t hash[32];
+        uint8_t commitment[32];
+
+        *(uint32_t *)(blob + 39) = 0;
+        rx_calculate_hash_first(vm, blob, sizeof(blob));
+
+        for (int i = 0; i < 2; i++) {
+            *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
+            rx_calculate_hash_next(vm, blob, sizeof(blob), hash);
+            rx_calculate_commitment(blob, sizeof(blob), hash, commitment);
+        }
+
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < HASHES_PER_RUN; i++) {
+            *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
+            rx_calculate_hash_next(vm, blob, sizeof(blob), hash);
+            rx_calculate_commitment(blob, sizeof(blob), hash, commitment);
+        }
+        QueryPerformanceCounter(&end);
+        rx_destroy_vm(vm);
+    } else if (d->mode == 4) {
+        rx_vm *vm = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        uint8_t hash[32];
+
+        *(uint32_t *)(blob + 39) = 0;
+        rx_calculate_hash_first(vm, blob, sizeof(blob));
+
+        for (int i = 0; i < 2; i++) {
+            *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
+            rx_calculate_hash_next(vm, blob, sizeof(blob), hash);
+        }
+
+        QueryPerformanceCounter(&start);
+        for (int i = 0; i < HASHES_PER_RUN; i++) {
+            *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
+            rx_calculate_hash_next(vm, blob, sizeof(blob), hash);
+        }
+        QueryPerformanceCounter(&end);
+        rx_destroy_vm(vm);
     } else {
         rx_vm *vm1 = rx_create_vm(RX_FLAG_JIT, cache, dataset);
         rx_vm *vm2 = rx_create_vm(RX_FLAG_JIT, cache, dataset);
@@ -240,15 +281,46 @@ int main(int argc, char **argv) {
     printf("  POOL SIMULATION BENCH  (%d hashes/thread, 76-byte blob + commitment)\n", HASHES_PER_RUN);
     printf("======================================================================\n\n");
 
-    double res_i[16], res_s[16], res_d[16];
+    printf("[VERIFY] Checking batch API (hash_first/hash_next) correctness...\n");
+    {
+        rx_vm *vm_std = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        rx_vm *vm_batch = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        uint8_t blob_v[76];
+        memset(blob_v, 0, sizeof(blob_v));
+        blob_v[0] = 0x10; blob_v[1] = 0x03; blob_v[2] = 0xe3;
+        uint8_t hash_std[32], hash_batch[32];
+        int pass = 1;
+        *(uint32_t *)(blob_v + 39) = 0;
+        rx_calculate_hash_first(vm_batch, blob_v, sizeof(blob_v));
+        for (int i = 0; i < 100; i++) {
+            *(uint32_t *)(blob_v + 39) = (uint32_t)(i + 1);
+            rx_calculate_hash_next(vm_batch, blob_v, sizeof(blob_v), hash_batch);
+            *(uint32_t *)(blob_v + 39) = (uint32_t)i;
+            rx_calculate_hash(vm_std, blob_v, sizeof(blob_v), hash_std);
+            if (memcmp(hash_std, hash_batch, 32) != 0) {
+                printf("[VERIFY] MISMATCH at nonce %d\n", i);
+                pass = 0; break;
+            }
+        }
+        rx_destroy_vm(vm_std);
+        rx_destroy_vm(vm_batch);
+        printf("[VERIFY] Batch API vs standard: %s\n", pass ? "PASS" : "FAIL");
+    }
+    printf("\n");
+
+    double res_i[16], res_s[16], res_d[16], res_b[16], res_bn[16];
     memset(res_i, 0, sizeof(res_i));
     memset(res_s, 0, sizeof(res_s));
     memset(res_d, 0, sizeof(res_d));
+    memset(res_b, 0, sizeof(res_b));
+    memset(res_bn, 0, sizeof(res_bn));
 
     for (int t = 1; t <= max_threads; t++) {
         printf("--- %d thread%s ---\n", t, t > 1 ? "s" : "");
         res_i[t] = run_mode(t, 0, "Interpreter");
         res_s[t] = run_mode(t, 1, "JIT + commitment");
+        res_b[t] = run_mode(t, 3, "JIT batch (hash_next)");
+        res_bn[t] = run_mode(t, 4, "JIT batch (no commit)");
         res_d[t] = run_mode(t, 2, "Dual JIT + commitment");
         printf("\n");
     }
@@ -256,13 +328,13 @@ int main(int argc, char **argv) {
     printf("======================================================================\n");
     printf("  SUMMARY (pool-simulated: 76-byte blob + commitment per hash)\n");
     printf("======================================================================\n");
-    printf("%-6s  %-12s  %-12s  %-12s  %-8s  %-8s\n",
-           "Thr", "Interp", "JIT", "Dual JIT", "J/I", "D/I");
-    printf("------  ------------  ------------  ------------  --------  --------\n");
+    printf("%-6s  %-12s  %-12s  %-12s  %-12s  %-12s  %-6s  %-6s\n",
+           "Thr", "Interp", "JIT", "Batch", "BatchNC", "Dual JIT", "B/J", "D/I");
+    printf("------  ------------  ------------  ------------  ------------  ------------  ------  ------\n");
     for (int t = 1; t <= max_threads; t++) {
-        printf("%-6d  %8.1f H/s  %8.1f H/s  %8.1f H/s  %6.2fx  %6.2fx\n",
-               t, res_i[t], res_s[t], res_d[t],
-               res_i[t] > 0 ? res_s[t] / res_i[t] : 0,
+        printf("%-6d  %8.1f H/s  %8.1f H/s  %8.1f H/s  %8.1f H/s  %8.1f H/s  %5.1fx  %6.2fx\n",
+               t, res_i[t], res_s[t], res_b[t], res_bn[t], res_d[t],
+               res_s[t] > 0 ? res_b[t] / res_s[t] : 0,
                res_i[t] > 0 ? res_d[t] / res_i[t] : 0);
     }
 

@@ -263,6 +263,7 @@ void worker_run(worker_t *w) {
                 LOG_WARN("[W%d] Invalid seed_hash: %s", w->id, job->seed_hash);
             }
             got_job = 0;
+            w->batch_active = 0;
         }
 
         if (strcmp(job->job_id, current_job_id) != 0) {
@@ -349,6 +350,7 @@ void worker_run(worker_t *w) {
             strncpy(current_job_id, job->job_id, sizeof(current_job_id) - 1);
             current_target = job->target_u64;
             got_job = 1;
+            w->batch_active = 0;
 
             LOG_DEBUG("[W%d] New job: %s blob_len=%d target=%016llx proto=%s",
                      w->id, current_job_id, blob_len, (unsigned long long)current_target,
@@ -440,24 +442,35 @@ void worker_run(worker_t *w) {
             memcpy(blob + nonce_off, &nonce, 4);
 
             uint8_t hash[32];
-            rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+            int ok = 0;
 
-            uint8_t commitment[32];
-            if (is_monero_proto) {
+            if (w->loop_count == 0 && !w->batch_active) {
+                rx_calculate_hash_first(vm, blob, (size_t)blob_len);
+                w->batch_active = 1;
+            } else {
+                rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
+                w->batch_active = 1;
+                ok = share_meets_target(hash, current_target, is_monero_proto);
+            }
+
+            if (ok && is_monero_proto) {
+                uint8_t commitment[32];
                 rx_calculate_commitment(blob, (size_t)blob_len, hash, commitment);
-            }
-
-            int ok = share_meets_target(hash, current_target, is_monero_proto);
-            if ((w->loop_count & 0xFFFF) == 0 && w->id == 0) {
-                LOG_DEBUG("[W0] sample: nonce=%u hash_val=%08x target=%08x blob_len=%d",
-                          nonce, read_u32_le(hash), (uint32_t)current_target, blob_len);
-            }
-            if (ok) {
                 char nonce_hex[16];
                 format_nonce_hex(nonce, is_monero_proto, nonce_hex, sizeof(nonce_hex));
                 char result_hex[65];
                 hex_encode(hash, 32, result_hex);
-
+                char commit_hex[65];
+                hex_encode(commitment, 32, commit_hex);
+                w->extranonce2_counter++;
+                LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
+                total_shares++;
+                stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, NULL, NULL, commit_hex);
+            } else if (ok) {
+                char nonce_hex[16];
+                format_nonce_hex(nonce, is_monero_proto, nonce_hex, sizeof(nonce_hex));
+                char result_hex[65];
+                hex_encode(hash, 32, result_hex);
                 char en2_hex[32];
                 int en2_size = saved_en2_size * 2;
                 for (int i = en2_size - 1; i >= 0; i--) {
@@ -466,18 +479,9 @@ void worker_run(worker_t *w) {
                 }
                 en2_hex[en2_size] = '\0';
                 w->extranonce2_counter++;
-
                 LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
                 total_shares++;
-
-                if (is_monero_proto) {
-                    char commit_hex[65];
-                    hex_encode(commitment, 32, commit_hex);
-                    stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, NULL, NULL, commit_hex);
-                } else {
-                    stratum_submit_share(stratum, current_job_id, nonce_hex,
-                                         result_hex, en2_hex, saved_ntime, NULL);
-                }
+                stratum_submit_share(stratum, current_job_id, nonce_hex, result_hex, en2_hex, saved_ntime, NULL);
             }
 
             nonce += w->nonce_stride;

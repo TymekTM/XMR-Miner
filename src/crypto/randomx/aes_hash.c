@@ -143,8 +143,6 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
     rx_vec_i128 fs3 = rx_load_i128((const rx_vec_i128 *)fill_state + 3);
 
     while (sp < spEnd) {
-        if (sp + 128 < spEnd)
-            _mm_prefetch((const char *)(sp + 128), _MM_HINT_NTA);
         hs0 = rx_aesenc_i128(hs0, rx_load_i128((const rx_vec_i128 *)sp + 0));
         hs1 = rx_aesdec_i128(hs1, rx_load_i128((const rx_vec_i128 *)sp + 1));
         hs2 = rx_aesenc_i128(hs2, rx_load_i128((const rx_vec_i128 *)sp + 2));
@@ -153,13 +151,12 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
         fs1 = rx_aesenc_i128(fs1, fk1);
         fs2 = rx_aesdec_i128(fs2, fk2);
         fs3 = rx_aesenc_i128(fs3, fk3);
-        _mm_stream_si128((__m128i *)sp + 0, fs0);
-        _mm_stream_si128((__m128i *)sp + 1, fs1);
-        _mm_stream_si128((__m128i *)sp + 2, fs2);
-        _mm_stream_si128((__m128i *)sp + 3, fs3);
+        _mm_store_si128((__m128i *)sp + 0, fs0);
+        _mm_store_si128((__m128i *)sp + 1, fs1);
+        _mm_store_si128((__m128i *)sp + 2, fs2);
+        _mm_store_si128((__m128i *)sp + 3, fs3);
         sp += 64;
     }
-    _mm_sfence();
 
     rx_store_i128((rx_vec_i128 *)fill_state + 0, fs0);
     rx_store_i128((rx_vec_i128 *)fill_state + 1, fs1);

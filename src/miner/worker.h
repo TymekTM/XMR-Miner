@@ -22,6 +22,7 @@ typedef struct {
     char initial_seed[65];
     int current_rx_flags;
     char current_algo[32];
+    int batch_active;
 } worker_t;
 
 void worker_run(worker_t *w);
