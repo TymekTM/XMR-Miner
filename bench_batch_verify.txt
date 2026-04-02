@@ -1,0 +1,20 @@
+[AFFINITY] 20 cores (8 P, 12 E)
+
+======================================================================
+  POOL SIMULATION BENCH  (500 hashes/thread, 76-byte blob + commitment)
+======================================================================
+
+[VERIFY] Checking batch API (hash_first/hash_next) correctness...
+[VERIFY] Batch API vs standard: PASS
+
+--- 1 thread ---
+  Interpreter             218.0 H/s total     218.0 H/s/thread  wall=2.29s  spread=0.0%
+  JIT + commitment        809.7 H/s total     809.7 H/s/thread  wall=0.62s  spread=0.0%
+  Dual JIT + commitment    980.9 H/s total     980.9 H/s/thread  wall=1.02s  spread=0.0%
+
+======================================================================
+  SUMMARY (pool-simulated: 76-byte blob + commitment per hash)
+======================================================================
+Thr     Interp        JIT           Dual JIT      J/I       D/I     
+------  ------------  ------------  ------------  --------  --------
+1          218.0 H/s     809.7 H/s     980.9 H/s    3.71x    4.50x

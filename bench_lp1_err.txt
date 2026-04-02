@@ -1,0 +1,8 @@
+[I] [CACHE] Allocated cache with large pages
+[I] [DATASET] SeLockMemoryPrivilege enabled
+[I] [DATASET] Large pages alloc failed, falling back to regular pages
+[I] [DATASET] Using regular pages
+[I] [DATASET] Allocated 2080 MB (regular pages)
+[I] [DATASET] Loading cached dataset from disk (2048.0 MB)...
+[I] [DATASET] Cached dataset loaded successfully
+[I] [DATASET] Touched 2080 MB pages (0.0 s)

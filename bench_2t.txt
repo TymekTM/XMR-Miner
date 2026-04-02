@@ -1,0 +1,22 @@
+[AFFINITY] detected 20 cores (8 P, 12 E)
+=== UNIFIED BENCH: Interp vs Single JIT vs Dual JIT (2 threads) ===
+
+[REF] Computing reference hashes (single interp)...
+  ref hash1: 8212302aa1d1fe376b36b1630b0d45ddb0fc0d507ec79b817be32c340f8be2dd
+  ref hash2: 03ea87787c69e5ab8542529fffa46115ca965ee224aeac9729d31f306ecb3e10
+
+[1/3] Interpreter (useJit=0):
+  Interp              452.7 H/s  wall=8.836s  avg_t=8.823s  min_t=8.820s  max_t=8.826s  imbalance=0.1%
+    [OK] hash1 matches
+[2/3] Single JIT:
+  Single JIT         2653.1 H/s  wall=1.508s  avg_t=1.477s  min_t=1.448s  max_t=1.505s  imbalance=3.9%
+    [OK] hash1 matches
+[3/3] Dual JIT:
+  Dual JIT           2315.7 H/s  wall=3.455s  avg_t=3.449s  min_t=3.447s  max_t=3.450s  imbalance=0.1%
+    [OK] hash1 matches
+    [OK] hash2 matches
+
+=== SUMMARY ===
+Interpreter :    452.7 H/s
+Single JIT  :   2653.1 H/s  (5.86x vs interp)
+Dual JIT    :   2315.7 H/s  (5.12x vs interp, 0.87x vs single)

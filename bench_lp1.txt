@@ -1,0 +1,14 @@
+=== RandomX 3-Mode Validation + Benchmark ===
+
+=== Correctness: dual JIT == single JIT == interpreter ===
+[PASS] All 64 vectors matched for both lanes
+
+=== Hashrate Benchmark ===
+Interpreter : 78.69 H/s  (3.812 s for 300 hashes)
+Single JIT  : 631.66 H/s  (0.475 s for 300 hashes)
+Dual JIT    : 624.91 H/s  (0.960 s for 300 pairs = 600 hashes)
+
+=== Ratios ===
+Single JIT / Interpreter: 8.027x
+Dual JIT   / Interpreter: 7.941x
+Dual JIT   / Single JIT : 0.989x

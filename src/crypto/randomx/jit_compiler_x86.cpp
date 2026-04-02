@@ -515,7 +515,6 @@ struct JitCompiler {
                 emitByte(0x48); emitByte(0xC1); emitByte(0xE3); emitByte(0x06);
                 emitByte(0x48); emitByte(0x01); emitByte(0xFB);
                 emitByte(0x0F); emitByte(0x18); emitByte(0x04); emitByte(0x17);
-                alignCode(16);
             }
         }
 
@@ -1540,7 +1539,6 @@ void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* p
         jit->compiler->superscalar_cache = cache;
         jit->compiler->generateSuperscalarHash(cache);
     }
-    memcpy(jit->compiler->code + EPILOGUE_OFFSET, code_epilogue, EPILOGUE_SIZE);
 }
 
 void rx_jit_generate_program_light(rx_jit* jit, rx_program* prog, rx_program_config* pcfg,

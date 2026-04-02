@@ -142,11 +142,51 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
     rx_vec_i128 fs2 = rx_load_i128((const rx_vec_i128 *)fill_state + 2);
     rx_vec_i128 fs3 = rx_load_i128((const rx_vec_i128 *)fill_state + 3);
 
+    const uint8_t *spEnd2 = spEnd - 128;
+    while (sp < spEnd2) {
+        rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
+        rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
+        rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
+        rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
+        rx_vec_i128 l4 = rx_load_i128((const rx_vec_i128 *)sp + 4);
+        rx_vec_i128 l5 = rx_load_i128((const rx_vec_i128 *)sp + 5);
+        rx_vec_i128 l6 = rx_load_i128((const rx_vec_i128 *)sp + 6);
+        rx_vec_i128 l7 = rx_load_i128((const rx_vec_i128 *)sp + 7);
+        hs0 = rx_aesenc_i128(hs0, l0);
+        hs1 = rx_aesdec_i128(hs1, l1);
+        hs2 = rx_aesenc_i128(hs2, l2);
+        hs3 = rx_aesdec_i128(hs3, l3);
+        fs0 = rx_aesdec_i128(fs0, fk0);
+        fs1 = rx_aesenc_i128(fs1, fk1);
+        fs2 = rx_aesdec_i128(fs2, fk2);
+        fs3 = rx_aesenc_i128(fs3, fk3);
+        _mm_store_si128((__m128i *)sp + 0, fs0);
+        _mm_store_si128((__m128i *)sp + 1, fs1);
+        _mm_store_si128((__m128i *)sp + 2, fs2);
+        _mm_store_si128((__m128i *)sp + 3, fs3);
+        hs0 = rx_aesenc_i128(hs0, l4);
+        hs1 = rx_aesdec_i128(hs1, l5);
+        hs2 = rx_aesenc_i128(hs2, l6);
+        hs3 = rx_aesdec_i128(hs3, l7);
+        fs0 = rx_aesdec_i128(fs0, fk0);
+        fs1 = rx_aesenc_i128(fs1, fk1);
+        fs2 = rx_aesdec_i128(fs2, fk2);
+        fs3 = rx_aesenc_i128(fs3, fk3);
+        _mm_store_si128((__m128i *)sp + 4, fs0);
+        _mm_store_si128((__m128i *)sp + 5, fs1);
+        _mm_store_si128((__m128i *)sp + 6, fs2);
+        _mm_store_si128((__m128i *)sp + 7, fs3);
+        sp += 128;
+    }
     while (sp < spEnd) {
-        hs0 = rx_aesenc_i128(hs0, rx_load_i128((const rx_vec_i128 *)sp + 0));
-        hs1 = rx_aesdec_i128(hs1, rx_load_i128((const rx_vec_i128 *)sp + 1));
-        hs2 = rx_aesenc_i128(hs2, rx_load_i128((const rx_vec_i128 *)sp + 2));
-        hs3 = rx_aesdec_i128(hs3, rx_load_i128((const rx_vec_i128 *)sp + 3));
+        rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
+        rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
+        rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
+        rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
+        hs0 = rx_aesenc_i128(hs0, l0);
+        hs1 = rx_aesdec_i128(hs1, l1);
+        hs2 = rx_aesenc_i128(hs2, l2);
+        hs3 = rx_aesdec_i128(hs3, l3);
         fs0 = rx_aesdec_i128(fs0, fk0);
         fs1 = rx_aesenc_i128(fs1, fk1);
         fs2 = rx_aesdec_i128(fs2, fk2);

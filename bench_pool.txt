@@ -1,0 +1,59 @@
+[AFFINITY] 20 cores (8 P, 12 E)
+
+======================================================================
+  POOL SIMULATION BENCH  (500 hashes/thread, 76-byte blob + commitment)
+======================================================================
+
+--- 1 thread ---
+  Interpreter             203.4 H/s total     203.4 H/s/thread  wall=2.46s  spread=0.0%
+  JIT + commitment        813.6 H/s total     813.6 H/s/thread  wall=0.61s  spread=0.0%
+  Dual JIT + commitment    998.0 H/s total     998.0 H/s/thread  wall=1.00s  spread=0.0%
+
+--- 2 threads ---
+  Interpreter             435.1 H/s total     217.6 H/s/thread  wall=2.30s  spread=0.2%
+  JIT + commitment       1629.5 H/s total     814.8 H/s/thread  wall=0.61s  spread=0.1%
+  Dual JIT + commitment   1857.9 H/s total     929.0 H/s/thread  wall=1.08s  spread=6.0%
+
+--- 3 threads ---
+  Interpreter             635.1 H/s total     211.7 H/s/thread  wall=2.36s  spread=1.4%
+  JIT + commitment       2150.4 H/s total     716.8 H/s/thread  wall=0.70s  spread=2.1%
+  Dual JIT + commitment   2794.6 H/s total     931.5 H/s/thread  wall=1.07s  spread=3.7%
+
+--- 4 threads ---
+  Interpreter             804.8 H/s total     201.2 H/s/thread  wall=2.49s  spread=2.9%
+  JIT + commitment       3192.6 H/s total     798.1 H/s/thread  wall=0.63s  spread=2.7%
+  Dual JIT + commitment   3800.0 H/s total     950.0 H/s/thread  wall=1.05s  spread=1.8%
+
+--- 5 threads ---
+  Interpreter            1036.6 H/s total     207.3 H/s/thread  wall=2.41s  spread=2.3%
+  JIT + commitment       3923.5 H/s total     784.7 H/s/thread  wall=0.64s  spread=3.0%
+  Dual JIT + commitment   4025.8 H/s total     805.2 H/s/thread  wall=1.24s  spread=13.9%
+
+--- 6 threads ---
+  Interpreter            1131.3 H/s total     188.6 H/s/thread  wall=2.65s  spread=4.6%
+  JIT + commitment       4527.7 H/s total     754.6 H/s/thread  wall=0.66s  spread=4.1%
+  Dual JIT + commitment   4616.5 H/s total     769.4 H/s/thread  wall=1.30s  spread=5.7%
+
+--- 7 threads ---
+  Interpreter            1330.5 H/s total     190.1 H/s/thread  wall=2.63s  spread=6.4%
+  JIT + commitment       5147.0 H/s total     735.3 H/s/thread  wall=0.68s  spread=6.9%
+  Dual JIT + commitment   5036.0 H/s total     719.4 H/s/thread  wall=1.39s  spread=6.6%
+
+--- 8 threads ---
+  Interpreter            1348.2 H/s total     168.5 H/s/thread  wall=2.97s  spread=9.1%
+  JIT + commitment       5329.7 H/s total     666.2 H/s/thread  wall=0.75s  spread=11.1%
+  Dual JIT + commitment   5390.5 H/s total     673.8 H/s/thread  wall=1.48s  spread=12.2%
+
+======================================================================
+  SUMMARY (pool-simulated: 76-byte blob + commitment per hash)
+======================================================================
+Thr     Interp        JIT           Dual JIT      J/I       D/I     
+------  ------------  ------------  ------------  --------  --------
+1          203.4 H/s     813.6 H/s     998.0 H/s    4.00x    4.91x
+2          435.1 H/s    1629.5 H/s    1857.9 H/s    3.75x    4.27x
+3          635.1 H/s    2150.4 H/s    2794.6 H/s    3.39x    4.40x
+4          804.8 H/s    3192.6 H/s    3800.0 H/s    3.97x    4.72x
+5         1036.6 H/s    3923.5 H/s    4025.8 H/s    3.79x    3.88x
+6         1131.3 H/s    4527.7 H/s    4616.5 H/s    4.00x    4.08x
+7         1330.5 H/s    5147.0 H/s    5036.0 H/s    3.87x    3.79x
+8         1348.2 H/s    5329.7 H/s    5390.5 H/s    3.95x    4.00x

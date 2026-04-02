@@ -1,0 +1,73 @@
+[TEST] Key: "test key 000" (12 bytes)
+[TEST] Allocating cache...
+[TEST] Initializing cache...
+[TEST] Allocating dataset...
+[TEST] Initializing dataset (this takes ~60s)...
+[TEST] === V1 (interpreter, light) ===
+  hash1: 639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f
+  expected: 639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f
+  match: YES
+  hash2: 300a0adb47603dedb42228ccb2b211104f4da45af709cd7547cd049e9489c969
+  expected: 300a0adb47603dedb42228ccb2b211104f4da45af709cd7547cd049e9489c969
+  match: YES
+
+[TEST] === Dataset integrity check ===
+  First 20 items match: YES
+  Total dataset items: 34078719
+  Dataset memory size: 2079 MB
+  RX_DATASET_BASE_SIZE: 2147483648
+  RX_DATASET_EXTRA_SIZE: 33554368
+  RX_CACHE_LINE_ALIGN_MASK: 0x7fffffc0
+
+[TEST] === Full VM vs Light VM first iteration debug ===
+  light mem.mx_ma: 0x48e86d40d8b71179
+  full  mem.mx_ma: 0x48e86d40d8b71179
+  light datasetOffset: 12053312
+  full  datasetOffset: 12053312
+  light lightClient: 1
+  full  lightClient: 0
+  light fullMem: 0
+  full  fullMem: 1
+  light flagV2: 0
+  full  flagV2: 0
+  reg0: light_readReg=0 full_readReg=0
+  reg1: light_readReg=-1 full_readReg=-1
+  reg2: light_readReg=-1 full_readReg=-1
+  reg3: light_readReg=1 full_readReg=1
+  reg4: light_readReg=-1 full_readReg=-1
+  reg5: light_readReg=2 full_readReg=2
+  reg6: light_readReg=-1 full_readReg=-1
+  reg7: light_readReg=3 full_readReg=3
+  light prog size: 256
+  full  prog size: 256
+  Program entropy (first 16): cfeb8c7973d1ae96 24f0c33d7677583a d934e4a0474e2976 a8d1ee69c8d63bb3 8797b2bf40e1b9a7 9aa45f78abfde505 d5abbebab0a0a1fd 94da5d52fe09f29e a1512786c8e86d5a 73abbd4b8d318131 db78f1d9d8b71179 977251f32313bbe7 9b11515933e2659e 1e21abcfe852dfad ec71ec27c1f918f1 0b94d3d0a9dc5031 
+  Full   entropy (first 16): cfeb8c7973d1ae96 24f0c33d7677583a d934e4a0474e2976 a8d1ee69c8d63bb3 8797b2bf40e1b9a7 9aa45f78abfde505 d5abbebab0a0a1fd 94da5d52fe09f29e a1512786c8e86d5a 73abbd4b8d318131 db78f1d9d8b71179 977251f32313bbe7 9b11515933e2659e 1e21abcfe852dfad ec71ec27c1f918f1 0b94d3d0a9dc5031 
+  Entropy buffers match: YES
+
+[TEST] === V1 (interpreter, full VM) ===
+  hash1: 639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f
+  expected: 639183aae1bf4c9a35884cb46b09cad9175f04efd7684e7262a0ac1c2f0b4e3f
+  match: YES
+  hash2: 300a0adb47603dedb42228ccb2b211104f4da45af709cd7547cd049e9489c969
+  expected: 300a0adb47603dedb42228ccb2b211104f4da45af709cd7547cd049e9489c969
+  match: YES
+
+[TEST] === V2 (interpreter, light) ===
+  hash1: 22ec6b861b3eb23686b2efbad69513c967ecfce80983df66c9c5b4fbfb4cdb6f
+  expected: 22ec6b861b3eb23686b2efbad69513c967ecfce80983df66c9c5b4fbfb4cdb6f
+  match: YES
+  hash2: 9e2c772c12fd48f93c14c97fdc89d556264d9100597023f44d9163e279012ecf
+  expected: 9e2c772c12fd48f93c14c97fdc89d556264d9100597023f44d9163e279012ecf
+  match: YES
+
+[TEST] === V2 (interpreter, full VM) ===
+  hash1: 22ec6b861b3eb23686b2efbad69513c967ecfce80983df66c9c5b4fbfb4cdb6f
+  expected: 22ec6b861b3eb23686b2efbad69513c967ecfce80983df66c9c5b4fbfb4cdb6f
+  match: YES
+
+[TEST] === Commitment test ===
+  commitment: 133be717399046b03ae82ce8ddd9d1ee4d3ea7fca03a50dec09b6848cbb98e18
+  expected: 133be717399046b03ae82ce8ddd9d1ee4d3ea7fca03a50dec09b6848cbb98e18
+  match: YES
+
+[TEST] Overall: PASS

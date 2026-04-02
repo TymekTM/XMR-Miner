@@ -1,0 +1,70 @@
+[AFFINITY] 20 cores (8 P, 12 E)
+
+======================================================================
+  POOL SIMULATION BENCH  (500 hashes/thread, 76-byte blob + commitment)
+======================================================================
+
+[VERIFY] Checking batch API (hash_first/hash_next) correctness...
+[VERIFY] Batch API vs standard: PASS
+
+--- 1 thread ---
+  Interpreter             217.5 H/s total     217.5 H/s/thread  wall=2.30s  spread=0.0%
+  JIT + commitment        815.2 H/s total     815.2 H/s/thread  wall=0.61s  spread=0.0%
+  JIT batch (hash_next)    847.7 H/s total     847.7 H/s/thread  wall=0.59s  spread=0.0%
+  Dual JIT + commitment    969.9 H/s total     969.9 H/s/thread  wall=1.03s  spread=0.0%
+
+--- 2 threads ---
+  Interpreter             438.1 H/s total     219.0 H/s/thread  wall=2.28s  spread=1.8%
+  JIT + commitment       1683.3 H/s total     841.6 H/s/thread  wall=0.59s  spread=0.5%
+  JIT batch (hash_next)   1623.4 H/s total     811.7 H/s/thread  wall=0.62s  spread=0.7%
+  Dual JIT + commitment   1996.6 H/s total     998.3 H/s/thread  wall=1.00s  spread=0.3%
+
+--- 3 threads ---
+  Interpreter             650.2 H/s total     216.7 H/s/thread  wall=2.31s  spread=0.5%
+  JIT + commitment       2493.6 H/s total     831.2 H/s/thread  wall=0.60s  spread=1.1%
+  JIT batch (hash_next)   2538.4 H/s total     846.1 H/s/thread  wall=0.59s  spread=1.0%
+  Dual JIT + commitment   2864.0 H/s total     954.7 H/s/thread  wall=1.05s  spread=6.4%
+
+--- 4 threads ---
+  Interpreter             860.2 H/s total     215.0 H/s/thread  wall=2.33s  spread=0.8%
+  JIT + commitment       3311.1 H/s total     827.8 H/s/thread  wall=0.60s  spread=0.9%
+  JIT batch (hash_next)   3335.6 H/s total     833.9 H/s/thread  wall=0.60s  spread=0.8%
+  Dual JIT + commitment   3702.3 H/s total     925.6 H/s/thread  wall=1.08s  spread=1.0%
+
+--- 5 threads ---
+  Interpreter            1002.6 H/s total     200.5 H/s/thread  wall=2.49s  spread=1.8%
+  JIT + commitment       4041.9 H/s total     808.4 H/s/thread  wall=0.62s  spread=0.9%
+  JIT batch (hash_next)   4107.9 H/s total     821.6 H/s/thread  wall=0.61s  spread=0.7%
+  Dual JIT + commitment   4720.9 H/s total     944.2 H/s/thread  wall=1.06s  spread=1.1%
+
+--- 6 threads ---
+  Interpreter            1226.8 H/s total     204.5 H/s/thread  wall=2.45s  spread=0.9%
+  JIT + commitment       4602.2 H/s total     767.0 H/s/thread  wall=0.65s  spread=3.7%
+  JIT batch (hash_next)   4828.7 H/s total     804.8 H/s/thread  wall=0.62s  spread=1.1%
+  Dual JIT + commitment   4657.0 H/s total     776.2 H/s/thread  wall=1.29s  spread=7.6%
+
+--- 7 threads ---
+  Interpreter            1323.5 H/s total     189.1 H/s/thread  wall=2.64s  spread=5.4%
+  JIT + commitment       5526.7 H/s total     789.5 H/s/thread  wall=0.63s  spread=0.6%
+  JIT batch (hash_next)   5683.6 H/s total     811.9 H/s/thread  wall=0.62s  spread=0.5%
+  Dual JIT + commitment   5917.8 H/s total     845.4 H/s/thread  wall=1.18s  spread=4.1%
+
+--- 8 threads ---
+  Interpreter            1526.4 H/s total     190.8 H/s/thread  wall=2.62s  spread=2.9%
+  JIT + commitment       5597.2 H/s total     699.7 H/s/thread  wall=0.71s  spread=7.2%
+  JIT batch (hash_next)   6275.5 H/s total     784.4 H/s/thread  wall=0.64s  spread=1.8%
+  Dual JIT + commitment   4327.2 H/s total     540.9 H/s/thread  wall=1.85s  spread=7.8%
+
+======================================================================
+  SUMMARY (pool-simulated: 76-byte blob + commitment per hash)
+======================================================================
+Thr     Interp        JIT           Batch         Dual JIT      B/J     D/I   
+------  ------------  ------------  ------------  ------------  ------  ------
+1          217.5 H/s     815.2 H/s     847.7 H/s     969.9 H/s    1.0x    4.46x
+2          438.1 H/s    1683.3 H/s    1623.4 H/s    1996.6 H/s    1.0x    4.56x
+3          650.2 H/s    2493.6 H/s    2538.4 H/s    2864.0 H/s    1.0x    4.40x
+4          860.2 H/s    3311.1 H/s    3335.6 H/s    3702.3 H/s    1.0x    4.30x
+5         1002.6 H/s    4041.9 H/s    4107.9 H/s    4720.9 H/s    1.0x    4.71x
+6         1226.8 H/s    4602.2 H/s    4828.7 H/s    4657.0 H/s    1.0x    3.80x
+7         1323.5 H/s    5526.7 H/s    5683.6 H/s    5917.8 H/s    1.0x    4.47x
+8         1526.4 H/s    5597.2 H/s    6275.5 H/s    4327.2 H/s    1.1x    2.84x
