@@ -120,7 +120,6 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
         _mm_store_si128((__m128i *)outptr + 3, s3);
         outptr += 64;
     }
-    _mm_sfence();
 }
 
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state) {

@@ -727,7 +727,6 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
 
 void rx_vm_init_scratchpad(rx_vm *vm, void *seed) {
     rx_fill_aes1rx4(seed, RX_SCRATCHPAD_L3, vm->scratchpad);
-    _mm_sfence();
 }
 
 void rx_vm_run(rx_vm *vm, void *seed) {
@@ -897,7 +896,7 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     rx_vm *vm = (rx_vm *)calloc(1, sizeof(rx_vm));
     if (!vm) return NULL;
     int use_jit = (flags & RX_FLAG_JIT) != 0;
-    int large_pages = 0;
+    int large_pages = 1;
     vm->fullMem = (dataset != NULL) ? 1 : 0;
     vm->useJit = use_jit;
     vm->lightClient = (!dataset && cache) ? 1 : 0;
