@@ -7,7 +7,7 @@
 #include "common/cpu.h"
 #include "common/log.h"
 
-#define HASHES_PER_RUN 500
+#define HASHES_PER_RUN 2000
 
 typedef struct {
     int thread_id;
@@ -73,6 +73,8 @@ static int build_affinity_order(int *order, int max_order) {
     int n = 0;
     for (int i = 0; i < g_cores.count && n < max_order; i++)
         if (g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];
+    for (int i = 0; i < g_cores.count && n < max_order; i++)
+        if (g_cores.is_pcore[i] && g_cores.sibling[i] >= 0) order[n++] = g_cores.sibling[i];
     for (int i = 0; i < g_cores.count && n < max_order; i++)
         if (!g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];
     return n;

@@ -127,10 +127,10 @@ static int build_affinity_order(const core_list_t *cores, int *order, int max_co
         if (cores->is_pcore[i]) order[n++] = cores->os_index[i];
     }
     for (int i = 0; i < cores->count && n < max_count; i++) {
-        if (!cores->is_pcore[i]) order[n++] = cores->os_index[i];
+        if (cores->is_pcore[i] && cores->sibling[i] >= 0) order[n++] = cores->sibling[i];
     }
     for (int i = 0; i < cores->count && n < max_count; i++) {
-        if (cores->is_pcore[i] && cores->sibling[i] >= 0) order[n++] = cores->sibling[i];
+        if (!cores->is_pcore[i]) order[n++] = cores->os_index[i];
     }
     return n;
 }
