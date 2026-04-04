@@ -323,12 +323,12 @@ struct JitCompiler {
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x38); emitByte(0x00);
 
-        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
-        pos += LOOP_STORE_SIZE;
-
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
 
         emitByte(0x83); emitByte(0xEB); emitByte(0x01);
         int jnzPos = pos;
@@ -679,12 +679,12 @@ struct JitCompiler {
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x38); emitByte(0x00);
 
-        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
-        pos += LOOP_STORE_SIZE;
-
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
 
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x10); emitByte(0x00);
         emitByte(0x48); emitByte(0x83); emitByte(0x64); emitByte(0x24); emitByte(0x18); emitByte(0x00);
@@ -1023,11 +1023,12 @@ struct JitCompiler {
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x38); emitByte(0x00);
-        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
-        pos += LOOP_STORE_SIZE;
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
 
         emitSaveVmStateSlim(VM1_SAVE);
 
@@ -1073,11 +1074,12 @@ struct JitCompiler {
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
         emitByte(0x0F); emitByte(0x18); emitByte(0x4C); emitByte(0x38); emitByte(0x00);
-        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
-        pos += LOOP_STORE_SIZE;
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg1);
         emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+
+        memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
+        pos += LOOP_STORE_SIZE;
 
         emitSaveVmStateSlim(VM2_SAVE);
 

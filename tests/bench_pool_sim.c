@@ -99,6 +99,8 @@ DWORD WINAPI bench_thread(LPVOID arg) {
     thread_data_t *d = (thread_data_t *)arg;
     int tid = d->thread_id;
 
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+
     int order[MAX_CORES * 2];
     int order_count = build_affinity_order(order, sizeof(order) / sizeof(order[0]));
     if (order_count > 0) {
