@@ -7,7 +7,7 @@
 #include "common/cpu.h"
 #include "common/log.h"
 
-#define HASHES_PER_RUN 2000
+#define HASHES_PER_RUN 5000
 
 typedef struct {
     int thread_id;
