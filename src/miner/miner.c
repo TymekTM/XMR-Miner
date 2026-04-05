@@ -501,6 +501,15 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
             continue;
         }
         SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_HIGHEST);
+        {
+            static void *pFn = NULL;
+            if (!pFn) pFn = (void*)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSetInformationThread");
+            if (pFn) {
+                long (*fn)(HANDLE, long, void*, unsigned long) = (long (*)(HANDLE, long, void*, unsigned long))pFn;
+                LONG pt[3] = { 1, 2, 1 };
+                fn(ctx->thread_handles[i], 0x5C, pt, sizeof(pt));
+            }
+        }
         if (num_physical > 0 && affinity_count > 0) {
             GROUP_AFFINITY ga = {0};
             int os_idx = affinity_order[i % affinity_count];

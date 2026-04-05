@@ -102,6 +102,15 @@ DWORD WINAPI bench_thread(LPVOID arg) {
     int tid = d->thread_id;
 
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+    {
+        static void *pFn = NULL;
+        if (!pFn) pFn = (void*)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSetInformationThread");
+        if (pFn) {
+            long (*fn)(HANDLE, long, void*, unsigned long) = (long (*)(HANDLE, long, void*, unsigned long))pFn;
+            LONG pt[3] = { 1, 2, 1 };
+            fn(GetCurrentThread(), 0x5C, pt, sizeof(pt));
+        }
+    }
 
     int order[MAX_CORES * 2];
     int order_count = build_affinity_order(order, sizeof(order) / sizeof(order[0]));
