@@ -442,16 +442,8 @@ void worker_run(worker_t *w) {
             memcpy(blob + nonce_off, &nonce, 4);
 
             uint8_t hash[32];
-            int ok = 0;
-
-            if (w->loop_count == 0 && !w->batch_active) {
-                rx_calculate_hash_first(vm, blob, (size_t)blob_len);
-                w->batch_active = 1;
-            } else {
-                rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
-                w->batch_active = 1;
-                ok = share_meets_target(hash, current_target, is_monero_proto);
-            }
+            rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+            int ok = share_meets_target(hash, current_target, is_monero_proto);
 
             if (ok && is_monero_proto) {
                 uint8_t commitment[32];
