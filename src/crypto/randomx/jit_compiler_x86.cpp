@@ -8,7 +8,7 @@
 #define RX_DATASET_BASE_MASK  (RX_DATASET_BASE_SIZE - 64)
 #define RX_CACHE_MASK         ((RX_ARGON_MEMORY * 16) - 1)
 #define RX_SCRATCHPAD_MASK    (RX_SCRATCHPAD_L3 - 64)
-#define RX_CODE_ALIGN         4096
+    #define RX_CODE_ALIGN         128
 #define RX_MAX_INSTR_CODE     32
 #define RX_SUPER_INSTR_MAX    14
 #define RX_SUPER_PROG_HDR     128
