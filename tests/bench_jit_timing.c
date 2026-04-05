@@ -166,16 +166,17 @@ int main() {
     printf("\n========================================\n");
     printf("TIMING BREAKDOWN (per hash_next call):\n");
     printf("  blake2b(blob, 76B):     %8.2f us  (%4.1f%%)\n", t_blake2b_blob, t_blake2b_blob/t_hash_next*100);
-    printf("  fill+init:              %8.2f us  (%4.1f%%)\n", t_fill_init, t_fill_init/t_hash_next*100);
-    printf("  JIT generate:           %8.2f us  (%4.1f%%)\n", t_jit_gen, t_jit_gen/t_hash_next*100);
+    printf("  fill+init x8:           %8.2f us  (%4.1f%%)\n", t_fill_init*8, t_fill_init*8/t_hash_next*100);
+    printf("  JIT generate x8:        %8.2f us  (%4.1f%%)\n", t_jit_gen*8, t_jit_gen*8/t_hash_next*100);
     printf("  blake2b(reg, 64B) x9:   %8.2f us  (%4.1f%%)\n", t_blake2b_reg*9, t_blake2b_reg*9/t_hash_next*100);
-    printf("  hash_and_fill x8:       %8.2f us  (%4.1f%%)\n", t_hash_and_fill*8, t_hash_and_fill*8/t_hash_next*100);
+    printf("  hash_and_fill x1:       %8.2f us  (%4.1f%%)\n", t_hash_and_fill, t_hash_and_fill/t_hash_next*100);
+    double overhead = t_blake2b_blob + t_fill_init*8 + t_jit_gen*8 + t_blake2b_reg*9 + t_hash_and_fill;
     printf("  MEASURED hash_next:     %8.2f us\n", t_hash_next);
-    printf("  DERIVED VM exec (8ch):  %8.2f us  (%4.1f%%)\n",
-        t_hash_next - t_blake2b_blob - t_fill_init - t_jit_gen - t_blake2b_reg*9 - t_hash_and_fill*8,
-        (t_hash_next - t_blake2b_blob - t_fill_init - t_jit_gen - t_blake2b_reg*9 - t_hash_and_fill*8)/t_hash_next*100);
-    printf("  VM exec per chain:      %8.2f us\n",
-        (t_hash_next - t_blake2b_blob - t_fill_init - t_jit_gen - t_blake2b_reg*9 - t_hash_and_fill*8)/8);
+    printf("  DERIVED JIT exec (8ch): %8.2f us  (%4.1f%%)\n",
+        t_hash_next - overhead,
+        (t_hash_next - overhead)/t_hash_next*100);
+    printf("  JIT exec per chain:     %8.2f us\n",
+        (t_hash_next - overhead)/8);
     printf("========================================\n");
 
     rx_destroy_vm(vm);

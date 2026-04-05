@@ -82,6 +82,7 @@ macro(add_bench_target NAME SRC EXTRA_LIBS)
     add_executable(${NAME} ${SRC} ${COMMON_LIBS})
     target_include_directories(${NAME} PRIVATE src)
     target_link_libraries(${NAME} ws2_32 ${EXTRA_LIBS})
+    set_target_properties(${NAME} PROPERTIES LINK_FLAGS "/LTCG /OPT:ICF /OPT:REF")
 endmacro()
 
 add_bench_target(test_hash_vector tests/test_hash_vector.c "")

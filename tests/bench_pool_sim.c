@@ -3,6 +3,8 @@
 #include <stdint.h>
 #include <string.h>
 #include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #include "crypto/randomx/randomx_internal.h"
 #include "common/cpu.h"
 #include "common/log.h"
@@ -263,10 +265,13 @@ static double run_mode(int num_threads, int mode, const char *label) {
 
 int main(int argc, char **argv) {
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    timeBeginPeriod(1);
     enable_huge_pages();
 
     int max_threads = 8;
+    int specific_mode = -1;
     if (argc > 1) max_threads = atoi(argv[1]);
+    if (argc > 2) specific_mode = atoi(argv[2]);
 
     g_affinity_ready = detect_cores(&g_cores) > 0;
     if (g_affinity_ready) {
@@ -321,11 +326,11 @@ int main(int argc, char **argv) {
 
     for (int t = 1; t <= max_threads; t++) {
         printf("--- %d thread%s ---\n", t, t > 1 ? "s" : "");
-        res_i[t] = run_mode(t, 0, "Interpreter");
-        res_s[t] = run_mode(t, 1, "JIT + commitment");
-        res_b[t] = run_mode(t, 3, "JIT batch (hash_next)");
-        res_bn[t] = run_mode(t, 4, "JIT batch (no commit)");
-        res_d[t] = run_mode(t, 2, "Dual JIT + commitment");
+        if (specific_mode < 0 || specific_mode == 0) res_i[t] = run_mode(t, 0, "Interpreter");
+        if (specific_mode < 0 || specific_mode == 1) res_s[t] = run_mode(t, 1, "JIT + commitment");
+        if (specific_mode < 0 || specific_mode == 3) res_b[t] = run_mode(t, 3, "JIT batch (hash_next)");
+        if (specific_mode < 0 || specific_mode == 4) res_bn[t] = run_mode(t, 4, "JIT batch (no commit)");
+        if (specific_mode < 0 || specific_mode == 2) res_d[t] = run_mode(t, 2, "Dual JIT + commitment");
         printf("\n");
     }
 
@@ -344,5 +349,6 @@ int main(int argc, char **argv) {
 
     rx_free_dataset(dataset);
     rx_free_cache(cache);
+    timeEndPeriod(1);
     return 0;
 }

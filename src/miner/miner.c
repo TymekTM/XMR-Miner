@@ -6,6 +6,8 @@
 #include "common/log.h"
 #include "common/cpu.h"
 #include <windows.h>
+#include <mmsystem.h>
+#pragma comment(lib, "winmm.lib")
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -477,6 +479,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    timeBeginPeriod(1);
 
     core_list_t cores;
     int num_physical = detect_physical_cores(&cores);
