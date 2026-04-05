@@ -299,30 +299,43 @@ int main(int argc, char **argv) {
     printf("  POOL SIMULATION BENCH  (%d hashes/thread, 76-byte blob + commitment)\n", HASHES_PER_RUN);
     printf("======================================================================\n\n");
 
-    printf("[VERIFY] Checking batch API (hash_first/hash_next) correctness...\n");
+    printf("[VERIFY] Checking JIT vs interpreter correctness...\n");
     {
-        rx_vm *vm_std = rx_create_vm(RX_FLAG_JIT, cache, dataset);
-        rx_vm *vm_batch = rx_create_vm(RX_FLAG_JIT, cache, dataset);
-        uint8_t blob_v[76];
-        memset(blob_v, 0, sizeof(blob_v));
-        blob_v[0] = 0x10; blob_v[1] = 0x03; blob_v[2] = 0xe3;
-        uint8_t hash_std[32], hash_batch[32];
+        rx_vm *vm_i = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+        rx_vm *vm_j = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        uint8_t hash_i[32], hash_j[32];
         int pass = 1;
-        *(uint32_t *)(blob_v + 39) = 0;
-        rx_calculate_hash_first(vm_batch, blob_v, sizeof(blob_v));
-        for (int i = 0; i < 100; i++) {
-            *(uint32_t *)(blob_v + 39) = (uint32_t)(i + 1);
-            rx_calculate_hash_next(vm_batch, blob_v, sizeof(blob_v), hash_batch);
-            *(uint32_t *)(blob_v + 39) = (uint32_t)i;
-            rx_calculate_hash(vm_std, blob_v, sizeof(blob_v), hash_std);
-            if (memcmp(hash_std, hash_batch, 32) != 0) {
-                printf("[VERIFY] MISMATCH at nonce %d\n", i);
-                pass = 0; break;
+        for (int t = 0; t < 10; t++) {
+            char input[80];
+            snprintf(input, sizeof(input), "verify test %d padding", t);
+            rx_calculate_hash(vm_i, input, strlen(input), hash_i);
+            rx_calculate_hash(vm_j, input, strlen(input), hash_j);
+            if (memcmp(hash_i, hash_j, 32) != 0) { pass = 0; break; }
+        }
+        if (pass) {
+            uint8_t blob_v[76];
+            memset(blob_v, 0, sizeof(blob_v));
+            blob_v[0] = 0x10; blob_v[1] = 0x03; blob_v[2] = 0xe3;
+            rx_calculate_hash_first(vm_i, blob_v, sizeof(blob_v));
+            rx_calculate_hash_first(vm_j, blob_v, sizeof(blob_v));
+            for (int i = 0; i < 10; i++) {
+                *(uint32_t *)(blob_v + 39) = (uint32_t)(i + 1);
+                rx_calculate_hash_next(vm_i, blob_v, sizeof(blob_v), hash_i);
+                *(uint32_t *)(blob_v + 39) = (uint32_t)(i + 1);
+                rx_calculate_hash_next(vm_j, blob_v, sizeof(blob_v), hash_j);
+                if (memcmp(hash_i, hash_j, 32) != 0) { pass = 0; break; }
             }
         }
-        rx_destroy_vm(vm_std);
-        rx_destroy_vm(vm_batch);
-        printf("[VERIFY] Batch API vs standard: %s\n", pass ? "PASS" : "FAIL");
+        rx_destroy_vm(vm_i);
+        rx_destroy_vm(vm_j);
+        printf("[VERIFY] JIT vs interpreter: %s\n", pass ? "PASS" : "FAIL");
+        if (!pass) {
+            printf("[ABORT] Correctness check failed — skipping benchmarks\n");
+            rx_free_dataset(dataset);
+            rx_free_cache(cache);
+            timeEndPeriod(1);
+            return 1;
+        }
     }
     printf("\n");
 

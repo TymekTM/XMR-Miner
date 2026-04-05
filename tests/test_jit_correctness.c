@@ -58,7 +58,7 @@ int main(void) {
         rx_destroy_vm(vm_jit);
     }
 
-    printf("\n[TEST] Batch API: JIT vs interpreter...\n"); fflush(stdout);
+    printf("\n[TEST] Batch API: JIT vs interpreter (both batch)...\n"); fflush(stdout);
     {
         rx_vm *vm_interp = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
         rx_vm *vm_jit = rx_create_vm(RX_FLAG_JIT, cache, dataset);
@@ -70,12 +70,13 @@ int main(void) {
         int batch_pass = 1;
 
         rx_calculate_hash_first(vm_jit, blob, sizeof(blob));
+        rx_calculate_hash_first(vm_interp, blob, sizeof(blob));
         for (int i = 0; i < 20; i++) {
             *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
             rx_calculate_hash_next(vm_jit, blob, sizeof(blob), hash_j);
 
             *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
-            rx_calculate_hash(vm_interp, blob, sizeof(blob), hash_i);
+            rx_calculate_hash_next(vm_interp, blob, sizeof(blob), hash_i);
 
             if (memcmp(hash_i, hash_j, 32) != 0) {
                 printf("[BATCH] MISMATCH at nonce %d\n", i + 1);

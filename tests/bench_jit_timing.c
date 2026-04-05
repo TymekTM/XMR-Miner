@@ -18,6 +18,37 @@ int main() {
     printf("Creating VM...\n"); fflush(stdout);
     rx_vm* vm = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
 
+    printf("[VERIFY] JIT vs interpreter correctness check...\n"); fflush(stdout);
+    {
+        rx_vm* vm_i = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+        rx_vm* vm_j = rx_create_vm(RX_FLAG_JIT, cache, dataset);
+        uint8_t hi[32], hj[32];
+        int ok = 1;
+        for (int t = 0; t < 10; t++) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "timing_verify_%d", t);
+            rx_calculate_hash(vm_i, buf, strlen(buf), hi);
+            rx_calculate_hash(vm_j, buf, strlen(buf), hj);
+            if (memcmp(hi, hj, 32) != 0) { ok = 0; break; }
+        }
+        if (ok) {
+            uint8_t blob[76] = {0};
+            blob[0] = 0x10;
+            rx_calculate_hash_first(vm_i, blob, sizeof(blob));
+            rx_calculate_hash_first(vm_j, blob, sizeof(blob));
+            for (int i = 0; i < 5; i++) {
+                *(uint32_t*)(blob+39) = (uint32_t)(i+1);
+                rx_calculate_hash_next(vm_i, blob, sizeof(blob), hi);
+                *(uint32_t*)(blob+39) = (uint32_t)(i+1);
+                rx_calculate_hash_next(vm_j, blob, sizeof(blob), hj);
+                if (memcmp(hi, hj, 32) != 0) { ok = 0; break; }
+            }
+        }
+        rx_destroy_vm(vm_i); rx_destroy_vm(vm_j);
+        printf("[VERIFY] %s\n", ok ? "PASS" : "FAIL");
+        if (!ok) { printf("[ABORT] Correctness failed — skipping benchmarks\n"); return 1; }
+    }
+
     uint8_t input[76];
     memset(input, 0x42, sizeof(input));
 
