@@ -138,6 +138,7 @@ struct JitCompiler {
     rx_cache* superscalar_cache;
     uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
     int imul_rcp_pool_count;
+    bool cbranch_short[RX_PROGRAM_SIZE];
 
     void emitByte(uint8_t b) { if (!estimating) code[pos++] = b; else pos++; }
     void emit32(uint32_t v) { if (!estimating) { memcpy(code + pos, &v, 4); } pos += 4; }
@@ -279,16 +280,31 @@ struct JitCompiler {
     }
 
     void generateProgramPrologue(rx_program* prog, rx_program_config* pcfg, int loopBeginPos) {
+        memset(cbranch_short, 0, sizeof(cbranch_short));
+        int saved_pos = pos;
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+        estimating = true;
+        memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
+        pos += LOOP_LOAD_SIZE;
+        for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
+            rx_instruction* instr = &prog->programBuffer[i];
+            instr->src %= RX_REGISTERS_COUNT;
+            instr->dst %= RX_REGISTERS_COUNT;
+            estOffsets[instructionCount] = pos;
+            generateCode(instr, i);
+        }
+        estimating = false;
+        pos = saved_pos;
+        instructionCount = 0;
+        for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+        imul_rcp_pool_count = 0;
 
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
 
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
             rx_instruction* instr = &prog->programBuffer[i];
-            instr->src %= RX_REGISTERS_COUNT;
-            instr->dst %= RX_REGISTERS_COUNT;
             generateCode(instr, i);
         }
 
@@ -1348,7 +1364,7 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
 
         if (pool_idx >= 0) {
             int64_t pool_addr = IMUL_RCP_POOL_OFFSET + (int64_t)pool_idx * 8;
-            int32_t disp = (int32_t)(pool_addr - ((int64_t)pos + 7));
+            int32_t disp = (int32_t)(pool_addr - ((int64_t)pos + 8));
             emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
             emitByte(0x05 | (instr->dst << 3));
             emit32((uint32_t)disp);
@@ -1503,7 +1519,22 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     emit32(imm);
     emitByte(0x49); emitByte(0xF7); emitByte(0xC0 | reg);
     emit32(RX_CONDITION_MASK << shift);
-    emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
+
+    if (estimating) {
+        int32_t target_pos = estOffsets[target];
+        int32_t disp_short = target_pos - (pos + 2);
+        cbranch_short[i] = (disp_short >= -128 && disp_short <= 127);
+        emitByte(0x0F); emitByte(0x84); emit32(0);
+    } else {
+        int32_t target_pos = instructionOffsets[target];
+        if (cbranch_short[i]) {
+            int8_t disp8 = (int8_t)(target_pos - (pos + 2));
+            emitByte(0x74); emitByte((uint8_t)disp8);
+        } else {
+            emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
+        }
+    }
+
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
         registerUsage[j] = i;
 }
@@ -1527,6 +1558,8 @@ static uint64_t randomx_reciprocal_fast_impl(uint32_t divisor) {
 }
 
 extern "C" {
+
+int g_jit_epilogue_skip_mask = 0;
 
 struct rx_jit {
     JitCompiler* compiler;
@@ -1587,6 +1620,14 @@ int rx_jit_get_instruction_offset(rx_jit* jit, int index) {
 
 int rx_jit_get_num_instructions(rx_jit* jit) {
     return (int)jit->compiler->instructionCount;
+}
+
+void rx_jit_dump_code(rx_jit* jit) {
+    if (!jit || !jit->compiler || !jit->compiler->code) return;
+    FILE* f = fopen("jit_dump.bin", "wb");
+    if (!f) return;
+    fwrite(jit->compiler->code, 1, RX_TOTAL_CODE_SIZE, f);
+    fclose(f);
 }
 
 }
