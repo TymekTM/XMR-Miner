@@ -7,6 +7,7 @@
 #include "common/cpu.h"
 #include <windows.h>
 #include <mmsystem.h>
+#include <intrin.h>
 #pragma comment(lib, "winmm.lib")
 #include <stdio.h>
 #include <string.h>
@@ -480,6 +481,38 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     timeBeginPeriod(1);
+
+    {
+        int msr_ok = 0;
+        typedef long (*NtSystemDebugControl_fn)(int, void*, void*, unsigned long, void*, unsigned long, unsigned long*);
+        static NtSystemDebugControl_fn pNtDbg = NULL;
+        struct { uint32_t msr; uint64_t value; } msr_in;
+        uint64_t msr_out = 0;
+        unsigned long ret_len = 0;
+        uint64_t val = 0, perf_ctl = 0, platform = 0, ratio = 0;
+        long status = 0;
+
+        if (!pNtDbg) pNtDbg = (NtSystemDebugControl_fn)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSystemDebugControl");
+        if (pNtDbg) {
+            __try {
+                val = __readmsr(0xCE);
+                if (val & 1) {
+                    perf_ctl = __readmsr(0x199);
+                    ratio = (perf_ctl >> 8) & 0xFF;
+                    if (ratio == 0) { platform = __readmsr(0x003); ratio = (platform >> 8) & 0xFF; }
+                    if (ratio > 0) { msr_in.msr = 0x199; msr_in.value = (ratio << 8) | (ratio & 0xFF); status = pNtDbg(0x13, &msr_in, sizeof(msr_in), &msr_out, sizeof(msr_out), &ret_len, 0); if (status >= 0) msr_ok = 1; }
+                }
+            } __except(EXCEPTION_EXECUTE_HANDLER) { msr_ok = 0; }
+        }
+        if (!msr_ok) {
+            __try {
+                val = __readmsr(0xCE);
+                if (val & 1) { perf_ctl = __readmsr(0x199); ratio = (perf_ctl >> 8) & 0xFF; if (ratio == 0) { platform = __readmsr(0x003); ratio = (platform >> 8) & 0xFF; } if (ratio > 0) { __writemsr(0x199, (ratio << 8) | (ratio & 0xFF)); msr_ok = 1; } }
+            } __except(EXCEPTION_EXECUTE_HANDLER) { msr_ok = 0; }
+        }
+        if (msr_ok) LOG_INFO("[MSR] IA32_PERF_CTL set to max performance");
+        else LOG_INFO("[MSR] MSR tuning not available (need admin/driver)");
+    }
 
     core_list_t cores;
     int num_physical = detect_physical_cores(&cores);
