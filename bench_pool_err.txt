@@ -1,6 +1,0 @@
-[I] [DATASET] Allocated 2080 MB (LARGE PAGES)
-[I] [DATASET] Initializing with 8 threads...
-[I] [DATASET] Initializing... ~33554432/33554432 (100%)
-[I] [DATASET] Initialization complete: 33554432 items
-[I] [DATASET] Computing checksum for cache save...
-[I] [DATASET] Cached dataset saved to disk (2048.0 MB)

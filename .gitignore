@@ -69,3 +69,23 @@ nul
 # Mining config (contains wallet)
 mining.conf
 /tools/xmrig-win64
+
+# Benchmark / test output
+bench_*.txt
+bench_*_err.txt
+test_out.txt
+test_err.txt
+test_output.txt
+ctest_*.txt
+correctness_*.txt
+tv_*.txt
+
+# Miner / xmrig output
+miner_out.txt
+miner_err.txt
+miner_error.txt
+miner_output.txt
+xmrig_*.txt
+
+# Additional build dirs
+build_pgo/

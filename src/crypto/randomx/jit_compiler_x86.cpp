@@ -14,8 +14,10 @@
 #define RX_SUPER_PROG_HDR     128
 #define RX_PROGRAM_CODE_SIZE  (((RX_CODE_ALIGN + RX_MAX_INSTR_CODE * RX_PROGRAM_SIZE - 1) / RX_CODE_ALIGN + 1) * RX_CODE_ALIGN)
 #define RX_SUPER_CODE_SIZE    (((RX_CODE_ALIGN + (RX_SUPER_PROG_HDR + RX_SUPER_INSTR_MAX * RX_SUPERSCALAR_MAX_SIZE) * RX_CACHE_ACCESSES - 1) / RX_CODE_ALIGN + 1) * RX_CODE_ALIGN)
-#define RX_TOTAL_CODE_SIZE    (RX_PROGRAM_CODE_SIZE + RX_SUPER_CODE_SIZE)
+#define RX_TOTAL_CODE_SIZE    (RX_PROGRAM_CODE_SIZE + RX_SUPER_CODE_SIZE + 128)
 #define RX_SUPER_OFFSET       RX_PROGRAM_CODE_SIZE
+#define IMUL_RCP_POOL_SIZE    16
+#define IMUL_RCP_POOL_OFFSET  (RX_TOTAL_CODE_SIZE - IMUL_RCP_POOL_SIZE * 8)
 #define RX_REGISTER_NEEDS_SIB     4
 #define RX_REGISTER_NEEDS_DISP    5
 #define RX_CONDITION_OFFSET       8
@@ -129,14 +131,18 @@ struct JitCompiler {
     uint8_t* code;
     int32_t pos;
     int32_t instructionOffsets[RX_PROGRAM_SIZE]; int instructionCount;
+    int32_t estOffsets[RX_PROGRAM_SIZE];
+    bool estimating;
     int registerUsage[RX_REGISTERS_COUNT];
     rx_cache* cache;
     rx_cache* superscalar_cache;
+    uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
+    int imul_rcp_pool_count;
 
-    void emitByte(uint8_t b) { code[pos++] = b; }
-    void emit32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
-    void emit64(uint64_t v) { memcpy(code + pos, &v, 8); pos += 8; }
-    void emit(const uint8_t* src, int len) { memcpy(code + pos, src, len); pos += len; }
+    void emitByte(uint8_t b) { if (!estimating) code[pos++] = b; else pos++; }
+    void emit32(uint32_t v) { if (!estimating) { memcpy(code + pos, &v, 4); } pos += 4; }
+    void emit64(uint64_t v) { if (!estimating) { memcpy(code + pos, &v, 8); } pos += 8; }
+    void emit(const uint8_t* src, int len) { if (!estimating) memcpy(code + pos, src, len); pos += len; }
 
     void alignCode(int align) {
         while (pos % align) {
@@ -319,7 +325,7 @@ struct JitCompiler {
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
 
-        emitByte(0x83); emitByte(0xEB); emitByte(0x01);
+        emitByte(0xFF); emitByte(0xCB);
         int jnzPos = pos;
         emitByte(0x0F); emitByte(0x85); emit32(0);
         emitByte(0xE9); emit32(0);
@@ -391,11 +397,17 @@ struct JitCompiler {
 
         memcpy(code + constantsPos + EMASK_OFFSET_IN_CONSTANTS, pcfg->eMask, sizeof(pcfg->eMask));
 
+        imul_rcp_pool_count = 0;
+
         pos = loopBeginPos + 1;
         this->pos = pos;
         generateProgramPrologue(prog, pcfg, loopBeginPos);
 
         generateProgramEpilogue(prog, pcfg, loopBeginPos);
+
+        for (int j = 0; j < imul_rcp_pool_count; j++) {
+            memcpy(code + IMUL_RCP_POOL_OFFSET + j * 8, &imul_rcp_pool[j], 8);
+        }
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
@@ -1322,8 +1334,28 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
     uint32_t divisor = (uint32_t)getImm32(instr);
     if (!is_zero_or_power_of_2(divisor)) {
         registerUsage[instr->dst] = i;
-        emitByte(0x48); emitByte(0xB8); emit64(rx_reciprocal(divisor));
-        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst));
+        uint64_t rcp = rx_reciprocal(divisor);
+
+        int pool_idx = -1;
+        for (int j = 0; j < imul_rcp_pool_count; j++) {
+            if (imul_rcp_pool[j] == rcp) { pool_idx = j; break; }
+        }
+
+        if (pool_idx < 0 && imul_rcp_pool_count < IMUL_RCP_POOL_SIZE) {
+            pool_idx = imul_rcp_pool_count++;
+            imul_rcp_pool[pool_idx] = rcp;
+        }
+
+        if (pool_idx >= 0) {
+            int64_t pool_addr = IMUL_RCP_POOL_OFFSET + (int64_t)pool_idx * 8;
+            int32_t disp = (int32_t)(pool_addr - ((int64_t)pos + 7));
+            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
+            emitByte(0x05 | (instr->dst << 3));
+            emit32((uint32_t)disp);
+        } else {
+            emitByte(0x48); emitByte(0xB8); emit64(rcp);
+            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst));
+        }
     }
 }
 
