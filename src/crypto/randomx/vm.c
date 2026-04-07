@@ -846,6 +846,7 @@ rx_dataset *rx_alloc_dataset(int large_pages) {
     }
 #endif
     if (!ds->memory) { free(ds); return NULL; }
+    VirtualLock(ds->memory, alloc_size);
     return ds;
 }
 
@@ -914,6 +915,7 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     if (!vm->scratchpad)
         vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
     if (!vm->scratchpad) { free(vm); return NULL; }
+    VirtualLock(vm->scratchpad, RX_SCRATCHPAD_L3);
     vm->mxcsrState = RX_MXCSR_DEFAULT;
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
