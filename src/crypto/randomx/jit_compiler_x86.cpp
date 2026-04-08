@@ -1503,18 +1503,9 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     emit32(RX_CONDITION_MASK << shift);
 
     if (estimating) {
-        int32_t target_pos = estOffsets[target];
-        int32_t disp_short = target_pos - (pos + 2);
-        cbranch_short[i] = (disp_short >= -128 && disp_short <= 127);
-        emitByte(0x0F); emitByte(0x84); emit32(0);
+        pos += 6;
     } else {
-        int32_t target_pos = instructionOffsets[target];
-        if (cbranch_short[i]) {
-            int8_t disp8 = (int8_t)(target_pos - (pos + 2));
-            emitByte(0x74); emitByte((uint8_t)disp8);
-        } else {
-            emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
-        }
+        emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
     }
 
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
