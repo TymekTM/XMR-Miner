@@ -386,6 +386,11 @@ void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
     return (void *)ctx->workers[worker_id].vm;
 }
 
+void *miner_get_vm2(miner_ctx_t *ctx, int worker_id) {
+    if (worker_id < 0 || worker_id >= ctx->num_threads) return NULL;
+    return (void *)ctx->workers[worker_id].vm2;
+}
+
 void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags) {
     EnterCriticalSection(&ctx->cache_lock);
     for (int i = 0; i < ctx->num_threads; i++) {
@@ -479,7 +484,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     }
 
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    SetPriorityClass(GetCurrentProcess(), REALTIME_PRIORITY_CLASS);
     timeBeginPeriod(1);
 
     {
@@ -512,6 +517,26 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         }
         if (msr_ok) LOG_INFO("[MSR] IA32_PERF_CTL set to max performance");
         else LOG_INFO("[MSR] MSR tuning not available (need admin/driver)");
+    }
+
+    {
+        HMODULE hKernel32 = GetModuleHandleW(L"kernel32");
+        typedef BOOL (WINAPI *SetPrio_f)(HANDLE);
+        SetPrio_f pSetPrio = NULL;
+        if (hKernel32) pSetPrio = (SetPrio_f)GetProcAddress(hKernel32, "SetProcessPriority");
+        if (pSetPrio) pSetPrio(GetCurrentProcess(), PROCESS_MODE_BACKGROUND_END | ABOVE_NORMAL_PRIORITY_CLASS);
+
+        typedef NTSTATUS (WINAPI *NtSetInfoProc_f)(HANDLE, ULONG, PVOID, ULONG);
+        static NtSetInfoProc_f pNtSetInfo = NULL;
+        if (!pNtSetInfo) pNtSetInfo = (NtSetInfoProc_f)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSetInformationProcess");
+        ULONG powerThrottling[2] = { 0, 2 };
+        if (pNtSetInfo) pNtSetInfo(GetCurrentProcess(), ProcessPowerThrottling, powerThrottling, sizeof(powerThrottling), NULL);
+
+        typedef BOOL (WINAPI *SetMemPri_f)(HANDLE, DWORD);
+        SetMemPri_f pSetMemPri = NULL;
+        if (hKernel32) pSetMemPri = (SetMemPri_f)GetProcAddress(hKernel32, "SetProcessWorkingSetSizeEx");
+        QUOTA_LIMITS memLimits = { (SIZE_T)-1ULL >> 1, (SIZE_T)-1ULL >> 1 };
+        if (pSetMemPri) pSetMemPri(GetCurrentProcess(), QUOTA_LIMITS_DEFAULT, memLimits);
     }
 
     core_list_t cores;

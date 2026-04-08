@@ -164,7 +164,12 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
 
 void config_print(const config_t *cfg) {
     LOG_INFO("Pool: %s:%d", cfg->pool_url, cfg->pool_port);
-    LOG_INFO("Wallet: %s...%.4s", cfg->wallet, cfg->wallet + strlen(cfg->wallet) - 4);
+    size_t wallet_len = strlen(cfg->wallet);
+    if (wallet_len > 4) {
+        LOG_INFO("Wallet: %s...%.4s", cfg->wallet, cfg->wallet + wallet_len - 4);
+    } else {
+        LOG_INFO("Wallet: %s", cfg->wallet);
+    }
     if (cfg->threads <= 0)
         LOG_INFO("Threads: auto");
     else

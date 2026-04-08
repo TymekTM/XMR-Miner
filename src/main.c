@@ -41,6 +41,14 @@ int main(int argc, char **argv) {
         LOG_ERR("AES-NI not available - RandomX requires AES-NI");
         return 1;
     }
+    if (!cpu.has_avx2) {
+        LOG_ERR("AVX2 not available - build requires AVX2");
+        return 1;
+    }
+    if (!cpu.has_bmi2) {
+        LOG_ERR("BMI2 not available - RandomX mul-high path requires BMI2");
+        return 1;
+    }
 
     int threads = cfg.threads > 0 ? cfg.threads : cpu.logical_cores;
     LOG_INFO("Using %d mining thread(s)", threads);

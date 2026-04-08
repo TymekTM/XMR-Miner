@@ -11,4 +11,5 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
 void miner_stop(miner_ctx_t *ctx);
 void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len);
 void *miner_get_vm(miner_ctx_t *ctx, int worker_id);
+void *miner_get_vm2(miner_ctx_t *ctx, int worker_id);
 void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags);
