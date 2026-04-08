@@ -98,8 +98,6 @@ static int build_affinity_order(int *order, int max_order) {
     for (int i = 0; i < g_cores.count && n < max_order; i++)
         if (g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];
     for (int i = 0; i < g_cores.count && n < max_order; i++)
-        if (g_cores.is_pcore[i] && g_cores.sibling[i] >= 0) order[n++] = g_cores.sibling[i];
-    for (int i = 0; i < g_cores.count && n < max_order; i++)
         if (!g_cores.is_pcore[i]) order[n++] = g_cores.os_index[i];
     return n;
 }
