@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <intrin.h>
 
 #if !defined(__cplusplus) && (!defined(__STDC_VERSION__) || __STDC_VERSION__ < 199901L)
   #if   defined(_MSC_VER)
@@ -82,7 +83,11 @@ static BLAKE2_INLINE void store64( void *dst, uint64_t w )
 
 static BLAKE2_INLINE uint64_t rotr64( const uint64_t w, const unsigned c )
 {
+#if defined(_MSC_VER)
+  return _rotl64(w, 64 - c);
+#else
   return ( w >> c ) | ( w << ( 64 - c ) );
+#endif
 }
 
 static BLAKE2_INLINE void secure_zero_memory(void *v, size_t n)
