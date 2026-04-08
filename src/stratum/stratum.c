@@ -26,7 +26,6 @@ struct stratum_ctx {
     int recv_len;
     stratum_job_t job;
     CRITICAL_SECTION lock;
-    int wsa_started;
 };
 
 static int send_line(stratum_ctx_t *ctx, const char *msg) {
@@ -267,21 +266,14 @@ void stratum_destroy(stratum_ctx_t *ctx) {
     free(ctx->cfg.worker_name);
     free(ctx->cfg.password);
     free_job_fields(&ctx->job);
-    if (ctx->wsa_started) {
-        WSACleanup();
-        ctx->wsa_started = 0;
-    }
     free(ctx);
 }
 
 int stratum_connect(stratum_ctx_t *ctx) {
-    if (!ctx->wsa_started) {
-        WSADATA wsa;
-        if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-            LOG_ERR("[STRATUM] WSAStartup failed: %d", WSAGetLastError());
-            return -1;
-        }
-        ctx->wsa_started = 1;
+    WSADATA wsa;
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
+        LOG_ERR("[STRATUM] WSAStartup failed: %d", WSAGetLastError());
+        return -1;
     }
 
     char port_str[16];
@@ -297,6 +289,7 @@ int stratum_connect(stratum_ctx_t *ctx) {
     int gai_err = getaddrinfo(ctx->cfg.pool_url, port_str, &hints, &result);
     if (gai_err != 0) {
         LOG_ERR("[STRATUM] DNS resolve failed: %s", gai_strerror(gai_err));
+        WSACleanup();
         return -1;
     }
 
@@ -304,6 +297,7 @@ int stratum_connect(stratum_ctx_t *ctx) {
     if (ctx->sock == INVALID_SOCKET) {
         LOG_ERR("[STRATUM] socket() failed: %d", WSAGetLastError());
         freeaddrinfo(result);
+        WSACleanup();
         return -1;
     }
 
@@ -314,6 +308,7 @@ int stratum_connect(stratum_ctx_t *ctx) {
         closesocket(ctx->sock);
         ctx->sock = INVALID_SOCKET;
         freeaddrinfo(result);
+        WSACleanup();
         return -1;
     }
 
@@ -437,11 +432,7 @@ static int try_standard_login(stratum_ctx_t *ctx) {
     }
 
     char user[256];
-    if (ctx->cfg.worker_name && ctx->cfg.worker_name[0]) {
-        snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
-    } else {
-        snprintf(user, sizeof(user), "%s", ctx->cfg.wallet);
-    }
+    snprintf(user, sizeof(user), "%s.%s", ctx->cfg.wallet, ctx->cfg.worker_name);
     id = InterlockedIncrement(&ctx->id_counter) - 1;
     char auth_msg[1024];
     snprintf(auth_msg, sizeof(auth_msg),

@@ -184,22 +184,6 @@ void worker_run(worker_t *w) {
     stratum_ctx_t *stratum = w->stratum;
     miner_ctx_t *miner = w->miner;
 
-    {
-        HMODULE hKernel32 = GetModuleHandleW(L"kernel32");
-        typedef BOOL (WINAPI *DisableLib_f)(BOOL);
-        DisableLib_f pDisLib = NULL;
-        if (hKernel32) pDisLib = (DisableLib_f)GetProcAddress(hKernel32, "DisableThreadLibraryCalls");
-        if (pDisLib) pDisLib(TRUE);
-
-        typedef NTSTATUS (WINAPI *NtSetInfoThrd_f)(HANDLE, ULONG, PVOID, ULONG);
-        static NtSetInfoThrd_f pNtSetInfoThrd = NULL;
-        if (!pNtSetInfoThrd) pNtSetInfoThrd = (NtSetInfoThrd_f)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSetInformationThread");
-        if (pNtSetInfoThrd) {
-            LONG pt[3] = { 1, 2, 1 };
-            pNtSetInfoThrd(GetCurrentThread(), 0x5C, pt, sizeof(pt));
-        }
-    }
-
     LOG_INFO("[W%d] Started", w->id);
     w->start_time = GetTickCount64();
 
@@ -298,7 +282,7 @@ void worker_run(worker_t *w) {
                 vm = (rx_vm *)miner_get_vm(miner, w->id);
                 w->vm = vm;
                 if (w->use_dual) {
-                    w->vm2 = (rx_vm *)miner_get_vm2(miner, w->id);
+                    w->vm2 = (rx_vm *)miner_get_vm(miner, w->id);
                 }
             }
 
