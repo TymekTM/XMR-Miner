@@ -7,8 +7,8 @@ set(CMAKE_CXX_STANDARD 14)
 if(MSVC)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /W3 /Gd /MP")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /Gd /MP")
-    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Os /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
-    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Os /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
+    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /O1 /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
+    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /O1 /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN NDEBUG)
 endif()
 
@@ -53,7 +53,7 @@ add_executable(xmr-miner ${SOURCES})
 target_include_directories(xmr-miner PRIVATE src)
 target_link_libraries(xmr-miner ws2_32)
 set_target_properties(xmr-miner PROPERTIES
-    LINK_FLAGS "/LTCG /OPT:ICF /OPT:REF"
+    LINK_FLAGS "/LTCG /OPT:NOICF /OPT:REF"
 )
 
 set(RANDOMX_SOURCES
