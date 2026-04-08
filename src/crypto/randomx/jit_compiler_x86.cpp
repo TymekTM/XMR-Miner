@@ -30,7 +30,7 @@ static const int IMUL_RCP_SIZE = 5;
     static const int LOOP_LOAD_SIZE = 120;
 static const int PREFETCH_SP_SIZE = 26;
 static const int LOOP_STORE_SIZE = 68;
-static const int EPILOGUE_SIZE = 184;
+    static const int EPILOGUE_SIZE = 182;
 static const int EMASK_OFFSET_IN_CONSTANTS = 16;
 
 static const uint8_t code_prologue[] = {
@@ -115,7 +115,7 @@ static const uint8_t code_epilogue[] = {
     0xf3, 0x0f, 0x6f, 0x74, 0x24, 0x40,
     0x48, 0x81, 0xc4, 0x50, 0x00, 0x00, 0x00,
     0x41, 0x5f, 0x41, 0x5e, 0x41, 0x5d, 0x41, 0x5c, 0x5e, 0x5f, 0x5d, 0x5b,
-    0xc3, 0x90, 0x90,
+    0xc3,
 };
 
 
