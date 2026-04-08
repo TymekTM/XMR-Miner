@@ -1351,26 +1351,9 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
         registerUsage[instr->dst] = i;
         uint64_t rcp = rx_reciprocal(divisor);
 
-        int pool_idx = -1;
-        for (int j = 0; j < imul_rcp_pool_count; j++) {
-            if (imul_rcp_pool[j] == rcp) { pool_idx = j; break; }
-        }
-
-        if (pool_idx < 0 && imul_rcp_pool_count < IMUL_RCP_POOL_SIZE) {
-            pool_idx = imul_rcp_pool_count++;
-            imul_rcp_pool[pool_idx] = rcp;
-        }
-
-        if (pool_idx >= 0) {
-            int64_t pool_addr = IMUL_RCP_POOL_OFFSET + (int64_t)pool_idx * 8;
-            int32_t disp = (int32_t)(pool_addr - ((int64_t)pos + 8));
-            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
-            emitByte(0x05 | (instr->dst << 3));
-            emit32((uint32_t)disp);
-        } else {
-            emitByte(0x48); emitByte(0xB8); emit64(rcp);
-            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst));
-        }
+        emitByte(0x48); emitByte(0xB8); emit64(rcp);
+        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
+        emitByte(0xC0 | (8 * instr->dst));
     }
 }
 
