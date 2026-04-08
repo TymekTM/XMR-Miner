@@ -9,7 +9,7 @@ if(MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W3 /Gd /MP")
     set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Ox /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
     set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Ox /Oi /Ob3 /arch:AVX2 /GL /fp:fast /favor:INTEL64 /GS- /EHs-c- /GR- /GA")
-    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN)
+    add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN NDEBUG)
 endif()
 
 set(SOURCES
