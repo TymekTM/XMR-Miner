@@ -138,11 +138,13 @@ struct JitCompiler {
     uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
     int imul_rcp_pool_count;
     bool cbranch_short[RX_PROGRAM_SIZE];
+    int32_t prevCFROUND;
+    int32_t prevFPOperation;
 
-    void emitByte(uint8_t b) { if (!estimating) code[pos++] = b; else pos++; }
-    void emit32(uint32_t v) { if (!estimating) { memcpy(code + pos, &v, 4); } pos += 4; }
-    void emit64(uint64_t v) { if (!estimating) { memcpy(code + pos, &v, 8); } pos += 8; }
-    void emit(const uint8_t* src, int len) { if (!estimating) memcpy(code + pos, src, len); pos += len; }
+    void emitByte(uint8_t b) { code[pos++] = b; }
+    void emit32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
+    void emit64(uint64_t v) { memcpy(code + pos, &v, 8); pos += 8; }
+    void emit(const uint8_t* src, int len) { memcpy(code + pos, src, len); pos += len; }
 
     void alignCode(int align) {
         while (pos % align) {
@@ -298,6 +300,8 @@ struct JitCompiler {
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
         imul_rcp_pool_count = 0;
+        prevCFROUND = -1;
+        prevFPOperation = -1;
 
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
@@ -1420,6 +1424,7 @@ void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
     emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
@@ -1427,6 +1432,7 @@ void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
     emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
@@ -1435,6 +1441,7 @@ void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
     emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
@@ -1442,6 +1449,7 @@ void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
     emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
@@ -1456,6 +1464,7 @@ void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
     emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x59);
@@ -1463,6 +1472,7 @@ void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     genAddressReg(instr, true);
     emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
@@ -1473,6 +1483,7 @@ void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
+    prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     emitByte(0x66); emitByte(0x0F); emitByte(0x51);
     emitByte(0xE4 | (9 * instr->dst));
@@ -1483,6 +1494,9 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
     int rotate = (13 - (getImm32(instr) & 63)) & 63;
     if (rotate != 0) {
         emitByte(0x48); emitByte(0xC1); emitByte(0xC0); emitByte(rotate);
+    }
+    if (prevFPOperation >= 0 && (pos - prevFPOperation) < 12) {
+        emitByte(0x66); emitByte(0x90);
     }
     emitByte(0x25); emitByte(0x00); emitByte(0x60); emitByte(0x00); emitByte(0x00);
     emitByte(0x0D); emitByte(0xC0); emitByte(0x9F); emitByte(0x00); emitByte(0x00);
