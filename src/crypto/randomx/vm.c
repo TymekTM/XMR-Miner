@@ -388,7 +388,7 @@ void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_MAX_SIZE],
     }
 }
 
-void vm_initialize(rx_vm *vm) {
+__forceinline void vm_initialize(rx_vm *vm) {
     for (int i = 0; i < RX_REG_FLT_COUNT; i++) {
         uint64_t ent0 = vm->program.entropyBuffer[2 * i];
         uint64_t ent1 = vm->program.entropyBuffer[2 * i + 1];
