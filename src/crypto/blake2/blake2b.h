@@ -24,3 +24,4 @@ int blake2b_update(blake2b_state *S, const void *in, size_t inlen);
 int blake2b_final(blake2b_state *S, void *out, size_t outlen);
 
 int blake2b(void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen);
+void rx_blake2b_regfile(void *out, const void *regfile);

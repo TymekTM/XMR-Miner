@@ -202,3 +202,43 @@ int blake2b(void *out, size_t outlen, const void *in, size_t inlen, const void *
     blake2b_final(&S, out, outlen);
     return 0;
 }
+
+static void blake2b_compress_fast(u64 h[8], const u8 *block, u64 t0, u64 t1, u64 f0, u64 f1) {
+    u64 m[16], v[16];
+    int i;
+    for (i = 0; i < 16; ++i) m[i] = load64(block + i * 8);
+    for (i = 0; i < 8; ++i) v[i] = h[i];
+    v[8] = blake2b_IV[0]; v[9] = blake2b_IV[1]; v[10] = blake2b_IV[2]; v[11] = blake2b_IV[3];
+    v[12] = blake2b_IV[4] ^ t0; v[13] = blake2b_IV[5] ^ t1;
+    v[14] = blake2b_IV[6] ^ f0; v[15] = blake2b_IV[7] ^ f1;
+#define G(r,i,a,b,c,d) do { \
+    a = a + b + m[blake2b_sigma[r][2*i+0]]; d = rotr64(d ^ a, 32); \
+    c = c + d; b = rotr64(b ^ c, 24); \
+    a = a + b + m[blake2b_sigma[r][2*i+1]]; d = rotr64(d ^ a, 16); \
+    c = c + d; b = rotr64(b ^ c, 63); \
+} while(0)
+    for (int r = 0; r < 12; ++r) {
+        G(r,0,v[0],v[4],v[8],v[12]); G(r,1,v[1],v[5],v[9],v[13]);
+        G(r,2,v[2],v[6],v[10],v[14]); G(r,3,v[3],v[7],v[11],v[15]);
+        G(r,4,v[0],v[5],v[10],v[15]); G(r,5,v[1],v[6],v[11],v[12]);
+        G(r,6,v[2],v[7],v[8],v[13]); G(r,7,v[3],v[4],v[9],v[14]);
+    }
+#undef G
+    for (i = 0; i < 8; ++i) h[i] ^= v[i] ^ v[i+8];
+}
+
+void rx_blake2b_regfile(void *out, const void *regfile) {
+    u64 h[8];
+    const u8 *in = (const u8 *)regfile;
+    int i;
+    for (i = 0; i < 8; ++i) h[i] = blake2b_IV[i];
+    h[0] ^= 0x0000000001010040ULL;
+    blake2b_compress_fast(h, in, 128, 0, 0, 0);
+    blake2b_compress_fast(h, in + 128, 256, 0, 0, 0);
+    {
+        u8 buf[128];
+        memset(buf, 0, 128);
+        blake2b_compress_fast(h, buf, 256, 0, (u64)-1, (u64)-1);
+        for (i = 0; i < 8; ++i) store64((u8 *)out + i * 8, h[i]);
+    }
+}

@@ -9,6 +9,9 @@
 #include "common/cpu.h"
 #include "common/log.h"
 
+extern int msr_init(void);
+extern void msr_destroy(void);
+
 #define HASHES_PER_RUN 5000
 
 typedef struct {
@@ -520,6 +523,7 @@ int main(int argc, char **argv) {
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     timeBeginPeriod(1);
     enable_huge_pages();
+    msr_init();
 
     int max_threads = 8;
     int specific_mode = -1;

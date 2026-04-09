@@ -88,19 +88,19 @@ static __forceinline uint64_t rx_rotl(uint64_t x, unsigned int n) {
     return (x << n) | (x >> (64 - n));
 }
 
-static inline int32_t rx_u32_to_s32(uint32_t x) {
+static __forceinline int32_t rx_u32_to_s32(uint32_t x) {
     return (int32_t)x;
 }
 
-static inline uint64_t rx_sign_extend_32(uint32_t x) {
+static __forceinline uint64_t rx_sign_extend_32(uint32_t x) {
     return (uint64_t)(int64_t)(int32_t)x;
 }
 
-static inline int64_t rx_u64_to_s64(uint64_t x) {
+static __forceinline int64_t rx_u64_to_s64(uint64_t x) {
     return (int64_t)x;
 }
 
-static inline uint64_t rx_get_small_positive_float_bits(uint64_t entropy) {
+static __forceinline uint64_t rx_get_small_positive_float_bits(uint64_t entropy) {
     uint64_t exponent = entropy >> 59;
     uint64_t mantissa = entropy & RX_MANTISSA_MASK;
     exponent += RX_EXPONENT_BIAS;
@@ -109,14 +109,14 @@ static inline uint64_t rx_get_small_positive_float_bits(uint64_t entropy) {
     return exponent | mantissa;
 }
 
-static inline uint64_t rx_get_static_exponent(uint64_t entropy) {
+static __forceinline uint64_t rx_get_static_exponent(uint64_t entropy) {
     uint64_t exponent = RX_CONST_EXP_BITS;
     exponent |= (entropy >> (64 - RX_STAT_EXP_BITS)) << RX_DYN_EXP_BITS;
     exponent <<= RX_MANTISSA_SIZE;
     return exponent;
 }
 
-static inline uint64_t rx_get_float_mask(uint64_t entropy) {
+static __forceinline uint64_t rx_get_float_mask(uint64_t entropy) {
     uint64_t mask22 = (1ULL << 22) - 1;
     return (entropy & mask22) | rx_get_static_exponent(entropy);
 }
@@ -143,35 +143,31 @@ static __forceinline rx_vec_f128 rx_set1_f128(uint64_t x) {
     return _mm_castsi128_pd(_mm_set1_epi64x((long long)x));
 }
 
-static inline rx_vec_f128 rx_cast_i2f(rx_vec_i128 a) { return _mm_castsi128_pd(a); }
-static inline rx_vec_i128 rx_cast_f2i(rx_vec_f128 a) { return _mm_castpd_si128(a); }
+static __forceinline rx_vec_f128 rx_cast_i2f(rx_vec_i128 a) { return _mm_castsi128_pd(a); }
+static __forceinline rx_vec_i128 rx_cast_f2i(rx_vec_f128 a) { return _mm_castpd_si128(a); }
 
 static __forceinline rx_vec_f128 rx_cvt_int_f128(const void *addr) {
     __m128i ix = _mm_loadl_epi64((const __m128i *)addr);
     return _mm_cvtepi32_pd(ix);
 }
 
-static inline rx_vec_i128 rx_load_i128(const rx_vec_i128 *p) { return _mm_load_si128(p); }
-static inline void rx_store_i128(rx_vec_i128 *p, rx_vec_i128 v) { _mm_store_si128(p, v); }
+static __forceinline rx_vec_i128 rx_load_i128(const rx_vec_i128 *p) { return _mm_load_si128(p); }
+static __forceinline void rx_store_i128(rx_vec_i128 *p, rx_vec_i128 v) { _mm_store_si128(p, v); }
 
-static inline rx_vec_i128 rx_set_i128(int i3, int i2, int i1, int i0) {
+static __forceinline rx_vec_i128 rx_set_i128(int i3, int i2, int i1, int i0) {
     return _mm_set_epi32(i3, i2, i1, i0);
 }
 
-static inline rx_vec_i128 rx_aesenc_i128(rx_vec_i128 v, rx_vec_i128 k) {
-    return _mm_aesenc_si128(v, k);
-}
-static inline rx_vec_i128 rx_aesdec_i128(rx_vec_i128 v, rx_vec_i128 k) {
-    return _mm_aesdec_si128(v, k);
-}
+static __forceinline rx_vec_i128 rx_aesenc_i128(rx_vec_i128 v, rx_vec_i128 k) { return _mm_aesenc_si128(v, k); }
+static __forceinline rx_vec_i128 rx_aesdec_i128(rx_vec_i128 v, rx_vec_i128 k) { return _mm_aesdec_si128(v, k); }
 
 #define RX_MXCSR_DEFAULT 0x9FC0
 
-static inline void rx_reset_float_state(void) { _mm_setcsr(RX_MXCSR_DEFAULT); }
-static inline void rx_set_rounding_mode(uint32_t mode) {
+static __forceinline void rx_reset_float_state(void) { _mm_setcsr(RX_MXCSR_DEFAULT); }
+static __forceinline void rx_set_rounding_mode(uint32_t mode) {
     _mm_setcsr(RX_MXCSR_DEFAULT | (mode << 13));
 }
-static inline uint32_t rx_get_rounding_mode(void) {
+static __forceinline uint32_t rx_get_rounding_mode(void) {
     return (_mm_getcsr() >> 13) & 3;
 }
 

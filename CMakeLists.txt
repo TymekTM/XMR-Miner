@@ -31,6 +31,7 @@ set(SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/msr.c
     src/stratum/json.c
     src/stratum/stratum.c
     src/miner/miner.c
@@ -65,6 +66,7 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/msr.c
 )
 
 set(COMMON_LIBS
@@ -100,6 +102,10 @@ add_bench_target(test_jit_debug6 tests/test_jit_debug6.c "")
 add_bench_target(test_jit_correctness2 tests/test_jit_correctness2.c "")
 add_bench_target(test_share_validate tests/test_share_validate.c "")
 add_bench_target(bench_full tests/bench_full.c "")
+add_custom_command(TARGET bench_full POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CMAKE_SOURCE_DIR}/tools/xmrig-win64/xmrig-6.26.0/WinRing0x64.sys"
+    "$<TARGET_FILE_DIR:/WinRing0x64.sys")
 add_bench_target(test_hash_diag tests/test_hash_diag.c "")
 add_bench_target(test_jit_dump tests/test_jit_dump.c "")
 add_bench_target(test_jit_csim tests/test_jit_csim.c "")

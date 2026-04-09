@@ -23,15 +23,15 @@ static int enable_lock_pages_privilege(void) {
 #endif
 
 
-static inline uint32_t load32_le(const void *p) {
+static __forceinline uint32_t load32_le(const void *p) {
     return *(const uint32_t *)p;
 }
 
-static inline uint64_t load64_le(const void *p) {
+static __forceinline uint64_t load64_le(const void *p) {
     return *(const uint64_t *)p;
 }
 
-static inline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
+static __forceinline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
 
 static uint64_t rx_zero_val = 0;
 
@@ -745,7 +745,7 @@ void rx_calculate_hash(rx_vm *vm, const void *input, size_t input_size, void *ou
     rx_reset_float_state();
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run(vm, vm->tempHash);
-        blake2b(vm->tempHash, sizeof(vm->tempHash), &vm->reg, sizeof(rx_register_file), NULL, 0);
+        rx_blake2b_regfile(vm->tempHash, &vm->reg);
     }
     rx_vm_run(vm, vm->tempHash);
     rx_vm_get_final_result(vm, output);
@@ -764,7 +764,7 @@ void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input
     rx_reset_float_state();
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run(vm, vm->tempHash);
-        blake2b(vm->tempHash, sizeof(vm->tempHash), &vm->reg, sizeof(rx_register_file), NULL, 0);
+        rx_blake2b_regfile(vm->tempHash, &vm->reg);
     }
     rx_vm_run(vm, vm->tempHash);
     blake2b(vm->tempHash, sizeof(vm->tempHash), next_input, next_input_size, NULL, 0);
@@ -778,7 +778,7 @@ void rx_calculate_hash_last(rx_vm *vm, void *output) {
     rx_reset_float_state();
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run(vm, vm->tempHash);
-        blake2b(vm->tempHash, sizeof(vm->tempHash), &vm->reg, sizeof(rx_register_file), NULL, 0);
+        rx_blake2b_regfile(vm->tempHash, &vm->reg);
     }
     rx_vm_run(vm, vm->tempHash);
     rx_vm_get_final_result(vm, output);
