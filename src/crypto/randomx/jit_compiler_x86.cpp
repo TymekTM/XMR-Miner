@@ -137,8 +137,6 @@ struct JitCompiler {
     rx_cache* superscalar_cache;
     uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
     int imul_rcp_pool_count;
-    bool cbranch_short[RX_PROGRAM_SIZE];
-    int32_t prevCFROUND;
     int32_t prevFPOperation;
 
     void emitByte(uint8_t b) { code[pos++] = b; }
@@ -279,7 +277,6 @@ struct JitCompiler {
     }
 
     void generateProgramPrologue(rx_program* prog, rx_program_config* pcfg, int loopBeginPos) {
-        memset(cbranch_short, 0, sizeof(cbranch_short));
         int saved_pos = pos;
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
@@ -298,7 +295,6 @@ struct JitCompiler {
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
         imul_rcp_pool_count = 0;
-        prevCFROUND = -1;
         prevFPOperation = -1;
 
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
