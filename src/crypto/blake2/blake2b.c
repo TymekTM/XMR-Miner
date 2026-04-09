@@ -203,7 +203,7 @@ int blake2b(void *out, size_t outlen, const void *in, size_t inlen, const void *
     return 0;
 }
 
-static void blake2b_compress_fast(u64 h[8], const u8 *block, u64 t0, u64 t1, u64 f0, u64 f1) {
+static __forceinline void blake2b_compress_fast(u64 h[8], const u8 *block, u64 t0, u64 t1, u64 f0, u64 f1) {
     u64 m[16], v[16];
     int i;
     for (i = 0; i < 16; ++i) m[i] = load64(block + i * 8);
