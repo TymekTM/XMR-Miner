@@ -146,7 +146,7 @@ struct JitCompiler {
     void emit64(uint64_t v) { memcpy(code + pos, &v, 8); pos += 8; }
     void emit(const uint8_t* src, int len) { memcpy(code + pos, src, len); pos += len; }
 
-    void alignCode(int align) {
+    __forceinline void alignCode(int align) {
         while (pos % align) {
             int n = align - (pos % align);
             if (n > 8) n = 8;
@@ -169,20 +169,18 @@ struct JitCompiler {
     }
 
     int32_t getImm32(rx_instruction* instr) {
-        uint32_t v;
-        memcpy(&v, &instr->imm32, 4);
-        return (int32_t)v;
+        return (int32_t)(uint32_t)instr->imm32;
     }
 
-    int getModShift(rx_instruction* instr) { return (instr->mod >> 2) & 3; }
-    int getModCond(rx_instruction* instr) { return instr->mod >> 4; }
-    int getModMem(rx_instruction* instr) { return instr->mod & 3; }
+    __forceinline int getModShift(rx_instruction* instr) { return (instr->mod >> 2) & 3; }
+    __forceinline int getModCond(rx_instruction* instr) { return instr->mod >> 4; }
+    __forceinline int getModMem(rx_instruction* instr) { return instr->mod & 3; }
 
-    void genSIB(int scale, int index, int base) {
+    __forceinline void genSIB(int scale, int index, int base) {
         emitByte((scale << 6) | ((index & 7) << 3) | (base & 7));
     }
 
-    void genAddressReg(rx_instruction* instr, bool useRax) {
+    __forceinline void genAddressReg(rx_instruction* instr, bool useRax) {
         int src = instr->src;
         int dst = useRax ? 0 : 1;
         emitByte(0x41);
@@ -201,7 +199,7 @@ struct JitCompiler {
         emit32(getModMem(instr) ? RX_SPL1_MASK : RX_SPL2_MASK);
     }
 
-    void genAddressRegDst(rx_instruction* instr) {
+    __forceinline void genAddressRegDst(rx_instruction* instr) {
         int dst = instr->dst;
         emitByte(0x41);
         emitByte(0x8D);
@@ -218,11 +216,11 @@ struct JitCompiler {
         }
     }
 
-    void genAddressImm(rx_instruction* instr) {
+    __forceinline void genAddressImm(rx_instruction* instr) {
         emit32((uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
 
-    void emitMov64RM(int dst_gpr, int src_gpr) {
+    __forceinline void emitMov64RM(int dst_gpr, int src_gpr) {
         emitByte(0x49);
         emitByte(0x8B);
         emitByte(0xC0 | ((dst_gpr & 7) << 3) | (src_gpr & 7));
