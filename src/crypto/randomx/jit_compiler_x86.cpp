@@ -1528,11 +1528,7 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     emitByte(0x49); emitByte(0xF7); emitByte(0xC0 | reg);
     emit32(RX_CONDITION_MASK << shift);
 
-    if (estimating) {
-        pos += 6;
-    } else {
-        emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
-    }
+    emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
 
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
         registerUsage[j] = i;

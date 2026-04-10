@@ -236,9 +236,8 @@ void rx_blake2b_regfile(void *out, const void *regfile) {
     blake2b_compress_fast(h, in, 128, 0, 0, 0);
     blake2b_compress_fast(h, in + 128, 256, 0, 0, 0);
     {
-        u8 buf[128];
-        memset(buf, 0, 128);
-        blake2b_compress_fast(h, buf, 256, 0, (u64)-1, (u64)-1);
+        static const uint8_t final_block[128] = {0};
+        blake2b_compress_fast(h, final_block, 256, 0, (u64)-1, (u64)-1);
         for (i = 0; i < 8; ++i) store64((u8 *)out + i * 8, h[i]);
     }
 }
@@ -247,13 +246,21 @@ void rx_blake2b_blob(void *out, const void *input, size_t len) {
     u64 h[8];
     const u8 *in = (const u8 *)input;
     int i;
-    for (i = 0; i < 8; ++i) h[i] = blake2b_IV[i];
-    h[0] ^= 0x0000000001010040ULL;
+    h[0] = blake2b_IV[0] ^ 0x0000000001010040ULL;
+    h[1] = blake2b_IV[1];
+    h[2] = blake2b_IV[2];
+    h[3] = blake2b_IV[3];
+    h[4] = blake2b_IV[4];
+    h[5] = blake2b_IV[5];
+    h[6] = blake2b_IV[6];
+    h[7] = blake2b_IV[7];
     if (len <= BLAKE2B_BLOCKBYTES) {
+        static const uint8_t final_block[128] = {0};
         u8 buf[BLAKE2B_BLOCKBYTES];
-        memset(buf, 0, BLAKE2B_BLOCKBYTES);
         memcpy(buf, in, len);
+        memset(buf + len, 0, BLAKE2B_BLOCKBYTES - len);
         blake2b_compress_fast(h, buf, len, 0, (u64)-1, (u64)-1);
+        blake2b_compress_fast(h, final_block, len, (u64)-1, (u64)-1, (u64)-1);
     } else {
         blake2b_compress_fast(h, in, BLAKE2B_BLOCKBYTES, 0, 0, 0);
         blake2b_compress_fast(h, in + BLAKE2B_BLOCKBYTES, len, 0, (u64)-1, (u64)-1);
