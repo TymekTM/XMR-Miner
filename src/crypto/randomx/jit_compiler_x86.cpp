@@ -421,6 +421,24 @@ struct JitCompiler {
         for (int j = 0; j < imul_rcp_pool_count; j++) {
             memcpy(code + IMUL_RCP_POOL_OFFSET + j * 8, &imul_rcp_pool[j], 8);
         }
+
+        for (int j = RX_PROGRAM_SIZE - 1; j >= 0; j--) {
+            if (prog->programBuffer[j].opcode != RX_OP_CBRANCH) continue;
+            int cbranchPos = instructionOffsets[j] + 14;
+            if (code[cbranchPos] != 0x0F || code[cbranchPos+1] != 0x84) continue;
+            int32_t* pRel = (int32_t*)(code + cbranchPos + 2);
+            int32_t curOffset = *pRel;
+            if (curOffset >= -128 && curOffset <= 127) {
+                int reg = prog->programBuffer[j].dst;
+                int target = registerUsage[reg] + 1;
+                int32_t newOffset = instructionOffsets[target] - (cbranchPos + 2);
+                if (newOffset >= -128 && newOffset <= 127) {
+                    code[cbranchPos] = 0x74;
+                    code[cbranchPos + 1] = (uint8_t)newOffset;
+                    memset(code + cbranchPos + 2, 0x90, 4);
+                }
+            }
+        }
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
