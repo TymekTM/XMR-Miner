@@ -4,6 +4,10 @@
 #include <string.h>
 #include <stdio.h>
 
+extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
+extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
+extern void* rx_jit_get_program_func(rx_jit*);
+
 #ifdef _WIN32
 static int enable_lock_pages_privilege(void) {
     HANDLE token;
@@ -418,10 +422,6 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
     vm_initialize(vm);
 
     if (vm->useJit && vm->jit) {
-        extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
-        extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
-        extern void* rx_jit_get_program_func(rx_jit*);
-
         if (vm->lightClient) {
             rx_jit_generate_program_light(vm->jit, &vm->program, &vm->config, vm->cachePtr, vm->datasetOffset);
         } else {
