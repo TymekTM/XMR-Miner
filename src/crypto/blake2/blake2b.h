@@ -25,3 +25,4 @@ int blake2b_final(blake2b_state *S, void *out, size_t outlen);
 
 int blake2b(void *out, size_t outlen, const void *in, size_t inlen, const void *key, size_t keylen);
 void rx_blake2b_regfile(void *out, const void *regfile);
+void rx_blake2b_blob(void *out, const void *input, size_t len);

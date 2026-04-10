@@ -242,3 +242,21 @@ void rx_blake2b_regfile(void *out, const void *regfile) {
         for (i = 0; i < 8; ++i) store64((u8 *)out + i * 8, h[i]);
     }
 }
+
+void rx_blake2b_blob(void *out, const void *input, size_t len) {
+    u64 h[8];
+    const u8 *in = (const u8 *)input;
+    int i;
+    for (i = 0; i < 8; ++i) h[i] = blake2b_IV[i];
+    h[0] ^= 0x0000000001010040ULL;
+    if (len <= BLAKE2B_BLOCKBYTES) {
+        u8 buf[BLAKE2B_BLOCKBYTES];
+        memset(buf, 0, BLAKE2B_BLOCKBYTES);
+        memcpy(buf, in, len);
+        blake2b_compress_fast(h, buf, len, 0, (u64)-1, (u64)-1);
+    } else {
+        blake2b_compress_fast(h, in, BLAKE2B_BLOCKBYTES, 0, 0, 0);
+        blake2b_compress_fast(h, in + BLAKE2B_BLOCKBYTES, len, 0, (u64)-1, (u64)-1);
+    }
+    for (i = 0; i < 8; ++i) store64((u8 *)out + i * 8, h[i]);
+}

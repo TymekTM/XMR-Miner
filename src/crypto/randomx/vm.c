@@ -767,7 +767,7 @@ void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input
         rx_blake2b_regfile(vm->tempHash, &vm->reg);
     }
     rx_vm_run(vm, vm->tempHash);
-    blake2b(vm->tempHash, sizeof(vm->tempHash), next_input, next_input_size, NULL, 0);
+    rx_blake2b_blob(vm->tempHash, next_input, next_input_size);
     rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
     blake2b(output, RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
     _mm_setcsr(saved_mxcsr);
