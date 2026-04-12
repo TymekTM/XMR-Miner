@@ -24,7 +24,7 @@
 #define RX_STORE_L3_CONDITION     14
 
     static const int PROLOGUE_SIZE = 212;
-static const int FIRST_LOAD_SIZE = 72;
+static const int FIRST_LOAD_SIZE = 37;
 static const int CONSTANTS_SIZE = 48;
 static const int IMUL_RCP_SIZE = 5;
     static const int LOOP_LOAD_SIZE = 120;
@@ -53,12 +53,11 @@ static const uint8_t code_prologue[] = {
 };
 
 static const uint8_t code_first_load[] = {
-    0x48, 0x8b, 0xd0, 0x25, 0xc0, 0xff, 0x1f, 0x00,     0x48, 0xc1, 0xca, 0x20, 0x81, 0xe2, 0xc0, 0xff,
-    0x1f, 0x00, 0x48, 0x81, 0xec, 0x28, 0x00, 0x00, 0x00, 0xc7, 0x04, 0x24, 0xc0, 0x9f, 0x00, 0x00,
-    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
-    0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90,
-    0x90, 0x90, 0x90, 0xe9, 0x00,
-    0x00, 0x00, 0x00,
+    0x48, 0x8b, 0xd0, 0x25, 0xc0, 0xff, 0x1f, 0x00,
+    0x48, 0xc1, 0xca, 0x20, 0x81, 0xe2, 0xc0, 0xff,
+    0x1f, 0x00, 0x48, 0x81, 0xec, 0x28, 0x00, 0x00,
+    0x00, 0xc7, 0x04, 0x24, 0xc0, 0x9f, 0x00, 0x00,
+    0xe9, 0x00, 0x00, 0x00, 0x00,
 };
 
 static const uint8_t code_constants[] = {
@@ -422,23 +421,30 @@ struct JitCompiler {
             memcpy(code + IMUL_RCP_POOL_OFFSET + j * 8, &imul_rcp_pool[j], 8);
         }
 
-        for (int j = RX_PROGRAM_SIZE - 1; j >= 0; j--) {
-            if (prog->programBuffer[j].opcode != RX_OP_CBRANCH) continue;
-            int cbranchPos = instructionOffsets[j] + 14;
-            if (code[cbranchPos] != 0x0F || code[cbranchPos+1] != 0x84) continue;
-            int32_t* pRel = (int32_t*)(code + cbranchPos + 2);
-            int32_t curOffset = *pRel;
-            if (curOffset >= -128 && curOffset <= 127) {
-                int reg = prog->programBuffer[j].dst;
-                int target = registerUsage[reg] + 1;
-                int32_t newOffset = instructionOffsets[target] - (cbranchPos + 2);
-                if (newOffset >= -128 && newOffset <= 127) {
-                    code[cbranchPos] = 0x74;
-                    code[cbranchPos + 1] = (uint8_t)newOffset;
-                    memset(code + cbranchPos + 2, 0x90, 4);
+        int changed;
+        int iterations = 0;
+        do {
+            changed = 0;
+            for (int j = RX_PROGRAM_SIZE - 1; j >= 0; j--) {
+                if (prog->programBuffer[j].opcode != RX_OP_CBRANCH) continue;
+                int cbranchPos = instructionOffsets[j] + 14;
+                if (code[cbranchPos] != 0x0F || code[cbranchPos+1] != 0x84) continue;
+                int32_t* pRel = (int32_t*)(code + cbranchPos + 2);
+                int32_t curOffset = *pRel;
+                if (curOffset >= -128 && curOffset <= 127) {
+                    int reg = prog->programBuffer[j].dst;
+                    int target = registerUsage[reg] + 1;
+                    int32_t newOffset = instructionOffsets[target] - (cbranchPos + 2);
+                    if (newOffset >= -128 && newOffset <= 127) {
+                        code[cbranchPos] = 0x74;
+                        code[cbranchPos + 1] = (uint8_t)newOffset;
+                        memset(code + cbranchPos + 2, 0x90, 4);
+                        changed = 1;
+                    }
                 }
             }
-        }
+            iterations++;
+        } while (changed);
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
@@ -1366,10 +1372,18 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
     if (!is_zero_or_power_of_2(divisor)) {
         registerUsage[instr->dst] = i;
         uint64_t rcp = rx_reciprocal(divisor);
-
-        emitByte(0x48); emitByte(0xB8); emit64(rcp);
-        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
-        emitByte(0xC0 | (8 * instr->dst));
+        if (imul_rcp_pool_count < IMUL_RCP_POOL_SIZE) {
+            imul_rcp_pool[imul_rcp_pool_count] = rcp;
+            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
+            emitByte(0x05 | ((instr->dst & 7) << 3));
+            int32_t disp = (IMUL_RCP_POOL_OFFSET + imul_rcp_pool_count * 8) - (pos + 4);
+            emit32(disp);
+            imul_rcp_pool_count++;
+        } else {
+            emitByte(0x48); emitByte(0xB8); emit64(rcp);
+            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
+            emitByte(0xC0 | (8 * instr->dst));
+        }
     }
 }
 
