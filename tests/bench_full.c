@@ -14,8 +14,21 @@ extern void msr_destroy(void);
 
 #define HASHES_PER_RUN 5000
 
+enum {
+    MODE_INTERP = 0,
+    MODE_JIT_FULL = 1,
+    MODE_DUAL = 2,
+    MODE_BATCH = 3,
+    MODE_BATCH_NC = 4,
+    MODE_COUNT = 5,
+};
+
+#define MODE_BIT(mode) (1u << (mode))
+#define MODE_ALL_MASK ((1u << MODE_COUNT) - 1u)
+
 typedef struct {
     int thread_id;
+    int total_threads;
     int mode;
     double hashrate;
     double wall_time;
@@ -118,6 +131,56 @@ static void enable_huge_pages(void) {
         }
         CloseHandle(token);
     }
+}
+
+static int parse_mode_token(const char *token, uint32_t *mode_mask) {
+    if (!token || !*token || !mode_mask) return 0;
+
+    if (_stricmp(token, "all") == 0) {
+        *mode_mask |= MODE_ALL_MASK;
+        return 1;
+    }
+
+    size_t len = strlen(token);
+    if (len >= 128) return 0;
+
+    char local[128];
+    memcpy(local, token, len + 1);
+
+    char *ctx = NULL;
+    char *part = strtok_s(local, ",", &ctx);
+    if (!part) return 0;
+
+    while (part) {
+        while (*part == ' ' || *part == '\t') part++;
+
+        char *tail = part + strlen(part);
+        while (tail > part && (tail[-1] == ' ' || tail[-1] == '\t')) {
+            *--tail = '\0';
+        }
+
+        if (*part == '\0') return 0;
+
+        char *endptr = NULL;
+        long mode = strtol(part, &endptr, 10);
+        if (*endptr != '\0' || mode < 0 || mode >= MODE_COUNT) {
+            return 0;
+        }
+
+        *mode_mask |= MODE_BIT((uint32_t)mode);
+        part = strtok_s(NULL, ",", &ctx);
+    }
+
+    return 1;
+}
+
+static void print_usage(const char *exe_name) {
+    printf("Usage: %s [threads] [modes...]\n", exe_name);
+    printf("  Modes: 0=Interp, 1=JIT-full+commit, 2=Dual+commit, 3=Batch+commit, 4=Batch-no-commit\n");
+    printf("  Examples:\n");
+    printf("    %s 1 3 4\n", exe_name);
+    printf("    %s 1 3,4\n", exe_name);
+    printf("    %s 8 all\n", exe_name);
 }
 
 static int all_pass = 1;
@@ -408,6 +471,7 @@ static double run_mode(int num_threads, int mode, const char *label) {
     HANDLE *threads = (HANDLE *)calloc(num_threads, sizeof(HANDLE));
     for (int i = 0; i < num_threads; i++) {
         tdata[i].thread_id = i;
+        tdata[i].total_threads = num_threads;
         tdata[i].mode = mode;
     }
 
@@ -420,19 +484,27 @@ static double run_mode(int num_threads, int mode, const char *label) {
     WaitForMultipleObjects(num_threads, threads, TRUE, INFINITE);
     QueryPerformanceCounter(&end);
 
-    double wall = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
+    double wall_total = (double)(end.QuadPart - start.QuadPart) / freq.QuadPart;
     int hashes_per_thread = (mode == 2) ? HASHES_PER_RUN * 2 : HASHES_PER_RUN;
-    double total_hr = (double)(num_threads * hashes_per_thread) / wall;
+    double work_wall = 0.0;
 
     double min_t = 1e18, max_t = 0;
     for (int i = 0; i < num_threads; i++) {
         if (tdata[i].wall_time < min_t) min_t = tdata[i].wall_time;
         if (tdata[i].wall_time > max_t) max_t = tdata[i].wall_time;
     }
+
+    if (max_t > 0.0) {
+        work_wall = max_t;
+    } else {
+        work_wall = wall_total;
+    }
+
+    double total_hr = (double)(num_threads * hashes_per_thread) / work_wall;
     double per_thread_avg = total_hr / num_threads;
 
-    printf("  %-28s %8.1f H/s total  %8.1f H/s/t  wall=%.2fs  spread=%.1f%%\n",
-           label, total_hr, per_thread_avg, wall,
+    printf("  %-28s %8.1f H/s total  %8.1f H/s/t  work=%.2fs  total=%.2fs  spread=%.1f%%\n",
+           label, total_hr, per_thread_avg, work_wall, wall_total,
            num_threads > 1 ? (max_t - min_t) / ((min_t + max_t) / 2) * 100.0 : 0.0);
 
     for (int i = 0; i < num_threads; i++) CloseHandle(threads[i]);
@@ -526,9 +598,30 @@ int main(int argc, char **argv) {
     msr_init();
 
     int max_threads = 8;
-    int specific_mode = -1;
+    uint32_t mode_mask = MODE_ALL_MASK;
     if (argc > 1) max_threads = atoi(argv[1]);
-    if (argc > 2) specific_mode = atoi(argv[2]);
+    if (argc > 2) {
+        mode_mask = 0;
+        for (int i = 2; i < argc; i++) {
+            if (!parse_mode_token(argv[i], &mode_mask)) {
+                printf("[ERR] Invalid mode token: '%s'\n", argv[i]);
+                print_usage(argv[0]);
+                return 2;
+            }
+        }
+        if (mode_mask == 0) {
+            print_usage(argv[0]);
+            return 2;
+        }
+    }
+
+    if (max_threads < 1) {
+        max_threads = 1;
+    } else if (max_threads > MAXIMUM_WAIT_OBJECTS) {
+        printf("[WARN] Requested %d threads, capping to %d (WaitForMultipleObjects limit)\n",
+               max_threads, MAXIMUM_WAIT_OBJECTS);
+        max_threads = MAXIMUM_WAIT_OBJECTS;
+    }
 
     g_affinity_ready = detect_cores(&g_cores) > 0;
     if (g_affinity_ready) {
@@ -559,32 +652,63 @@ int main(int argc, char **argv) {
     printf("  PHASE 2: PERFORMANCE BENCHMARK  (%d hashes/thread)\n", HASHES_PER_RUN);
     printf("======================================================================\n\n");
 
-    double res_i[16], res_s[16], res_d[16], res_b[16], res_bn[16];
+    double res_i[MAXIMUM_WAIT_OBJECTS + 1], res_s[MAXIMUM_WAIT_OBJECTS + 1];
+    double res_d[MAXIMUM_WAIT_OBJECTS + 1], res_b[MAXIMUM_WAIT_OBJECTS + 1];
+    double res_bn[MAXIMUM_WAIT_OBJECTS + 1];
     memset(res_i, 0, sizeof(res_i)); memset(res_s, 0, sizeof(res_s));
     memset(res_d, 0, sizeof(res_d)); memset(res_b, 0, sizeof(res_b));
     memset(res_bn, 0, sizeof(res_bn));
 
     for (int t = 1; t <= max_threads; t++) {
         printf("--- %d thread%s ---\n", t, t > 1 ? "s" : "");
-        if (specific_mode < 0 || specific_mode == 0) res_i[t] = run_mode(t, 0, "Interpreter (full hash)");
-        if (specific_mode < 0 || specific_mode == 1) res_s[t] = run_mode(t, 1, "JIT full hash + commitment");
-        if (specific_mode < 0 || specific_mode == 3) res_b[t] = run_mode(t, 3, "JIT batch (hash_next+commit)");
-        if (specific_mode < 0 || specific_mode == 4) res_bn[t] = run_mode(t, 4, "JIT batch (no commit)");
-        if (specific_mode < 0 || specific_mode == 2) res_d[t] = run_mode(t, 2, "Dual JIT + commitment");
+        if (mode_mask & MODE_BIT(MODE_INTERP))   res_i[t]  = run_mode(t, MODE_INTERP,   "Interpreter (full hash)");
+        if (mode_mask & MODE_BIT(MODE_JIT_FULL)) res_s[t]  = run_mode(t, MODE_JIT_FULL, "JIT full hash + commitment");
+        if (mode_mask & MODE_BIT(MODE_BATCH))    res_b[t]  = run_mode(t, MODE_BATCH,    "JIT batch (hash_next+commit)");
+        if (mode_mask & MODE_BIT(MODE_BATCH_NC)) res_bn[t] = run_mode(t, MODE_BATCH_NC, "JIT batch (no commit)");
+        if (mode_mask & MODE_BIT(MODE_DUAL))     res_d[t]  = run_mode(t, MODE_DUAL,     "Dual JIT + commitment");
         printf("\n");
     }
+
+    int show_interp = (mode_mask & MODE_BIT(MODE_INTERP)) != 0;
+    int show_jit_full = (mode_mask & MODE_BIT(MODE_JIT_FULL)) != 0;
+    int show_batch = (mode_mask & MODE_BIT(MODE_BATCH)) != 0;
+    int show_batch_nc = (mode_mask & MODE_BIT(MODE_BATCH_NC)) != 0;
+    int show_dual = (mode_mask & MODE_BIT(MODE_DUAL)) != 0;
 
     printf("======================================================================\n");
     printf("  BENCHMARK SUMMARY\n");
     printf("======================================================================\n");
-    printf("%-6s  %-12s  %-12s  %-12s  %-12s  %-12s  %-6s  %-6s\n",
-           "Thr", "Interp", "JIT-full", "Batch", "BatchNC", "Dual", "B/J", "D/I");
-    printf("------  ------------  ------------  ------------  ------------  ------------  ------  ------\n");
+
+    printf("%-6s", "Thr");
+    if (show_interp) printf("  %-12s", "Interp");
+    if (show_jit_full) printf("  %-12s", "JIT-full");
+    if (show_batch) printf("  %-12s", "Batch");
+    if (show_batch_nc) printf("  %-12s", "BatchNC");
+    if (show_dual) printf("  %-12s", "Dual");
+    if (show_batch && show_jit_full) printf("  %-6s", "B/J");
+    if (show_dual && show_interp) printf("  %-6s", "D/I");
+    printf("\n");
+
+    printf("------");
+    if (show_interp) printf("  ------------");
+    if (show_jit_full) printf("  ------------");
+    if (show_batch) printf("  ------------");
+    if (show_batch_nc) printf("  ------------");
+    if (show_dual) printf("  ------------");
+    if (show_batch && show_jit_full) printf("  ------");
+    if (show_dual && show_interp) printf("  ------");
+    printf("\n");
+
     for (int t = 1; t <= max_threads; t++) {
-        printf("%-6d  %8.1f H/s  %8.1f H/s  %8.1f H/s  %8.1f H/s  %8.1f H/s  %5.1fx  %6.2fx\n",
-               t, res_i[t], res_s[t], res_b[t], res_bn[t], res_d[t],
-               res_s[t] > 0 ? res_b[t] / res_s[t] : 0,
-               res_i[t] > 0 ? res_d[t] / res_i[t] : 0);
+        printf("%-6d", t);
+        if (show_interp) printf("  %8.1f H/s", res_i[t]);
+        if (show_jit_full) printf("  %8.1f H/s", res_s[t]);
+        if (show_batch) printf("  %8.1f H/s", res_b[t]);
+        if (show_batch_nc) printf("  %8.1f H/s", res_bn[t]);
+        if (show_dual) printf("  %8.1f H/s", res_d[t]);
+        if (show_batch && show_jit_full) printf("  %5.1fx", res_s[t] > 0 ? res_b[t] / res_s[t] : 0.0);
+        if (show_dual && show_interp) printf("  %6.2fx", res_i[t] > 0 ? res_d[t] / res_i[t] : 0.0);
+        printf("\n");
     }
 
     run_timing_breakdown();

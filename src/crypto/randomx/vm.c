@@ -4,6 +4,10 @@
 #include <string.h>
 #include <stdio.h>
 
+#ifndef RX_ENABLE_DUAL_INTERLEAVED_JIT
+#define RX_ENABLE_DUAL_INTERLEAVED_JIT 0
+#endif
+
 extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
 extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
 extern void* rx_jit_get_program_func(rx_jit*);
@@ -521,6 +525,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_IADD_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst += *(uint64_t *)(sp + addr);
                 break;
             }
@@ -529,6 +534,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_ISUB_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst -= *(uint64_t *)(sp + addr);
                 break;
             }
@@ -537,6 +543,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_IMUL_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst *= *(uint64_t *)(sp + addr);
                 break;
             }
@@ -545,6 +552,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_IMULH_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst = rx_mulh(*ibc->idst, *(uint64_t *)(sp + addr));
                 break;
             }
@@ -553,6 +561,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_ISMULH_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst = (uint64_t)rx_smulh((int64_t)*ibc->idst, (int64_t)*(uint64_t *)(sp + addr));
                 break;
             }
@@ -564,6 +573,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_IXOR_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 *ibc->idst ^= *(uint64_t *)(sp + addr);
                 break;
             }
@@ -587,6 +597,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_FADD_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
                 *ibc->fdst = rx_add_f128(*ibc->fdst, fsrc);
                 break;
@@ -596,6 +607,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_FSUB_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
                 *ibc->fdst = rx_sub_f128(*ibc->fdst, fsrc);
                 break;
@@ -608,6 +620,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 break;
             case RX_OP_FDIV_M: {
                 uint32_t addr = (uint32_t)((*ibc->isrc + ibc->imm) & ibc->memMask);
+                _mm_prefetch((const char *)(sp + addr + 64), _MM_HINT_T0);
                 rx_vec_f128 fsrc = rx_cvt_int_f128(sp + addr);
                 fsrc = rx_or_f128(rx_and_f128(fsrc, fdiv_mm), fdiv_em);
                 *ibc->fdst = rx_div_f128(*ibc->fdst, fsrc);
@@ -946,7 +959,7 @@ void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t i
     vm_initialize(vm1);
     vm_initialize(vm2);
 
-    if (vm1->useJit && vm1->jit && vm2->useJit && vm2->jit) {
+    if (RX_ENABLE_DUAL_INTERLEAVED_JIT && vm1->useJit && vm1->jit && vm2->useJit && vm2->jit) {
         extern void rx_jit_generate_program_dual_interleaved(rx_jit*, rx_program*, rx_program_config*, rx_program*, rx_program_config*, rx_cache*);
         extern void* rx_jit_get_program_func(rx_jit*);
 
@@ -984,8 +997,19 @@ void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t i
         }
     }
 
-    rx_vm_run_n(vm1, seed1, iterations);
-    rx_vm_run_n(vm2, seed2, iterations);
+    {
+        uint32_t saved_mxcsr = _mm_getcsr();
+
+        _mm_setcsr(vm1->mxcsrState);
+        rx_vm_run_n(vm1, seed1, iterations);
+        vm1->mxcsrState = _mm_getcsr();
+
+        _mm_setcsr(vm2->mxcsrState);
+        rx_vm_run_n(vm2, seed2, iterations);
+        vm2->mxcsrState = _mm_getcsr();
+
+        _mm_setcsr(saved_mxcsr);
+    }
 }
 
 void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2, const void *input1, size_t input1_size, const void *input2, size_t input2_size, void *output1, void *output2) {
@@ -1004,9 +1028,9 @@ void rx_calculate_hash_dual(rx_vm *vm1, rx_vm *vm2, const void *input1, size_t i
     
     for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
         rx_vm_run_dual(vm1, vm2, vm1->tempHash, vm2->tempHash, RX_PROGRAM_ITERATIONS);
-        
-        blake2b(vm1->tempHash, sizeof(vm1->tempHash), &vm1->reg, sizeof(rx_register_file), NULL, 0);
-        blake2b(vm2->tempHash, sizeof(vm2->tempHash), &vm2->reg, sizeof(rx_register_file), NULL, 0);
+
+        rx_blake2b_regfile(vm1->tempHash, &vm1->reg);
+        rx_blake2b_regfile(vm2->tempHash, &vm2->reg);
     }
     
     rx_vm_run_dual(vm1, vm2, vm1->tempHash, vm2->tempHash, RX_PROGRAM_ITERATIONS);
