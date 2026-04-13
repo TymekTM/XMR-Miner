@@ -8,7 +8,7 @@
 #define RX_DATASET_BASE_MASK  (RX_DATASET_BASE_SIZE - 64)
 #define RX_CACHE_MASK         ((RX_ARGON_MEMORY * 16) - 1)
 #define RX_SCRATCHPAD_MASK    (RX_SCRATCHPAD_L3 - 64)
-    #define RX_CODE_ALIGN         32
+    #define RX_CODE_ALIGN         16
 #define RX_MAX_INSTR_CODE     32
 #define RX_SUPER_INSTR_MAX    14
 #define RX_SUPER_PROG_HDR     128
@@ -1277,7 +1277,8 @@ void JitCompiler::h_IADD_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x03); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        *(uint32_t*)(code + pos) = 0x064c03 | ((instr->dst & 7) << 19);
+        pos += 4;
     } else {
         emitByte(0x4C); emitByte(0x03); emitByte(0x86 | (8 * instr->dst));
         genAddressImm(instr);
@@ -1299,7 +1300,8 @@ void JitCompiler::h_ISUB_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x2B); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        *(uint32_t*)(code + pos) = 0x064c2b | ((instr->dst & 7) << 19);
+        pos += 4;
     } else {
         emitByte(0x4C); emitByte(0x2B); emitByte(0x86 | (8 * instr->dst));
         genAddressImm(instr);
@@ -1321,7 +1323,8 @@ void JitCompiler::h_IMUL_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        *(uint32_t*)(code + pos) = 0x064c0faf | ((instr->dst & 7) << 19);
+        pos += 5;
     } else {
         emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0x86 | (8 * instr->dst));
         genAddressImm(instr);
@@ -1335,12 +1338,20 @@ void JitCompiler::h_IMULH_R(rx_instruction* instr, int i) {
     emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
 }
 
+void JitCompiler::h_ISMULH_R(rx_instruction* instr, int i) {
+    registerUsage[instr->dst] = i;
+    emitMov64RM(0, instr->dst);
+    emitByte(0x49); emitByte(0xF7); emitByte(0xE8 | instr->src);
+    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+}
+
 void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
         emitMov64RM(0, instr->dst);
-        emitByte(0x48); emitByte(0xF7); emitByte(0x24); emitByte(0x0E);
+        *(uint64_t*)(code + pos) = 0x0E24F748ULL;
+        pos += 5;
     } else {
         emitMov64RM(0, instr->dst);
         emitByte(0x48); emitByte(0xF7); emitByte(0xA6);
@@ -1353,6 +1364,30 @@ void JitCompiler::h_ISMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     emitMov64RM(0, instr->dst);
     emitByte(0x49); emitByte(0xF7); emitByte(0xE8 | instr->src);
+    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+}
+
+void JitCompiler::h_ISMULH_M(rx_instruction* instr, int i) {
+    registerUsage[instr->dst] = i;
+    if (instr->src != instr->dst) {
+        genAddressReg(instr, false);
+        emitMov64RM(0, instr->dst);
+        *(uint64_t*)(code + pos) = 0x0E2CF748ULL;
+        pos += 5;
+    } else {
+        emitMov64RM(0, instr->dst);
+        emitByte(0x48); emitByte(0xF7); emitByte(0xAE);
+        genAddressImm(instr);
+    }
+    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+}
+    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+}
+
+void JitCompiler::h_ISMULH_R(rx_instruction* instr, int i) {
+    registerUsage[instr->dst] = i;
+    *(uint64_t*)(code + pos) = 0xC4E2FBF6C8ULL | ((uint64_t)(instr->src << 40));
+    pos += 5;
     emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
 }
 
@@ -1411,7 +1446,8 @@ void JitCompiler::h_IXOR_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        *(uint32_t*)(code + pos) = 0x064c33 | ((instr->dst & 7) << 19);
+        pos += 4;
     } else {
         emitByte(0x4C); emitByte(0x33); emitByte(0x86 | (8 * instr->dst));
         genAddressImm(instr);
