@@ -1265,7 +1265,7 @@ static void init_engine() {
 void JitCompiler::h_IADD_RS(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     uint32_t dst = instr->dst;
-    uint32_t sib = (instr->getModShift() << 6) | (instr->src << 3) | dst;
+    uint32_t sib = (getModShift(instr) << 6) | (instr->src << 3) | dst;
     uint32_t k = 0x048d4f + (dst << 19);
     if (dst == RX_REGISTER_NEEDS_DISP)
         k = 0xac8d4f;
