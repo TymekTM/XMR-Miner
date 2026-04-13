@@ -436,10 +436,12 @@ struct JitCompiler {
                     int target = registerUsage[reg] + 1;
                     int32_t newOffset = instructionOffsets[target] - (cbranchPos + 2);
                     if (newOffset >= -128 && newOffset <= 127) {
-                        code[cbranchPos] = 0x74;
-                        code[cbranchPos + 1] = (uint8_t)newOffset;
-                        memset(code + cbranchPos + 2, 0x90, 4);
-                        changed = 1;
+                        if (((cbranchPos ^ (cbranchPos + 1)) & ~31) != 0) {
+                            code[cbranchPos] = 0x74;
+                            code[cbranchPos + 1] = (uint8_t)newOffset;
+                            memset(code + cbranchPos + 2, 0x90, 4);
+                            changed = 1;
+                        }
                     }
                 }
             }
