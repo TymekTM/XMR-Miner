@@ -1315,9 +1315,11 @@ void JitCompiler::h_IMUL_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
+        uint32_t imm = (uint32_t)getImm32(instr);
+        if (imm == 0) { return; }
         *(uint32_t*)(code + pos) = 0xc0694d + (((instr->dst << 3) + instr->dst) << 16);
         pos += 3;
-        emit32((uint32_t)getImm32(instr));
+        emit32(imm);
     }
 }
 
@@ -1438,10 +1440,10 @@ void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x33); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        uint64_t imm = (uint64_t)(uint32_t)getImm32(instr);
         *(uint32_t*)(code + pos) = (uint32_t)(0xf08149 + (instr->dst << 16)) | (uint32_t)imm;
         pos += 7;
     }
+}
 }
 
 void JitCompiler::h_IXOR_M(rx_instruction* instr, int i) {
