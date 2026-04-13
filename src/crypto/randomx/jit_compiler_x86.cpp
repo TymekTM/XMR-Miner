@@ -1262,13 +1262,14 @@ static void init_engine() {
 
 void JitCompiler::h_IADD_RS(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitByte(0x4F); emitByte(0x8D);
-    if (instr->dst == RX_REGISTER_NEEDS_DISP)
-        emitByte(0xAC);
-    else
-        emitByte(0x04 | (8 * instr->dst));
-    genSIB(getModShift(instr), instr->src, instr->dst);
-    if (instr->dst == RX_REGISTER_NEEDS_DISP)
+    uint32_t dst = instr->dst;
+    uint32_t sib = (instr->getModShift() << 6) | (instr->src << 3) | dst;
+    uint32_t k = 0x048d4f + (dst << 19);
+    if (dst == RX_REGISTER_NEEDS_DISP)
+        k = 0xac8d4f;
+    *(uint32_t*)(code + pos) = k | (sib << 24);
+    pos += ((dst == RX_REGISTER_NEEDS_DISP) ? 8 : 4);
+    if (dst == RX_REGISTER_NEEDS_DISP)
         emit32((uint32_t)getImm32(instr));
 }
 
@@ -1288,7 +1289,8 @@ void JitCompiler::h_ISUB_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x2B); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x49); emitByte(0x81); emitByte(0xE8 | instr->dst);
+        *(uint32_t*)(code + pos) = 0xe88149 + (instr->dst << 16);
+        pos += 3;
         emit32((uint32_t)getImm32(instr));
     }
 }
@@ -1309,7 +1311,8 @@ void JitCompiler::h_IMUL_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x4D); emitByte(0x69); emitByte(0xC0 | (9 * instr->dst));
+        *(uint32_t*)(code + pos) = 0xc0694d + (((instr->dst << 3) + instr->dst) << 16);
+        pos += 3;
         emit32((uint32_t)getImm32(instr));
     }
 }
@@ -1389,7 +1392,8 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
 
 void JitCompiler::h_INEG_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitByte(0x49); emitByte(0xF7); emitByte(0xD8 | instr->dst);
+    *(uint32_t*)(code + pos) = 0xd8f749 + (instr->dst << 16);
+    pos += 3;
 }
 
 void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
@@ -1397,8 +1401,9 @@ void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x33); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x49); emitByte(0x81); emitByte(0xF0 | instr->dst);
-        emit32((uint32_t)getImm32(instr));
+        uint64_t imm = (uint64_t)(uint32_t)getImm32(instr);
+        *(uint32_t*)(code + pos) = (uint32_t)(0xf08149 + (instr->dst << 16)) | (uint32_t)imm;
+        pos += 7;
     }
 }
 
@@ -1419,8 +1424,8 @@ void JitCompiler::h_IROR_R(rx_instruction* instr, int i) {
         emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
         emitByte(0x49); emitByte(0xD3); emitByte(0xC8 | instr->dst);
     } else {
-        emitByte(0x49); emitByte(0xC1); emitByte(0xC8 | instr->dst);
-        emitByte(getImm32(instr) & 63);
+        *(uint32_t*)(code + pos) = 0xc8c149 + (instr->dst << 16) + ((uint32_t)(getImm32(instr) & 63) << 24);
+        pos += 4;
     }
 }
 
@@ -1430,8 +1435,8 @@ void JitCompiler::h_IROL_R(rx_instruction* instr, int i) {
         emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
         emitByte(0x49); emitByte(0xD3); emitByte(0xC0 | instr->dst);
     } else {
-        emitByte(0x49); emitByte(0xC1); emitByte(0xC0 | instr->dst);
-        emitByte(getImm32(instr) & 63);
+        *(uint32_t*)(code + pos) = 0xc0c149 + (instr->dst << 16) + ((uint32_t)(getImm32(instr) & 63) << 24);
+        pos += 4;
     }
 }
 
@@ -1439,22 +1444,23 @@ void JitCompiler::h_ISWAP_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         registerUsage[instr->dst] = i;
         registerUsage[instr->src] = i;
-        emitByte(0x4D); emitByte(0x87); emitByte(0xC0 | instr->src | (8 * instr->dst));
+        *(uint32_t*)(code + pos) = 0xc0874d + (((instr->dst << 3) + instr->src) << 16);
+        pos += 3;
     }
 }
 
 void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
-    emitByte(0x66); emitByte(0x0F); emitByte(0xC6);
-    emitByte(0xC0 | (9 * instr->dst));
-    emitByte(1);
+    uint64_t dst = instr->dst;
+    *(uint64_t*)(code + pos) = 0x01c0c60f66ull + (((dst << 3) + dst) << 24);
+    pos += 5;
 }
 
 void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
-    emitByte(0xC0 | (instr->dst << 3) | instr->src);
+    *(uint64_t*)(code + pos) = 0xc0580f4166ull + (((instr->dst << 3) + instr->src) << 32);
+    pos += 5;
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
@@ -1470,8 +1476,8 @@ void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
-    emitByte(0xC0 | (instr->dst << 3) | instr->src);
+    *(uint64_t*)(code + pos) = 0xc05c0f4166ull + (((instr->dst << 3) + instr->src) << 32);
+    pos += 5;
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
@@ -1485,16 +1491,16 @@ void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
 
 void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x41); emitByte(0x0F); emitByte(0x57);
-    emitByte(0xC7 | (instr->dst << 3));
+    *(uint32_t*)(code + pos) = 0xc7570f41 + (instr->dst << 27);
+    pos += 5;
 }
 
 void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x59);
-    emitByte(0xE0 | (instr->dst << 3) | instr->src);
+    *(uint64_t*)(code + pos) = 0xe0590f4166ull + (((instr->dst << 3) + instr->src) << 32);
+    pos += 5;
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
@@ -1511,8 +1517,8 @@ void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x0F); emitByte(0x51);
-    emitByte(0xE4 | (9 * instr->dst));
+    *(uint32_t*)(code + pos) = 0xe4510f66 + (((instr->dst << 3) + instr->dst) << 24);
+    pos += 5;
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
