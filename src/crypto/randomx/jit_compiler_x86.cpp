@@ -129,8 +129,6 @@ struct JitCompiler {
     uint8_t* code;
     int32_t pos;
     int32_t instructionOffsets[RX_PROGRAM_SIZE]; int instructionCount;
-    int32_t estOffsets[RX_PROGRAM_SIZE];
-    bool estimating;
     int registerUsage[RX_REGISTERS_COUNT];
     rx_cache* cache;
     rx_cache* superscalar_cache;
@@ -276,21 +274,10 @@ struct JitCompiler {
     }
 
     void generateProgramPrologue(rx_program* prog, rx_program_config* pcfg, int loopBeginPos) {
-        int saved_pos = pos;
-        instructionCount = 0;
-        for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
-        estimating = true;
-        memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
-        pos += LOOP_LOAD_SIZE;
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
-            rx_instruction* instr = &prog->programBuffer[i];
-            instr->src %= RX_REGISTERS_COUNT;
-            instr->dst %= RX_REGISTERS_COUNT;
-            estOffsets[instructionCount] = pos;
-            generateCode(instr, i);
+            prog->programBuffer[i].src %= RX_REGISTERS_COUNT;
+            prog->programBuffer[i].dst %= RX_REGISTERS_COUNT;
         }
-        estimating = false;
-        pos = saved_pos;
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
         imul_rcp_pool_count = 0;
