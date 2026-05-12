@@ -137,7 +137,6 @@ struct JitCompiler {
     uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
     int imul_rcp_pool_count;
     int32_t prevFPOperation;
-    int32_t prevCFROUND_ldmxcsr; // Position of ldmxcsr in last CFROUND
 
     void emitByte(uint8_t b) { code[pos++] = b; }
     void emit32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
@@ -1328,20 +1327,21 @@ void JitCompiler::h_IMUL_M(rx_instruction* instr, int i) {
 
 void JitCompiler::h_IMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitMov64RM(0, instr->dst);
-    emitByte(0x49); emitByte(0xF7); emitByte(0xE0 | instr->src);
-    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+    *(uint32_t*)(code + pos) = 0xC08B49 + (instr->dst << 16);
+    *(uint32_t*)(code + pos + 3) = 0xE0F749 + (instr->src << 16);
+    *(uint32_t*)(code + pos + 6) = 0xC28B4C + ((instr->dst & 7) << 19);
+    pos += 9;
 }
 
 void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
-        emitMov64RM(0, instr->dst);
-        emitByte(0x48); emitByte(0xF7); emitByte(0x24); emitByte(0x0E);
+        *(uint64_t*)(code + pos) = 0x0E24F748C08B49ULL + ((uint64_t)instr->dst << 16);
+        pos += 7;
     } else {
-        emitMov64RM(0, instr->dst);
-        emitByte(0x48); emitByte(0xF7); emitByte(0xA6);
+        *(uint64_t*)(code + pos) = 0xA6F748C08B49ULL + ((uint64_t)instr->dst << 16);
+        pos += 6;
         genAddressImm(instr);
     }
     emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
@@ -1349,20 +1349,20 @@ void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
 
 void JitCompiler::h_ISMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitMov64RM(0, instr->dst);
-    emitByte(0x49); emitByte(0xF7); emitByte(0xE8 | instr->src);
-    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+    *(uint64_t*)(code + pos) = 0x8B4CE8F749C08B49ULL + ((uint64_t)instr->dst << 16) + ((uint64_t)instr->src << 40);
+    pos += 8;
+    emitByte(0xC2 | (8 * instr->dst));
 }
 
 void JitCompiler::h_ISMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
-        emitMov64RM(0, instr->dst);
-        emitByte(0x48); emitByte(0xF7); emitByte(0x2C); emitByte(0x0E);
+        *(uint64_t*)(code + pos) = 0x0E2CF748C08B49ULL + ((uint64_t)instr->dst << 16);
+        pos += 7;
     } else {
-        emitMov64RM(0, instr->dst);
-        emitByte(0x48); emitByte(0xF7); emitByte(0xAE);
+        *(uint64_t*)(code + pos) = 0xAEF748C08B49ULL + ((uint64_t)instr->dst << 16);
+        pos += 6;
         genAddressImm(instr);
     }
     emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
@@ -1390,7 +1390,8 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
 
 void JitCompiler::h_INEG_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitByte(0x49); emitByte(0xF7); emitByte(0xD8 | instr->dst);
+    *(uint32_t*)(code + pos) = 0xD8F749 + (instr->dst << 16);
+    pos += 3;
 }
 
 void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
@@ -1398,8 +1399,9 @@ void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         emitByte(0x4D); emitByte(0x33); emitByte(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x49); emitByte(0x81); emitByte(0xF0 | instr->dst);
-        emit32((uint32_t)getImm32(instr));
+        uint64_t imm = (uint64_t)(uint32_t)getImm32(instr);
+        *(uint64_t*)(code + pos) = (imm << 24) + 0xF08149ULL + (instr->dst << 16);
+        pos += 7;
     }
 }
 
@@ -1517,13 +1519,6 @@ void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
-    // Eliminate previous CFROUND's ldmxcsr if no FP op used the rounding mode
-    if (prevCFROUND_ldmxcsr > 0 && prevCFROUND_ldmxcsr > prevFPOperation) {
-        code[prevCFROUND_ldmxcsr]     = 0x90;
-        code[prevCFROUND_ldmxcsr + 1] = 0x90;
-        code[prevCFROUND_ldmxcsr + 2] = 0x90;
-        code[prevCFROUND_ldmxcsr + 3] = 0x90;
-    }
     emitMov64RM(0, instr->src);
     int rotate = (13 - (getImm32(instr) & 63)) & 63;
     if (rotate != 0) {
@@ -1535,8 +1530,6 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
     emitByte(0x25); emitByte(0x00); emitByte(0x60); emitByte(0x00); emitByte(0x00);
     emitByte(0x0D); emitByte(0xC0); emitByte(0x9F); emitByte(0x00); emitByte(0x00);
     emitByte(0x89); emitByte(0x04); emitByte(0x24);
-    // Track ldmxcsr position for potential elimination
-    prevCFROUND_ldmxcsr = pos;
     emitByte(0x0F); emitByte(0xAE); emitByte(0x14); emitByte(0x24);
 }
 
