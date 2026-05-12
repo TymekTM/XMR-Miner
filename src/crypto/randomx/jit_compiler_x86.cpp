@@ -367,19 +367,19 @@ struct JitCompiler {
         int firstLoadStart = pos;
         pos += FIRST_LOAD_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int constantsPos = pos;
         memcpy(code + pos, code_constants, CONSTANTS_SIZE);
         pos += CONSTANTS_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int imulRcpPos = pos;
         memcpy(code + pos, code_imul_rcp, IMUL_RCP_SIZE);
         pos += IMUL_RCP_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int loopBeginPos = pos;
         code[pos] = 0x90;
@@ -650,19 +650,19 @@ struct JitCompiler {
         int firstLoadStart = pos;
         pos += FIRST_LOAD_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int constantsPos = pos;
         memcpy(code + pos, code_constants, CONSTANTS_SIZE);
         pos += CONSTANTS_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int imulRcpPos = pos;
         memcpy(code + pos, code_imul_rcp, IMUL_RCP_SIZE);
         pos += IMUL_RCP_SIZE;
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int loopBeginPos = pos;
         code[pos] = 0x90;
@@ -908,7 +908,7 @@ struct JitCompiler {
 
         emitByte(0xE9); int jmpOverConsts1 = pos; emit32(0);
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int constantsPos1 = pos;
         memcpy(code + pos, code_constants, CONSTANTS_SIZE);
@@ -928,7 +928,7 @@ struct JitCompiler {
 
         emitByte(0xE9); int jmpOverConsts2 = pos; emit32(0);
 
-        pos = ((pos + 63) & ~63);
+        pos = ((pos + 15) & ~15);
 
         int constantsPos2 = pos;
         memcpy(code + pos, code_constants, CONSTANTS_SIZE);
