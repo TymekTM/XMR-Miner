@@ -1527,10 +1527,12 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
     if (prevFPOperation >= 0 && (pos - prevFPOperation) < 12) {
         emitByte(0x66); emitByte(0x90);
     }
-    emitByte(0x25); emitByte(0x00); emitByte(0x60); emitByte(0x00); emitByte(0x00);
-    emitByte(0x0D); emitByte(0xC0); emitByte(0x9F); emitByte(0x00); emitByte(0x00);
-    emitByte(0x89); emitByte(0x04); emitByte(0x24);
-    emitByte(0x0F); emitByte(0xAE); emitByte(0x14); emitByte(0x24);
+    *(uint64_t*)(code + pos) = 0x9FC00D0000600025ULL;
+    pos += 8;
+    *(uint16_t*)(code + pos) = 0x0000;
+    pos += 2;
+    *(uint64_t*)(code + pos) = 0x002414AE0F240489ULL;
+    pos += 7;
 }
 
 void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
