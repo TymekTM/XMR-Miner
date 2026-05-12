@@ -1443,8 +1443,9 @@ void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
-    emitByte(0xC0 | (instr->dst << 3) | instr->src);
+    *(uint32_t*)(code + pos) = 0x580F4166;
+    pos += 4;
+    code[pos++] = 0xC0 | (instr->dst << 3) | instr->src;
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
@@ -1460,8 +1461,9 @@ void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
-    emitByte(0xC0 | (instr->dst << 3) | instr->src);
+    *(uint32_t*)(code + pos) = 0x5C0F4166;
+    pos += 4;
+    code[pos++] = 0xC0 | (instr->dst << 3) | instr->src;
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
@@ -1475,16 +1477,18 @@ void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
 
 void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x41); emitByte(0x0F); emitByte(0x57);
-    emitByte(0xC7 | (instr->dst << 3));
+    uint8_t modrm = 0xC7 | (instr->dst << 3);
+    *(uint32_t*)(code + pos) = 0x00570F41 | ((uint32_t)modrm << 24);
+    pos += 4;
 }
 
 void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x59);
-    emitByte(0xE0 | (instr->dst << 3) | instr->src);
+    *(uint32_t*)(code + pos) = 0x590F4166;
+    pos += 4;
+    code[pos++] = 0xE0 | (instr->dst << 3) | instr->src;
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
@@ -1501,8 +1505,9 @@ void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    emitByte(0x66); emitByte(0x0F); emitByte(0x51);
-    emitByte(0xE4 | (9 * instr->dst));
+    uint8_t modrm = 0xE4 | (9 * instr->dst);
+    *(uint32_t*)(code + pos) = 0x00510F66 | ((uint32_t)modrm << 24);
+    pos += 4;
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
