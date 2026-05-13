@@ -363,6 +363,12 @@ void worker_run(worker_t *w) {
             LOG_DEBUG("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
         }
 
+        if (!w->batch_active) {
+            memcpy(blob + nonce_off, &nonce, 4);
+            rx_calculate_hash_first(vm, blob, (size_t)blob_len);
+            w->batch_active = 1;
+        }
+
         if (w->use_dual && vm2) {
             uint8_t blob2[BLOB_MAX_SIZE];
             memcpy(blob2, blob, (size_t)blob_len);
@@ -439,10 +445,11 @@ void worker_run(worker_t *w) {
             nonce += w->nonce_stride * 2;
             w->hashes += 2;
         } else {
+            nonce += w->nonce_stride;
             memcpy(blob + nonce_off, &nonce, 4);
 
             uint8_t hash[32];
-            rx_calculate_hash(vm, blob, (size_t)blob_len, hash);
+            rx_calculate_hash_next(vm, blob, (size_t)blob_len, hash);
             int ok = share_meets_target(hash, current_target, is_monero_proto);
 
             if (ok && is_monero_proto) {
