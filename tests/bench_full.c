@@ -588,6 +588,33 @@ static void run_timing_breakdown(void) {
            t_hash_next - overhead, (t_hash_next - overhead)/t_hash_next*100);
     printf("  JIT exec/chain:     %8.3f us\n", (t_hash_next - overhead)/8);
 
+    {
+        printf("\n--- TSC PROFILING (hash_next, 500 calls) ---\n");
+        uint64_t tsc0, tsc1;
+
+        printf("  Measuring 500 hash_next calls with TSC...\n");
+        int N_pmc = 500;
+        rx_calculate_hash_first(vm, input, sizeof(input));
+
+        uint64_t sum_cycles = 0, sum_cycles_sq = 0, mn = UINT64_MAX, mx = 0;
+        for (int trial = 0; trial < N_pmc; trial++) {
+            tsc0 = __rdtsc();
+            rx_calculate_hash_next(vm, input, sizeof(input), dummy);
+            tsc1 = __rdtsc();
+            uint64_t cyc = tsc1 - tsc0;
+            sum_cycles += cyc;
+            sum_cycles_sq += cyc * cyc;
+            if (cyc < mn) mn = cyc;
+            if (cyc > mx) mx = cyc;
+        }
+        double avg = (double)sum_cycles / N_pmc;
+        double var = (double)sum_cycles_sq / N_pmc - avg * avg;
+        printf("  Avg cycles/hash_next: %.0f  stddev: %.0f  min: %llu  max: %llu\n",
+               avg, sqrt(var), (unsigned long long)mn, (unsigned long long)mx);
+        printf("  Avg time/hash_next: %.1f us  H/s: %.0f\n", avg / 3500.0, 3.5e9 / avg);
+        printf("  Per-chain: %.0f cycles = %.1f us\n", avg / 8.0, avg / 8.0 / 3500.0);
+    }
+
     rx_destroy_vm(vm);
 }
 

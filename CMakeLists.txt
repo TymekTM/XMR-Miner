@@ -101,6 +101,7 @@ add_bench_target(test_jit_debug5 tests/test_jit_debug5.c "")
 add_bench_target(test_jit_debug6 tests/test_jit_debug6.c "")
 add_bench_target(test_jit_correctness2 tests/test_jit_correctness2.c "")
 add_bench_target(test_share_validate tests/test_share_validate.c "")
+add_bench_target(test_pool_hash tests/test_pool_hash.c "")
 add_bench_target(bench_full tests/bench_full.c "")
 add_custom_command(TARGET bench_full POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different

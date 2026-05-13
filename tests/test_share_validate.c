@@ -6,7 +6,7 @@
 #include "common/osdep.h"
 
 static int share_meets_target(const uint8_t *hash, uint64_t target) {
-    return read_u32_le(hash) <= (uint32_t)target;
+    return read_u64_le(hash + 24) <= target;
 }
 
 int main(int argc, char **argv) {
@@ -43,11 +43,11 @@ int main(int argc, char **argv) {
     int shares_diff10k = 0;
     int shares_diff100k = 0;
 
-    uint64_t target_diff1     = 4294967296ULL / 1;
-    uint64_t target_diff100   = 4294967296ULL / 100;
-    uint64_t target_diff1k    = 4294967296ULL / 1000;
-    uint64_t target_diff10k   = 4294967296ULL / 10000;
-    uint64_t target_diff100k  = 4294967296ULL / 100000;
+    uint64_t target_diff1     = 0xFFFFFFFFFFFFFFFFULL / 1;
+    uint64_t target_diff100   = 0xFFFFFFFFFFFFFFFFULL / 100;
+    uint64_t target_diff1k    = 0xFFFFFFFFFFFFFFFFULL / 1000;
+    uint64_t target_diff10k   = 0xFFFFFFFFFFFFFFFFULL / 10000;
+    uint64_t target_diff100k  = 0xFFFFFFFFFFFFFFFFULL / 100000;
 
     printf("[SHARE-VALIDATE] Running %d hashes via JIT batch API...\n", num_hashes);
 
@@ -72,22 +72,22 @@ int main(int argc, char **argv) {
     printf("  SHARE VALIDATION RESULTS (%d total hashes)\n", total);
     printf("======================================================================\n\n");
 
-    printf("  Difficulty    Target         Shares Found    Expected      Status\n");
-    printf("  ----------   ------------   ------------   ------------   ------\n");
-    printf("  1            0x%08x       %-12d   ~%-11d   %s\n",
-           (unsigned)target_diff1, shares_diff1, num_hashes,
+    printf("  Difficulty    Target (tail64)      Shares Found    Expected      Status\n");
+    printf("  ----------   ------------------    ------------   ------------   ------\n");
+    printf("  1            0x%016llx   %-12d   ~%-11d   %s\n",
+           (unsigned long long)target_diff1, shares_diff1, num_hashes,
            (shares_diff1 >= num_hashes / 2) ? "OK" : "LOW");
-    printf("  100          0x%08x       %-12d   ~%-11d   %s\n",
-           (unsigned)target_diff100, shares_diff100, num_hashes / 100,
+    printf("  100          0x%016llx   %-12d   ~%-11d   %s\n",
+           (unsigned long long)target_diff100, shares_diff100, num_hashes / 100,
            (shares_diff100 >= num_hashes / 200) ? "OK" : "LOW");
-    printf("  1,000        0x%08x       %-12d   ~%-11d   %s\n",
-           (unsigned)target_diff1k, shares_diff1k, num_hashes / 1000,
+    printf("  1,000        0x%016llx   %-12d   ~%-11d   %s\n",
+           (unsigned long long)target_diff1k, shares_diff1k, num_hashes / 1000,
            (shares_diff1k >= num_hashes / 2000) ? "OK" : "LOW");
-    printf("  10,000       0x%08x       %-12d   ~%-11d   %s\n",
-           (unsigned)target_diff10k, shares_diff10k, num_hashes / 10000,
+    printf("  10,000       0x%016llx   %-12d   ~%-11d   %s\n",
+           (unsigned long long)target_diff10k, shares_diff10k, num_hashes / 10000,
            (shares_diff10k >= 5) ? "OK" : "LOW");
-    printf("  100,000      0x%08x       %-12d   ~%-11d   %s\n",
-           (unsigned)target_diff100k, shares_diff100k, num_hashes / 100000,
+    printf("  100,000      0x%016llx   %-12d   ~%-11d   %s\n",
+           (unsigned long long)target_diff100k, shares_diff100k, num_hashes / 100000,
            (shares_diff100k >= 1) ? "OK" : "LOW");
 
     printf("\n  Sample hashes (first 5):\n");
@@ -96,10 +96,9 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 5; i++) {
         *(uint32_t *)(blob + 39) = (uint32_t)(i + 1);
         rx_calculate_hash_next(vm, blob, sizeof(blob), hash);
-        printf("    nonce=%-6d hash=%08x%08x%08x%08x target1k=%s\n",
+        printf("    nonce=%-6d tail64=0x%016llx target1k=%s\n",
                i + 1,
-               read_u32_le(hash), read_u32_le(hash+4),
-               read_u32_le(hash+8), read_u32_le(hash+12),
+               (unsigned long long)read_u64_le(hash + 24),
                share_meets_target(hash, target_diff1k) ? "SHARE!" : "    -");
     }
 
