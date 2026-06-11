@@ -1,11 +1,37 @@
 #include "crypto/randomx/randomx.h"
 #include "crypto/randomx/randomx_internal.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <windows.h>
 #include <immintrin.h>
 
-int main(void) {
+extern int g_jit_bmi2_mulx;
+extern int g_jit_cfround_elim;
+extern int g_jit_large_pages;
+extern int g_jit_jcc_align;
+extern int g_jit_near_rcp_pool;
+extern int g_aes_hash_fill_prefetch;
+extern int g_jit_double_buffer;
+extern int g_jit_inline_rcp_pool;
+extern int g_jit_rorx;
+extern int g_jit_stack_rcp_pool;
+extern int g_jit_cfround_rorx;
+extern int g_aes_hash_fill_upstream;
+
+int main(int argc, char **argv) {
+    g_jit_bmi2_mulx = argc > 1 ? atoi(argv[1]) : 0;
+    g_jit_cfround_elim = argc > 2 ? atoi(argv[2]) : 0;
+    g_jit_large_pages = argc > 3 ? atoi(argv[3]) : 0;
+    g_jit_jcc_align = argc > 4 ? atoi(argv[4]) : 0;
+    g_jit_near_rcp_pool = argc > 5 ? atoi(argv[5]) : 0;
+    g_aes_hash_fill_prefetch = argc > 6 ? atoi(argv[6]) : 0;
+    g_jit_double_buffer = argc > 7 ? atoi(argv[7]) : 0;
+    g_jit_inline_rcp_pool = argc > 8 ? atoi(argv[8]) : 0;
+    g_jit_rorx = argc > 9 ? atoi(argv[9]) : 0;
+    g_jit_stack_rcp_pool = argc > 10 ? atoi(argv[10]) : 0;
+    g_jit_cfround_rorx = argc > 11 ? atoi(argv[11]) : 0;
+    g_aes_hash_fill_upstream = argc > 12 ? atoi(argv[12]) : 0;
     const char *key = "test key 000";
     rx_cache *cache = rx_alloc_cache(0);
     rx_init_cache(cache, key, strlen(key));
