@@ -24,6 +24,9 @@ struct stratum_ctx {
     char recv_buf[STRATUM_BUF_SIZE];
     char line_buf[STRATUM_BUF_SIZE];
     int recv_len;
+    int pending_share_ids[256];
+    uint8_t pending_share_used[256];
+    volatile LONG64 job_generation;
     stratum_job_t job;
     CRITICAL_SECTION lock;
 };
@@ -89,7 +92,7 @@ static void extract_string(const json_token_t *t, char *out, int max_len) {
     out[len] = '\0';
 }
 
-static uint64_t parse_target_le(const char *hex) {
+uint64_t stratum_parse_target(const char *hex) {
     uint8_t buf[8] = {0};
     int len = (int)strlen(hex);
     int bytes = len / 2;
@@ -109,6 +112,74 @@ static uint64_t parse_target_le(const char *hex) {
     }
 
     return read_u64_le(buf);
+}
+
+static void mark_pending_share(stratum_ctx_t *ctx, int id) {
+    unsigned slot = (unsigned)id & 255;
+    EnterCriticalSection(&ctx->lock);
+    ctx->pending_share_ids[slot] = id;
+    ctx->pending_share_used[slot] = 1;
+    LeaveCriticalSection(&ctx->lock);
+}
+
+static int take_pending_share(stratum_ctx_t *ctx, int id) {
+    unsigned slot = (unsigned)id & 255;
+    int found = 0;
+    EnterCriticalSection(&ctx->lock);
+    if (ctx->pending_share_used[slot] && ctx->pending_share_ids[slot] == id) {
+        ctx->pending_share_used[slot] = 0;
+        found = 1;
+    }
+    LeaveCriticalSection(&ctx->lock);
+    return found;
+}
+
+static void response_reason(const json_token_t *token, char *reason, size_t reason_size) {
+    if (!reason || reason_size == 0) return;
+    reason[0] = '\0';
+    if (!token) return;
+    int len = (int)(token->end - token->start);
+    if (len < 0) return;
+    if ((size_t)len >= reason_size) len = (int)reason_size - 1;
+    memcpy(reason, token->start, (size_t)len);
+    reason[len] = '\0';
+}
+
+int stratum_classify_submit_response(const char *json, char *reason, size_t reason_size) {
+    json_parser_t jp;
+    if (reason && reason_size) reason[0] = '\0';
+    if (!json || json_parse(&jp, json, strlen(json)) != 0) return -1;
+
+    const json_token_t *error = json_get(&jp, "error");
+    if (error && error->type != JSON_NULL) {
+        const json_token_t *message = NULL;
+        if (error->type == JSON_OBJECT)
+            message = json_get_in(&jp, error, "message");
+        else if (error->type == JSON_ARRAY && error->size >= 2)
+            message = json_child(&jp, error, 1);
+        response_reason(message ? message : error, reason, reason_size);
+        return 0;
+    }
+
+    const json_token_t *result = json_get(&jp, "result");
+    if (!result) return -1;
+    if (result->type == JSON_BOOL) {
+        response_reason(result, reason, reason_size);
+        return (result->end - result->start == 4 &&
+                strncmp(result->start, "true", 4) == 0) ? 1 : 0;
+    }
+    if (result->type == JSON_OBJECT) {
+        const json_token_t *status = json_get_in(&jp, result, "status");
+        response_reason(status, reason, reason_size);
+        return status && (status->end - status->start == 2) &&
+               strncmp(status->start, "OK", 2) == 0 ? 1 : 0;
+    }
+    if (result->type == JSON_STRING) {
+        response_reason(result, reason, reason_size);
+        return ((result->end - result->start == 2) &&
+                strncmp(result->start, "OK", 2) == 0) ? 1 : 0;
+    }
+    return 0;
 }
 
 static void free_job_fields(stratum_job_t *job) {
@@ -163,8 +234,9 @@ static void parse_monero_job(stratum_ctx_t *ctx, const json_parser_t *jp,
         extract_string(height_tok, buf, sizeof(buf));
         ctx->job.height = (uint64_t)_strtoui64(buf, NULL, 10);
     }
-    ctx->job.target_u64 = parse_target_le(target);
+    ctx->job.target_u64 = stratum_parse_target(target);
     ctx->job.has_blob = 1;
+    InterlockedIncrement64(&ctx->job_generation);
 
     LOG_INFO("[STRATUM] [Monero] Job: %s algo=%s target=%s seed=%s blob_len=%d",
              job_id, algo[0] ? algo : "?", target,
@@ -224,6 +296,7 @@ static void parse_standard_job(stratum_ctx_t *ctx, const json_parser_t *jp,
         else
             ctx->job.target_u64 = 0xFFFFFFFF;
     }
+    InterlockedIncrement64(&ctx->job_generation);
 
     LOG_INFO("[STRATUM] [Standard] Job: %s version=%s ntime=%s diff=%.1f target=%016llx",
              job_id, version_hex, ntime_hex, ctx->job.difficulty, (unsigned long long)ctx->job.target_u64);
@@ -247,6 +320,7 @@ stratum_ctx_t *stratum_create(const stratum_config_t *cfg) {
     ctx->recv_len = 0;
     ctx->extranonce2_size = STRATUM_EXTRANONCE2_SIZE;
     ctx->job.difficulty = 1.0;
+    ctx->job_generation = 1;
     InitializeCriticalSection(&ctx->lock);
 
     ctx->cfg.pool_url = _strdup(cfg->pool_url);
@@ -346,7 +420,7 @@ static int try_monero_login(stratum_ctx_t *ctx) {
     char msg[1024];
     int id = InterlockedIncrement(&ctx->id_counter) - 1;
     snprintf(msg, sizeof(msg),
-        "{\"id\":%d,\"method\":\"login\",\"params\":{\"login\":\"%s\",\"pass\":\"%s\",\"agent\":\"xmr-miner/0.1.0\"}}",
+        "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"login\",\"params\":{\"login\":\"%s\",\"pass\":\"%s\",\"agent\":\"xmr-miner/0.1.0\"}}",
         id, user, ctx->cfg.password);
     if (send_line(ctx, msg) != 0) return -1;
 
@@ -512,23 +586,23 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
         if (commitment_hex && commitment_hex[0]) {
             if (ctx->job.algo && ctx->job.algo[0]) {
                 snprintf(msg, sizeof(msg),
-                    "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                    "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                     "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\",\"commitment\":\"%s\"}}",
                     id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo, commitment_hex);
             } else {
                 snprintf(msg, sizeof(msg),
-                    "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                    "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                     "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"commitment\":\"%s\"}}",
                     id, ctx->session_id, job_id, nonce_hex, result_hex, commitment_hex);
             }
         } else if (ctx->job.algo && ctx->job.algo[0]) {
             snprintf(msg, sizeof(msg),
-                "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                 "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\"}}",
                 id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo);
         } else {
             snprintf(msg, sizeof(msg),
-                "{\"id\":%d,\"method\":\"submit\",\"params\":"
+                "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                 "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\"}}",
                 id, ctx->session_id, job_id, nonce_hex, result_hex);
         }
@@ -545,7 +619,11 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
             id, user, job_id, en2_hex ? en2_hex : "00000000",
             ntime_hex ? ntime_hex : "00000000", nonce_hex);
     }
-    if (send_line(ctx, msg) != 0) return -1;
+    mark_pending_share(ctx, id);
+    if (send_line(ctx, msg) != 0) {
+        take_pending_share(ctx, id);
+        return -1;
+    }
     return 0;
 }
 
@@ -553,7 +631,7 @@ stratum_job_t *stratum_get_job(stratum_ctx_t *ctx) {
     return &ctx->job;
 }
 
-void stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out) {
+uint64_t stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out) {
     EnterCriticalSection(&ctx->lock);
     memcpy(out, &ctx->job, sizeof(stratum_job_t));
     out->job_id = ctx->job.job_id ? _strdup(ctx->job.job_id) : NULL;
@@ -567,7 +645,9 @@ void stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out) {
     out->version_hex = ctx->job.version_hex ? _strdup(ctx->job.version_hex) : NULL;
     out->ntime_hex = ctx->job.ntime_hex ? _strdup(ctx->job.ntime_hex) : NULL;
     out->extranonce1 = ctx->job.extranonce1 ? _strdup(ctx->job.extranonce1) : NULL;
+    uint64_t generation = (uint64_t)ctx->job_generation;
     LeaveCriticalSection(&ctx->lock);
+    return generation;
 }
 
 void stratum_free_job_copy(stratum_job_t *job) {
@@ -582,6 +662,10 @@ void stratum_free_job_copy(stratum_job_t *job) {
     free(job->version_hex); job->version_hex = NULL;
     free(job->ntime_hex); job->ntime_hex = NULL;
     free(job->extranonce1); job->extranonce1 = NULL;
+}
+
+uint64_t stratum_get_job_generation(stratum_ctx_t *ctx) {
+    return (uint64_t)InterlockedCompareExchange64(&ctx->job_generation, 0, 0);
 }
 
 int stratum_get_protocol(stratum_ctx_t *ctx) {
@@ -613,17 +697,21 @@ int stratum_recv(stratum_ctx_t *ctx) {
 
         const json_token_t *id_tok = json_get(&jp, "id");
         if (id_tok && id_tok->type == JSON_INT && !(json_get(&jp, "method"))) {
-            const json_token_t *result = json_get(&jp, "result");
-            const json_token_t *err = json_get(&jp, "error");
-            if (err && err->type == JSON_ARRAY && err->size >= 2) {
-                const json_token_t *code = json_child(&jp, err, 0);
-                const json_token_t *msg_tok = json_child(&jp, err, 1);
-                char code_buf[16], msg_buf[256];
-                extract_string(code, code_buf, sizeof(code_buf));
-                extract_string(msg_tok, msg_buf, sizeof(msg_buf));
-                LOG_WARN("[STRATUM] Share rejected: [%s] %s", code_buf, msg_buf);
-            } else if (result) {
+            char id_buf[32];
+            extract_string(id_tok, id_buf, sizeof(id_buf));
+            int response_id = atoi(id_buf);
+            if (!take_pending_share(ctx, response_id))
+                continue;
+
+            char reason[256];
+            int accepted = stratum_classify_submit_response(line, reason, sizeof(reason));
+            if (accepted == 1) {
                 LOG_INFO("[STRATUM] Share accepted!");
+            } else if (accepted == 0) {
+                LOG_WARN("[STRATUM] Share rejected: %s",
+                         reason[0] ? reason : "pool returned failure");
+            } else {
+                LOG_WARN("[STRATUM] Invalid share response");
             }
             continue;
         }
@@ -654,6 +742,7 @@ int stratum_recv(stratum_ctx_t *ctx) {
                     ctx->job.target_u64 = (uint64_t)(4294967296.0 / new_diff);
                 else
                     ctx->job.target_u64 = 0xFFFFFFFF;
+                InterlockedIncrement64(&ctx->job_generation);
                 LeaveCriticalSection(&ctx->lock);
                 LOG_INFO("[STRATUM] Difficulty: %.1f (target=%016llx)", new_diff, (unsigned long long)ctx->job.target_u64);
             }
@@ -666,6 +755,7 @@ int stratum_recv(stratum_ctx_t *ctx) {
                 EnterCriticalSection(&ctx->lock);
                 free(ctx->job.seed_hash);
                 ctx->job.seed_hash = _strdup(seed);
+                InterlockedIncrement64(&ctx->job_generation);
                 LeaveCriticalSection(&ctx->lock);
                 LOG_INFO("[STRATUM] Seed hash (set_seed_hash): %s", seed);
             }
@@ -676,7 +766,8 @@ int stratum_recv(stratum_ctx_t *ctx) {
                 char target[128];
                 extract_string(target_tok, target, sizeof(target));
                 EnterCriticalSection(&ctx->lock);
-                ctx->job.target_u64 = parse_target_le(target);
+                ctx->job.target_u64 = stratum_parse_target(target);
+                InterlockedIncrement64(&ctx->job_generation);
                 LeaveCriticalSection(&ctx->lock);
                 LOG_INFO("[STRATUM] Target: %s (%016llx)", target, (unsigned long long)ctx->job.target_u64);
             }
@@ -694,6 +785,7 @@ int stratum_recv(stratum_ctx_t *ctx) {
                         ctx->extranonce2_size = atoi(buf);
                     }
                 }
+                InterlockedIncrement64(&ctx->job_generation);
                 LeaveCriticalSection(&ctx->lock);
             }
         }

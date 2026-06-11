@@ -48,9 +48,12 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
                          const char *en2_hex, const char *ntime_hex,
                          const char *commitment_hex);
 stratum_job_t *stratum_get_job(stratum_ctx_t *ctx);
-void stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out);
+uint64_t stratum_copy_job(stratum_ctx_t *ctx, stratum_job_t *out);
 void stratum_free_job_copy(stratum_job_t *job);
+uint64_t stratum_get_job_generation(stratum_ctx_t *ctx);
 int stratum_get_protocol(stratum_ctx_t *ctx);
 int stratum_recv(stratum_ctx_t *ctx);
 int stratum_running(const stratum_ctx_t *ctx);
 void stratum_set_running(stratum_ctx_t *ctx, int val);
+uint64_t stratum_parse_target(const char *hex);
+int stratum_classify_submit_response(const char *json, char *reason, size_t reason_size);
