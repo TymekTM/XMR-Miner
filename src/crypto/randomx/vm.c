@@ -5,7 +5,7 @@
 #include <stdio.h>
 
 #ifndef RX_ENABLE_DUAL_INTERLEAVED_JIT
-#define RX_ENABLE_DUAL_INTERLEAVED_JIT 0
+#define RX_ENABLE_DUAL_INTERLEAVED_JIT 1
 #endif
 
 extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx_cache*);
@@ -42,6 +42,17 @@ static __forceinline uint64_t load64_le(const void *p) {
 static __forceinline void store64_le(void *p, uint64_t v) { *(uint64_t *)p = v; }
 
 static uint64_t rx_zero_val = 0;
+#ifdef RX_EXECUTION_PROFILE
+static rx_execution_profile *rx_profile = NULL;
+
+void rx_set_execution_profile(rx_execution_profile *profile) {
+    rx_profile = profile;
+}
+#else
+void rx_set_execution_profile(rx_execution_profile *profile) {
+    (void)profile;
+}
+#endif
 
 void compile_program(rx_program *prog, rx_bytecode bc[RX_PROGRAM_MAX_SIZE],
                               uint64_t *r, rx_vec_f128 *f, rx_vec_f128 *e, rx_vec_f128 *a) {
@@ -461,6 +472,12 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
     rx_bytecode bc[RX_PROGRAM_MAX_SIZE];
     int progSize = vm->flagV2 ? RX_PROGRAM_SIZE_V2 : RX_PROGRAM_SIZE_V1;
     compile_program(&vm->program, bc, r, f, e, a);
+#ifdef RX_EXECUTION_PROFILE
+    if (rx_profile) {
+        rx_profile->programs++;
+        rx_profile->iterations += iterations;
+    }
+#endif
 
     uint32_t spAddr0 = (uint32_t)vm->mem.mx_ma;
     uint32_t spAddr1 = (uint32_t)(vm->mem.mx_ma >> 32);
@@ -519,6 +536,12 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
 
         for (int pc = 0; pc < progSize; pc++) {
             rx_bytecode *ibc = &bc[pc];
+#ifdef RX_EXECUTION_PROFILE
+            if (rx_profile) {
+                rx_profile->instructions[ibc->type]++;
+                rx_profile->instruction_pc[pc]++;
+            }
+#endif
             switch (ibc->type) {
             case RX_OP_IADD_RS:
                 *ibc->idst += (*ibc->isrc << ibc->shift) + ibc->imm;
@@ -630,8 +653,20 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
                 *ibc->fdst = rx_sqrt_f128(*ibc->fdst);
                 break;
             case RX_OP_CBRANCH:
+#ifdef RX_EXECUTION_PROFILE
+                if (rx_profile) {
+                    rx_profile->branches++;
+                    rx_profile->branch_pc[pc]++;
+                }
+#endif
                 *ibc->idst += ibc->imm;
                 if ((*ibc->idst & ibc->memMask) == 0) {
+#ifdef RX_EXECUTION_PROFILE
+                    if (rx_profile) {
+                        rx_profile->branches_taken++;
+                        rx_profile->branch_taken_pc[pc]++;
+                    }
+#endif
                     pc = ibc->target;
                 }
                 break;
@@ -909,12 +944,18 @@ void rx_free_dataset(rx_dataset *ds) {
 rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     rx_vm *vm = (rx_vm *)calloc(1, sizeof(rx_vm));
     if (!vm) return NULL;
-    int use_jit = (flags & RX_FLAG_JIT) != 0;
+    int flag_v2 = (flags & RX_FLAG_V2) != 0;
+    /*
+     * The current x86 generator implements V1 semantics only. V2 also changes
+     * CFROUND, dataset address mixing and the FP post-loop transform, so merely
+     * emitting 384 instructions would still produce an invalid hash.
+     */
+    int use_jit = (flags & RX_FLAG_JIT) != 0 && !flag_v2;
     int large_pages = 1;
     vm->fullMem = (dataset != NULL) ? 1 : 0;
     vm->useJit = use_jit;
     vm->lightClient = (!dataset && cache) ? 1 : 0;
-    vm->flagV2 = (flags & RX_FLAG_V2) != 0;
+    vm->flagV2 = flag_v2;
     vm->cachePtr = cache;
     vm->datasetPtr = dataset;
     if (dataset) vm->mem.memory = dataset->memory;

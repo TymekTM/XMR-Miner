@@ -212,6 +212,19 @@ enum {
     RX_OP_COUNT
 };
 
+typedef struct {
+    uint64_t programs;
+    uint64_t iterations;
+    uint64_t instructions[RX_OP_COUNT];
+    uint64_t instruction_pc[RX_PROGRAM_MAX_SIZE];
+    uint64_t branches;
+    uint64_t branches_taken;
+    uint64_t branch_pc[RX_PROGRAM_MAX_SIZE];
+    uint64_t branch_taken_pc[RX_PROGRAM_MAX_SIZE];
+} rx_execution_profile;
+
+void rx_set_execution_profile(rx_execution_profile *profile);
+
 #define RX_FREQ_IADD_RS  16
 #define RX_FREQ_IADD_M    7
 #define RX_FREQ_ISUB_R   16
@@ -423,6 +436,7 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash);
 void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer);
 void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer);
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state);
+extern int g_aes_hash_fill_upstream;
 
 #ifdef __cplusplus
 }
