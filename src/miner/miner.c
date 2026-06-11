@@ -5,6 +5,7 @@
 #include "common/config.h"
 #include "common/log.h"
 #include "common/cpu.h"
+#include "crypto/randomx/msr.h"
 #include <windows.h>
 #include <mmsystem.h>
 #include <intrin.h>
@@ -17,7 +18,9 @@
 #define MODE_SINGLE 0
 #define MODE_DUAL 1
 #define MODE_CACHE_MAX_THREADS 128
-#define MODE_CACHE_FILE "mode_cache.csv"
+#define MODE_CACHE_FILE "mode_cache_v3.csv"
+#define MODE_BENCH_WARMUP 4
+#define MODE_BENCH_ITERS 96
 
 static int g_best_mode = MODE_SINGLE;
 static int g_mode_cache_loaded = 0;
@@ -130,6 +133,9 @@ static int build_affinity_order(const core_list_t *cores, int *order, int max_co
         if (cores->is_pcore[i]) order[n++] = cores->os_index[i];
     }
     for (int i = 0; i < cores->count && n < max_count; i++) {
+        if (cores->is_pcore[i] && cores->sibling[i] >= 0) order[n++] = cores->sibling[i];
+    }
+    for (int i = 0; i < cores->count && n < max_count; i++) {
         if (!cores->is_pcore[i]) order[n++] = cores->os_index[i];
     }
     return n;
@@ -149,9 +155,18 @@ struct miner_ctx {
     char current_seed_hex[65];
     int cache_initialized;
     int mode;
+    CRITICAL_SECTION perf_lock;
+    uint64_t perf_last_time;
+    uint64_t perf_last_hashes;
+    double perf_last_energy;
+    int perf_power_ready;
+    double power_limit;
+    uint64_t original_power_limit;
+    int power_limit_set;
 };
 
-miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores, int mode, stratum_ctx_t *stratum) {
+miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores,
+                          int mode, double power_limit, stratum_ctx_t *stratum) {
     miner_ctx_t *ctx = (miner_ctx_t *)calloc(1, sizeof(miner_ctx_t));
     if (!ctx) return NULL;
     ctx->num_threads = num_threads;
@@ -159,15 +174,18 @@ miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores, i
     ctx->physical_cores = physical_cores;
     ctx->stratum = stratum;
     ctx->mode = mode;
+    ctx->power_limit = power_limit;
     ctx->running = 0;
     ctx->cache_initialized = 0;
     InitializeCriticalSection(&ctx->cache_lock);
+    InitializeCriticalSection(&ctx->perf_lock);
     return ctx;
 }
 
 void miner_destroy(miner_ctx_t *ctx) {
     if (!ctx) return;
     miner_stop(ctx);
+    DeleteCriticalSection(&ctx->perf_lock);
     DeleteCriticalSection(&ctx->cache_lock);
     if (ctx->dataset) {
         rx_free_dataset(ctx->dataset);
@@ -180,6 +198,50 @@ void miner_destroy(miner_ctx_t *ctx) {
     free(ctx->workers);
     free(ctx->thread_handles);
     free(ctx);
+}
+
+void miner_report_performance(miner_ctx_t *ctx) {
+    if (!ctx || !TryEnterCriticalSection(&ctx->perf_lock)) return;
+
+    uint64_t now = GetTickCount64();
+    if (ctx->perf_last_time != 0 && now - ctx->perf_last_time < 9000) {
+        LeaveCriticalSection(&ctx->perf_lock);
+        return;
+    }
+
+    uint64_t total_hashes = 0;
+    for (int i = 0; i < ctx->num_threads; i++) {
+        total_hashes += ctx->workers[i].hashes;
+    }
+
+    double energy = 0.0;
+    int power_ok = msr_read_package_energy(&energy);
+    if (ctx->perf_last_time != 0) {
+        double seconds = (double)(now - ctx->perf_last_time) / 1000.0;
+        double hashrate = (double)(total_hashes - ctx->perf_last_hashes) / seconds;
+        if (power_ok && ctx->perf_power_ready) {
+            double delta_energy = energy - ctx->perf_last_energy;
+            if (delta_energy < 0.0) delta_energy += 4294967296.0 / 16384.0;
+            double watts = delta_energy / seconds;
+            if (watts > 0.1) {
+                LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %d threads | %s",
+                         hashrate, watts, hashrate / watts, ctx->num_threads,
+                         g_best_mode == MODE_DUAL ? "dual" : "single");
+            } else {
+                LOG_INFO("[PERF] %.1f H/s | power unavailable", hashrate);
+            }
+        } else {
+            LOG_INFO("[PERF] %.1f H/s | power unavailable (RAPL/MSR)", hashrate);
+        }
+    }
+
+    ctx->perf_last_time = now;
+    ctx->perf_last_hashes = total_hashes;
+    if (power_ok) {
+        ctx->perf_last_energy = energy;
+        ctx->perf_power_ready = 1;
+    }
+    LeaveCriticalSection(&ctx->perf_lock);
 }
 
 static DWORD WINAPI thread_entry(LPVOID arg) {
@@ -197,38 +259,50 @@ typedef struct {
     rx_vm *vm1;
     rx_vm *vm2;
     int dual;
+    int cpu;
     uint32_t seed0;
 } bench_thread_arg;
 
 static DWORD WINAPI bench_thread_entry(LPVOID arg) {
     bench_thread_arg *a = (bench_thread_arg *)arg;
-    uint8_t in1[32] = {0};
-    uint8_t in2[32] = {0};
+    uint8_t in1[76] = {0};
+    uint8_t in2[76] = {0};
     uint8_t out1[32], out2[32];
-    const int warmup = 2;
-    const int iters = 24;
+
+    if (a->cpu >= 0) {
+        GROUP_AFFINITY ga = {0};
+        ga.Group = (WORD)(a->cpu / 64);
+        ga.Mask = (KAFFINITY)(1ULL << (a->cpu % 64));
+        SetThreadGroupAffinity(GetCurrentThread(), &ga, NULL);
+    }
 
     memcpy(in1, &a->seed0, sizeof(a->seed0));
     uint32_t seed2 = a->seed0 ^ 0x9E3779B9u;
     memcpy(in2, &seed2, sizeof(seed2));
 
     if (a->dual) {
-        for (int i = 0; i < warmup; i++) {
-            rx_calculate_hash_dual(a->vm1, a->vm2, in1, sizeof(in1), in2, sizeof(in2), out1, out2);
-        }
-        for (int i = 0; i < iters; i++) {
+        for (int i = 0; i < MODE_BENCH_WARMUP + MODE_BENCH_ITERS; i++) {
+            uint32_t nonce1 = a->seed0 + (uint32_t)(i * 2);
+            uint32_t nonce2 = nonce1 + 1;
+            memcpy(in1 + 39, &nonce1, sizeof(nonce1));
+            memcpy(in2 + 39, &nonce2, sizeof(nonce2));
             rx_calculate_hash_dual(a->vm1, a->vm2, in1, sizeof(in1), in2, sizeof(in2), out1, out2);
         }
     } else {
-        for (int i = 0; i < warmup; i++) rx_calculate_hash(a->vm1, in1, sizeof(in1), out1);
-        for (int i = 0; i < iters; i++) rx_calculate_hash(a->vm1, in1, sizeof(in1), out1);
+        uint32_t nonce = a->seed0;
+        memcpy(in1 + 39, &nonce, sizeof(nonce));
+        rx_calculate_hash_first(a->vm1, in1, sizeof(in1));
+        for (int i = 0; i < MODE_BENCH_WARMUP + MODE_BENCH_ITERS; i++) {
+            nonce++;
+            memcpy(in1 + 39, &nonce, sizeof(nonce));
+            rx_calculate_hash_next(a->vm1, in1, sizeof(in1), out1);
+        }
     }
 
     return 0;
 }
 
 static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_dataset *dataset) {
-    const int iters = 24;
     int bench_threads = num_threads;
     if (bench_threads < 1) bench_threads = 1;
     if (bench_threads > 16) bench_threads = 16;
@@ -241,10 +315,19 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
         return 0.0;
     }
 
+    core_list_t cores = {0};
+    int affinity_order[MAX_CORES * 2];
+    int affinity_count = 0;
+    if (detect_physical_cores(&cores) > 0) {
+        sort_cores_pcore_first(&cores);
+        affinity_count = build_affinity_order(&cores, affinity_order, MAX_CORES * 2);
+    }
+
     for (int i = 0; i < bench_threads; i++) {
         args[i].dual = dual;
+        args[i].cpu = affinity_count > 0 ? affinity_order[i % affinity_count] : -1;
         args[i].seed0 = 0xA5A50000u + (uint32_t)i;
-        args[i].vm1 = rx_create_vm(RX_FLAG_V2, cache, dataset);
+        args[i].vm1 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
         if (!args[i].vm1) {
             for (int j = 0; j <= i; j++) {
                 if (args[j].vm1) rx_destroy_vm(args[j].vm1);
@@ -255,7 +338,7 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
             return 0.0;
         }
         if (dual) {
-            args[i].vm2 = rx_create_vm(RX_FLAG_V2, cache, dataset);
+            args[i].vm2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
             if (!args[i].vm2) {
                 for (int j = 0; j <= i; j++) {
                     if (args[j].vm1) rx_destroy_vm(args[j].vm1);
@@ -288,7 +371,8 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
 
     double dt = (double)(end.QuadPart - start.QuadPart) / (double)freq.QuadPart;
     if (dt <= 0.0) return 0.0;
-    double hashes = (double)bench_threads * (double)iters * (dual ? 2.0 : 1.0);
+    double hashes = (double)bench_threads * (double)(MODE_BENCH_WARMUP + MODE_BENCH_ITERS) *
+                    (dual ? 2.0 : 1.0);
     return hashes / dt;
 }
 
@@ -307,7 +391,7 @@ static int select_best_mode(int num_threads, rx_cache *cache, rx_dataset *datase
     double dual = run_mode_bench(num_threads, 1, cache, dataset);
 
     LOG_INFO("[BENCH] Single %.0f H/s | Dual %.0f H/s (threads=%d)", single, dual, num_threads);
-    if (dual > single * 1.02) {
+    if (dual > single * 1.005) {
         LOG_INFO("[BENCH] Selected DUAL mode");
         if (num_threads >= 1 && num_threads <= MODE_CACHE_MAX_THREADS) {
             g_mode_cache[num_threads] = MODE_DUAL;
@@ -381,6 +465,11 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
 void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
     if (worker_id < 0 || worker_id >= ctx->num_threads) return NULL;
     return (void *)ctx->workers[worker_id].vm;
+}
+
+void *miner_get_vm2(miner_ctx_t *ctx, int worker_id) {
+    if (worker_id < 0 || worker_id >= ctx->num_threads) return NULL;
+    return (void *)ctx->workers[worker_id].vm2;
 }
 
 void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags) {
@@ -478,6 +567,14 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     timeBeginPeriod(1);
+    msr_init();
+    if (ctx->power_limit > 0.0) {
+        ctx->power_limit_set = msr_set_package_power_limit(
+            ctx->power_limit, &ctx->original_power_limit);
+        if (!ctx->power_limit_set)
+            LOG_WARN("[MSR] Requested %.1f W package limit was not applied",
+                     ctx->power_limit);
+    }
 
     {
         int msr_ok = 0;
@@ -583,6 +680,14 @@ void miner_stop(miner_ctx_t *ctx) {
     if (total > 0) {
         LOG_INFO("[MINER] Total: %llu hashes", total);
     }
+    if (ctx->power_limit_set) {
+        if (msr_restore_package_power_limit(ctx->original_power_limit))
+            LOG_INFO("[MSR] Original package power limit restored");
+        else
+            LOG_WARN("[MSR] Failed to restore original package power limit");
+        ctx->power_limit_set = 0;
+    }
+    msr_destroy();
 
     LOG_INFO("[MINER] Stopped");
 }

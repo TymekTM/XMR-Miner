@@ -20,6 +20,7 @@ typedef struct {
     int  threads;
     int  huge_pages;
     int  mode;
+    double power_limit;
     int  log_level;
     int  verbose;
 } config_t;
