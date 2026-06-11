@@ -49,11 +49,11 @@ void cpu_detect(cpu_info_t *info) {
     info->has_sse2  = (edx >> 26) & 1;
     info->has_aes_ni = (ecx >> 25) & 1;
     info->has_avx   = (ecx >> 28) & 1;
-    info->has_bmi2  = (ebx >> 8) & 1;
 
     if (info->has_avx) {
         cpuid(7, 0, &eax, &ebx, &ecx, &edx);
         info->has_avx2 = (ebx >> 5) & 1;
+        info->has_bmi2 = (ebx >> 8) & 1;
     }
 
     u32 max_ext;

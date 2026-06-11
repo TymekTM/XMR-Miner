@@ -12,7 +12,7 @@
 static volatile int g_running = 1;
 
 static BOOL WINAPI ctrl_handler(DWORD type) {
-    if (type == CTRL_C_EVENT) {
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT) {
         g_running = 0;
         return TRUE;
     }
@@ -72,7 +72,8 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    miner_ctx_t *miner = miner_create(threads, cfg.huge_pages, cpu.physical_cores, cfg.mode, stratum);
+    miner_ctx_t *miner = miner_create(threads, cfg.huge_pages, cpu.physical_cores,
+                                      cfg.mode, cfg.power_limit, stratum);
     if (!miner) {
         LOG_ERR("Failed to create miner");
         stratum_destroy(stratum);
