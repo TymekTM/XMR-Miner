@@ -1,4 +1,5 @@
 #include "randomx_internal.h"
+#include "msr.h"
 #include <windows.h>
 #include <stdio.h>
 
@@ -174,6 +175,98 @@ static int write_msr(uint32_t reg, uint64_t value) {
     }
     g_last_msr_error = 0;
     return 0;
+}
+
+static int read_msr(uint32_t reg, uint64_t *value) {
+    DWORD bytes_returned = 0;
+    uint32_t output[2] = {0, 0};
+    if (!value || g_hDriver == INVALID_HANDLE_VALUE) return -1;
+
+    if (!DeviceIoControl(g_hDriver, IOCTL_OLS_READ_MSR,
+        &reg, sizeof(reg), output, sizeof(output), &bytes_returned, NULL) ||
+        bytes_returned < sizeof(output)) {
+        g_last_msr_error = GetLastError();
+        return -1;
+    }
+
+    *value = (uint64_t)output[0] | ((uint64_t)output[1] << 32);
+    g_last_msr_error = 0;
+    return 0;
+}
+
+int msr_read_package_energy(double *joules) {
+    static double energy_unit = 0.0;
+    uint64_t units = 0;
+    uint64_t energy = 0;
+
+    if (!joules) return 0;
+    if (g_hDriver == INVALID_HANDLE_VALUE && open_driver() < 0) return 0;
+
+    if (energy_unit == 0.0) {
+        if (read_msr(0x606, &units) < 0) return 0;
+        unsigned shift = (unsigned)((units >> 8) & 0x1F);
+        energy_unit = 1.0 / (double)(1ULL << shift);
+    }
+
+    if (read_msr(0x611, &energy) < 0) return 0;
+    *joules = (double)(uint32_t)energy * energy_unit;
+    return 1;
+}
+
+int msr_set_package_power_limit(double watts, uint64_t *original) {
+    uint64_t units = 0;
+    uint64_t limit = 0;
+    if (watts <= 0.0 || !original) return 0;
+    if (g_hDriver == INVALID_HANDLE_VALUE && open_driver() < 0) return 0;
+    if (read_msr(0x606, &units) < 0 || read_msr(0x610, &limit) < 0) return 0;
+    if (limit & (1ULL << 63)) {
+        printf("[MSR] Package power limit is locked\n");
+        return 0;
+    }
+
+    unsigned shift = (unsigned)(units & 0x0F);
+    double power_unit = 1.0 / (double)(1ULL << shift);
+    uint64_t raw = (uint64_t)(watts / power_unit + 0.5);
+    if (raw > 0x7FFF) raw = 0x7FFF;
+
+    *original = limit;
+    limit &= ~((uint64_t)0x7FFF | ((uint64_t)0x7FFF << 32));
+    limit |= raw | (1ULL << 15);
+    limit |= (raw << 32) | (1ULL << 47);
+    if (write_msr(0x610, limit) < 0) return 0;
+
+    uint64_t verify = 0;
+    if (read_msr(0x610, &verify) < 0) {
+        write_msr(0x610, *original);
+        return 0;
+    }
+    if ((verify & 0x7FFF) != raw || ((verify >> 32) & 0x7FFF) != raw) {
+        printf("[MSR] Package power limit verification failed\n");
+        write_msr(0x610, *original);
+        return 0;
+    }
+    printf("[MSR] Package PL1/PL2 set to %.1f W\n", raw * power_unit);
+    return 1;
+}
+
+int msr_restore_package_power_limit(uint64_t original) {
+    if (g_hDriver == INVALID_HANDLE_VALUE) return 0;
+    return write_msr(0x610, original) == 0;
+}
+
+int msr_set_prefetch_control(uint64_t value, uint64_t *original) {
+    uint64_t verify = 0;
+    if (!original) return 0;
+    if (g_hDriver == INVALID_HANDLE_VALUE && open_driver() < 0) return 0;
+    if (read_msr(0x1A4, original) < 0) return 0;
+    if (write_msr(0x1A4, value) < 0 || read_msr(0x1A4, &verify) < 0)
+        return 0;
+    return (verify & 0x0F) == (value & 0x0F);
+}
+
+int msr_restore_prefetch_control(uint64_t original) {
+    if (g_hDriver == INVALID_HANDLE_VALUE) return 0;
+    return write_msr(0x1A4, original) == 0;
 }
 
 int msr_init(void) {
