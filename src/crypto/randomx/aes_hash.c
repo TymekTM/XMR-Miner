@@ -1,5 +1,8 @@
 #include "randomx_internal.h"
 
+int g_aes_hash_fill_prefetch = 0;
+int g_aes_hash_fill_upstream = 0;
+
 #define AES_HASH_1R_STATE0 0xd7983aad, 0xcc82db47, 0x9fa856de, 0x92b52c0d
 #define AES_HASH_1R_STATE1 0xace78057, 0xf59e125a, 0x15c7b798, 0x338d996e
 #define AES_HASH_1R_STATE2 0xe8a07ce4, 0x5079506b, 0xae62c7d0, 0x6a770017
@@ -141,8 +144,39 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
     rx_vec_i128 fs2 = rx_load_i128((const rx_vec_i128 *)fill_state + 2);
     rx_vec_i128 fs3 = rx_load_i128((const rx_vec_i128 *)fill_state + 3);
 
+    if (g_aes_hash_fill_upstream) {
+        const int prefetchDistance = 4096;
+        const uint8_t *mainEnd = spEnd - prefetchDistance;
+        const char *prefetchPtr = (const char *)sp + prefetchDistance;
+
+        for (int pass = 0; pass < 2; ++pass) {
+            while (sp < mainEnd) {
+                hs0 = rx_aesenc_i128(hs0, rx_load_i128((const rx_vec_i128 *)sp + 0));
+                hs1 = rx_aesdec_i128(hs1, rx_load_i128((const rx_vec_i128 *)sp + 1));
+                hs2 = rx_aesenc_i128(hs2, rx_load_i128((const rx_vec_i128 *)sp + 2));
+                hs3 = rx_aesdec_i128(hs3, rx_load_i128((const rx_vec_i128 *)sp + 3));
+                fs0 = rx_aesdec_i128(fs0, fk0);
+                fs1 = rx_aesenc_i128(fs1, fk1);
+                fs2 = rx_aesdec_i128(fs2, fk2);
+                fs3 = rx_aesenc_i128(fs3, fk3);
+                _mm_store_si128((__m128i *)sp + 0, fs0);
+                _mm_store_si128((__m128i *)sp + 1, fs1);
+                _mm_store_si128((__m128i *)sp + 2, fs2);
+                _mm_store_si128((__m128i *)sp + 3, fs3);
+                _mm_prefetch(prefetchPtr, _MM_HINT_T0);
+                sp += 64;
+                prefetchPtr += 64;
+            }
+            prefetchPtr = (const char *)scratchpad;
+            mainEnd += prefetchDistance;
+        }
+    } else {
     const uint8_t *spEnd2 = spEnd - 128;
     while (sp < spEnd2) {
+        if (g_aes_hash_fill_prefetch && sp + 4096 < spEnd) {
+            _mm_prefetch((const char *)sp + 4096, _MM_HINT_T0);
+            _mm_prefetch((const char *)sp + 4160, _MM_HINT_T0);
+        }
         rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
         rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
         rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
@@ -195,6 +229,7 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
         _mm_store_si128((__m128i *)sp + 2, fs2);
         _mm_store_si128((__m128i *)sp + 3, fs3);
         sp += 64;
+    }
     }
 
     rx_store_i128((rx_vec_i128 *)fill_state + 0, fs0);
