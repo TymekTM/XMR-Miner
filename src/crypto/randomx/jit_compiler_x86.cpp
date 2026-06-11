@@ -4,6 +4,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+extern "C" int g_jit_short_branches;
+extern "C" int g_jit_involution_pairs;
+extern "C" int g_jit_branch_align;
+extern "C" int g_jit_loop_nop;
+extern "C" int g_jit_sp_prefetch_hint;
+extern "C" int g_jit_bmi2_mulx;
+extern "C" int g_jit_cfround_elim;
+extern "C" int g_jit_large_pages;
+extern "C" int g_jit_jcc_align;
+extern "C" int g_jit_near_rcp_pool;
+extern "C" int g_jit_double_buffer;
+extern "C" int g_jit_inline_rcp_pool;
+extern "C" int g_jit_rorx;
+extern "C" int g_jit_stack_rcp_pool;
+extern "C" int g_jit_cfround_rorx;
 
 #define RX_DATASET_BASE_MASK  (RX_DATASET_BASE_SIZE - 64)
 #define RX_CACHE_MASK         ((RX_ARGON_MEMORY * 16) - 1)
@@ -12,7 +27,7 @@
 #define RX_MAX_INSTR_CODE     32
 #define RX_SUPER_INSTR_MAX    14
 #define RX_SUPER_PROG_HDR     128
-#define RX_PROGRAM_CODE_SIZE  (((RX_CODE_ALIGN + RX_MAX_INSTR_CODE * RX_PROGRAM_SIZE - 1) / RX_CODE_ALIGN + 1) * RX_CODE_ALIGN)
+#define RX_PROGRAM_CODE_SIZE  16384
 #define RX_SUPER_CODE_SIZE    (((RX_CODE_ALIGN + (RX_SUPER_PROG_HDR + RX_SUPER_INSTR_MAX * RX_SUPERSCALAR_MAX_SIZE) * RX_CACHE_ACCESSES - 1) / RX_CODE_ALIGN + 1) * RX_CODE_ALIGN)
 #define RX_TOTAL_CODE_SIZE    (RX_PROGRAM_CODE_SIZE + RX_SUPER_CODE_SIZE + 128)
 #define RX_SUPER_OFFSET       RX_PROGRAM_CODE_SIZE
@@ -127,19 +142,55 @@ static inline uint32_t align_up(uint32_t val, uint32_t align) {
 
 struct JitCompiler {
     uint8_t* code;
+    uint8_t* codeSlots[2];
+    int activeCodeSlot;
     int32_t pos;
     int32_t instructionOffsets[RX_PROGRAM_SIZE]; int instructionCount;
     int registerUsage[RX_REGISTERS_COUNT];
     rx_cache* cache;
     rx_cache* superscalar_cache;
+    rx_cache* superscalarCacheSlots[2];
     uint64_t imul_rcp_pool[IMUL_RCP_POOL_SIZE];
     int imul_rcp_pool_count;
+    int activeRcpPoolOffset;
+    int activeStackRcpPool;
     int32_t prevFPOperation;
+    int32_t prevCFROUND;
+    int32_t prevCFROUNDLength;
+    int shortBranchCount;
+    int generatedCodeSize;
+    uint8_t skipInstruction[RX_PROGRAM_SIZE];
+    uint8_t branchTarget[RX_PROGRAM_SIZE];
 
     void emitByte(uint8_t b) { code[pos++] = b; }
     void emit32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
     void emit64(uint64_t v) { memcpy(code + pos, &v, 8); pos += 8; }
     void emit(const uint8_t* src, int len) { memcpy(code + pos, src, len); pos += len; }
+    void emitByteAt(int& at, uint8_t b) { code[at++] = b; }
+    void emit32At(int& at, uint32_t v) {
+        memcpy(code + at, &v, 4);
+        at += 4;
+    }
+    void emit64At(int& at, uint64_t v) {
+        memcpy(code + at, &v, 8);
+        at += 8;
+    }
+    int imulRcpPoolOffset() const {
+        if (activeRcpPoolOffset > 0)
+            return activeRcpPoolOffset;
+        return g_jit_near_rcp_pool ?
+            RX_PROGRAM_CODE_SIZE - IMUL_RCP_POOL_SIZE * 8 :
+            IMUL_RCP_POOL_OFFSET;
+    }
+
+    void emitScratchpadPrefetch() {
+        uint8_t prefetch[PREFETCH_SP_SIZE];
+        memcpy(prefetch, code_prefetch_sp, sizeof(prefetch));
+        int hint = g_jit_sp_prefetch_hint & 3;
+        prefetch[10] = (uint8_t)((prefetch[10] & 0xC7) | (hint << 3));
+        prefetch[24] = (uint8_t)((prefetch[24] & 0xC7) | (hint << 3));
+        emit(prefetch, sizeof(prefetch));
+    }
 
     __forceinline void alignCode(int align) {
         while (pos % align) {
@@ -149,12 +200,12 @@ struct JitCompiler {
             static const uint8_t nopBytes[][8] = {
                 {0x90},
                 {0x66,0x90},
-                {0x66,0x66,0x90},
                 {0x0F,0x1F,0x00},
                 {0x0F,0x1F,0x40,0x00},
                 {0x0F,0x1F,0x44,0x00,0x00},
                 {0x66,0x0F,0x1F,0x44,0x00,0x00},
                 {0x0F,0x1F,0x80,0x00,0x00,0x00,0x00},
+                {0x0F,0x1F,0x84,0x00,0x00,0x00,0x00,0x00},
             };
             int idx = n - 1;
             if (idx >= 8) idx = 7;
@@ -256,8 +307,121 @@ struct JitCompiler {
 
     static InstrGen engine[256];
 
+    void analyzeInvolutionPairs(rx_program* prog) {
+        int integerUsage[RX_REGISTERS_COUNT];
+        int pendingFscal[RX_REG_FLT_COUNT];
+        int pendingFswapF[RX_REG_FLT_COUNT];
+        int pendingFswapE[RX_REG_FLT_COUNT];
+        memset(skipInstruction, 0, sizeof(skipInstruction));
+        memset(branchTarget, 0, sizeof(branchTarget));
+        if (!g_jit_involution_pairs && g_jit_branch_align <= 1)
+            return;
+        for (int reg = 0; reg < RX_REGISTERS_COUNT; ++reg)
+            integerUsage[reg] = -1;
+
+        for (int i = 0; i < RX_PROGRAM_SIZE; ++i) {
+            rx_instruction* instr = &prog->programBuffer[i];
+            InstrGen gen = engine[instr->opcode];
+            int dst = instr->dst % RX_REGISTERS_COUNT;
+            int src = instr->src % RX_REGISTERS_COUNT;
+
+            if (gen == &JitCompiler::h_CBRANCH) {
+                int target = integerUsage[dst] + 1;
+                if (target >= 0 && target < RX_PROGRAM_SIZE)
+                    branchTarget[target] = 1;
+                for (int reg = 0; reg < RX_REGISTERS_COUNT; ++reg)
+                    integerUsage[reg] = i;
+            } else if (gen == &JitCompiler::h_ISWAP_R) {
+                if (dst != src) {
+                    integerUsage[dst] = i;
+                    integerUsage[src] = i;
+                }
+            } else if (gen == &JitCompiler::h_IADD_RS ||
+                       gen == &JitCompiler::h_IADD_M ||
+                       gen == &JitCompiler::h_ISUB_R ||
+                       gen == &JitCompiler::h_ISUB_M ||
+                       gen == &JitCompiler::h_IMUL_R ||
+                       gen == &JitCompiler::h_IMUL_M ||
+                       gen == &JitCompiler::h_IMULH_R ||
+                       gen == &JitCompiler::h_IMULH_M ||
+                       gen == &JitCompiler::h_ISMULH_R ||
+                       gen == &JitCompiler::h_ISMULH_M ||
+                       gen == &JitCompiler::h_INEG_R ||
+                       gen == &JitCompiler::h_IXOR_R ||
+                       gen == &JitCompiler::h_IXOR_M ||
+                       gen == &JitCompiler::h_IROR_R ||
+                       gen == &JitCompiler::h_IROL_R) {
+                integerUsage[dst] = i;
+            } else if (gen == &JitCompiler::h_IMUL_RCP &&
+                       !is_zero_or_power_of_2((uint32_t)getImm32(instr))) {
+                integerUsage[dst] = i;
+            }
+        }
+
+        if (!g_jit_involution_pairs)
+            return;
+
+        for (int reg = 0; reg < RX_REG_FLT_COUNT; ++reg) {
+            pendingFscal[reg] = -1;
+            pendingFswapF[reg] = -1;
+            pendingFswapE[reg] = -1;
+        }
+
+        for (int i = 0; i < RX_PROGRAM_SIZE; ++i) {
+            rx_instruction* instr = &prog->programBuffer[i];
+            InstrGen gen = engine[instr->opcode];
+            if (branchTarget[i] || gen == &JitCompiler::h_CBRANCH) {
+                for (int reg = 0; reg < RX_REG_FLT_COUNT; ++reg) {
+                    pendingFscal[reg] = -1;
+                    pendingFswapF[reg] = -1;
+                    pendingFswapE[reg] = -1;
+                }
+            }
+
+            if (gen == &JitCompiler::h_FSCAL_R) {
+                int reg = instr->dst % RX_REG_FLT_COUNT;
+                if (pendingFscal[reg] >= 0) {
+                    skipInstruction[pendingFscal[reg]] = 1;
+                    skipInstruction[i] = 1;
+                    pendingFscal[reg] = -1;
+                } else {
+                    pendingFscal[reg] = i;
+                }
+                pendingFswapF[reg] = -1;
+            } else if (gen == &JitCompiler::h_FSWAP_R) {
+                int dst = instr->dst % RX_REGISTERS_COUNT;
+                int* pending = dst < RX_REG_FLT_COUNT ?
+                    &pendingFswapF[dst] : &pendingFswapE[dst - RX_REG_FLT_COUNT];
+                if (*pending >= 0) {
+                    skipInstruction[*pending] = 1;
+                    skipInstruction[i] = 1;
+                    *pending = -1;
+                } else {
+                    *pending = i;
+                }
+                if (dst < RX_REG_FLT_COUNT)
+                    pendingFscal[dst] = -1;
+            } else if (gen == &JitCompiler::h_FADD_R ||
+                       gen == &JitCompiler::h_FADD_M ||
+                       gen == &JitCompiler::h_FSUB_R ||
+                       gen == &JitCompiler::h_FSUB_M) {
+                int reg = instr->dst % RX_REG_FLT_COUNT;
+                pendingFscal[reg] = -1;
+                pendingFswapF[reg] = -1;
+            } else if (gen == &JitCompiler::h_FMUL_R ||
+                       gen == &JitCompiler::h_FDIV_M ||
+                       gen == &JitCompiler::h_FSQRT_R) {
+                pendingFswapE[instr->dst % RX_REG_FLT_COUNT] = -1;
+            }
+        }
+    }
+
     void generateCode(rx_instruction* instr, int i) {
+        if (g_jit_branch_align > 1 && branchTarget[i])
+            alignCode(g_jit_branch_align);
         instructionOffsets[instructionCount++] = pos;
+        if (skipInstruction[i])
+            return;
         (this->*engine[instr->opcode])(instr, i);
     }
 
@@ -282,6 +446,10 @@ struct JitCompiler {
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
         imul_rcp_pool_count = 0;
         prevFPOperation = -1;
+        prevCFROUND = -1;
+        prevCFROUNDLength = 0;
+        shortBranchCount = 0;
+        analyzeInvolutionPairs(prog);
 
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
@@ -319,7 +487,7 @@ struct JitCompiler {
 
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
-        emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+        emitScratchpadPrefetch();
 
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
@@ -341,6 +509,8 @@ struct JitCompiler {
 
     void generateProgram(rx_program* prog, rx_program_config* pcfg) {
         int pos = 0;
+        activeRcpPoolOffset = 0;
+        activeStackRcpPool = g_jit_stack_rcp_pool;
 
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
         pos += PROLOGUE_SIZE;
@@ -352,6 +522,8 @@ struct JitCompiler {
 
         memcpy(code + pos, code_first_load, FIRST_LOAD_SIZE);
         int firstLoadStart = pos;
+        if (activeStackRcpPool)
+            code[pos + 21] = 0xA8;
         pos += FIRST_LOAD_SIZE;
 
         pos = ((pos + 15) & ~15);
@@ -363,16 +535,26 @@ struct JitCompiler {
         pos = ((pos + 15) & ~15);
 
         int imulRcpPos = pos;
-        memcpy(code + pos, code_imul_rcp, IMUL_RCP_SIZE);
-        pos += IMUL_RCP_SIZE;
+        if (activeStackRcpPool) {
+            pos += 288;
+        } else {
+            memcpy(code + pos, code_imul_rcp, IMUL_RCP_SIZE);
+            pos += IMUL_RCP_SIZE;
+        }
+        if (!activeStackRcpPool && g_jit_inline_rcp_pool) {
+            activeRcpPoolOffset = pos;
+            pos += IMUL_RCP_POOL_SIZE * 8;
+        }
 
         pos = ((pos + 15) & ~15);
 
         int loopBeginPos = pos;
-        code[pos] = 0x90;
-        pos += 1;
+        if (g_jit_loop_nop)
+            code[pos++] = 0x90;
 
         memcpy(code + EPILOGUE_OFFSET, code_epilogue, EPILOGUE_SIZE);
+        if (activeStackRcpPool)
+            code[EPILOGUE_OFFSET + 3] = 0xA8;
 
         int movapd13_patch = 190;
         int32_t rel = constantsPos - (movapd13_patch + 4);
@@ -390,48 +572,53 @@ struct JitCompiler {
         rel = imulRcpPos - (jmpImulPos + 4);
         memcpy(code + jmpImulPos, &rel, 4);
 
-        int jmpLoopPos = imulRcpPos + IMUL_RCP_SIZE - 4;
-        rel = loopBeginPos - (jmpLoopPos + 4);
-        memcpy(code + jmpLoopPos, &rel, 4);
+        if (!activeStackRcpPool) {
+            int jmpLoopPos = imulRcpPos + IMUL_RCP_SIZE - 4;
+            rel = loopBeginPos - (jmpLoopPos + 4);
+            memcpy(code + jmpLoopPos, &rel, 4);
+        }
 
         memcpy(code + constantsPos + EMASK_OFFSET_IN_CONSTANTS, pcfg->eMask, sizeof(pcfg->eMask));
 
         imul_rcp_pool_count = 0;
 
-        pos = loopBeginPos + 1;
+        pos = loopBeginPos + (g_jit_loop_nop ? 1 : 0);
         this->pos = pos;
         generateProgramPrologue(prog, pcfg, loopBeginPos);
 
         generateProgramEpilogue(prog, pcfg, loopBeginPos);
 
-        for (int j = 0; j < imul_rcp_pool_count; j++) {
-            memcpy(code + IMUL_RCP_POOL_OFFSET + j * 8, &imul_rcp_pool[j], 8);
-        }
-
-        int changed;
-        int iterations = 0;
-        do {
-            changed = 0;
-            for (int j = RX_PROGRAM_SIZE - 1; j >= 0; j--) {
-                if (prog->programBuffer[j].opcode != RX_OP_CBRANCH) continue;
-                int cbranchPos = instructionOffsets[j] + 14;
-                if (code[cbranchPos] != 0x0F || code[cbranchPos+1] != 0x84) continue;
-                int32_t* pRel = (int32_t*)(code + cbranchPos + 2);
-                int32_t curOffset = *pRel;
-                if (curOffset >= -128 && curOffset <= 127) {
-                    int reg = prog->programBuffer[j].dst;
-                    int target = registerUsage[reg] + 1;
-                    int32_t newOffset = instructionOffsets[target] - (cbranchPos + 2);
-                    if (newOffset >= -128 && newOffset <= 127) {
-                        code[cbranchPos] = 0x74;
-                        code[cbranchPos + 1] = (uint8_t)newOffset;
-                        memset(code + cbranchPos + 2, 0x90, 4);
-                        changed = 1;
-                    }
+        if (activeStackRcpPool) {
+            int init = imulRcpPos;
+            emitByteAt(init, 0x48); emitByteAt(init, 0x89);
+            emitByteAt(init, 0x84); emitByteAt(init, 0x24);
+            emit32At(init, 0xA0);
+            for (int j = 0; j < imul_rcp_pool_count; j++) {
+                emitByteAt(init, 0x48); emitByteAt(init, 0xB8);
+                emit64At(init, imul_rcp_pool[j]);
+                int offset = 0x20 + j * 8;
+                emitByteAt(init, 0x48); emitByteAt(init, 0x89);
+                if (offset <= 0x7F) {
+                    emitByteAt(init, 0x44); emitByteAt(init, 0x24);
+                    emitByteAt(init, (uint8_t)offset);
+                } else {
+                    emitByteAt(init, 0x84); emitByteAt(init, 0x24);
+                    emit32At(init, offset);
                 }
             }
-            iterations++;
-        } while (changed);
+            emitByteAt(init, 0x48); emitByteAt(init, 0x8B);
+            emitByteAt(init, 0x84); emitByteAt(init, 0x24);
+            emit32At(init, 0xA0);
+            emitByteAt(init, 0xE9);
+            emit32At(init, loopBeginPos - (init + 4));
+        } else {
+            for (int j = 0; j < imul_rcp_pool_count; j++) {
+                memcpy(code + imulRcpPoolOffset() + j * 8,
+                       &imul_rcp_pool[j], 8);
+            }
+        }
+
+        generatedCodeSize = this->pos;
     }
 
     void generateSuperscalarCode(rx_instruction* instr) {
@@ -608,6 +795,7 @@ struct JitCompiler {
 
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+        analyzeInvolutionPairs(prog);
 
         // eMask not used in light mode (no FP constant patching)
 
@@ -652,8 +840,8 @@ struct JitCompiler {
         pos = ((pos + 15) & ~15);
 
         int loopBeginPos = pos;
-        code[pos] = 0x90;
-        pos += 1;
+        if (g_jit_loop_nop)
+            code[pos++] = 0x90;
 
         int movapd13_patch = 190;
         int32_t rel = constantsPos - (movapd13_patch + 4);
@@ -677,7 +865,7 @@ struct JitCompiler {
 
         memcpy(code + constantsPos + EMASK_OFFSET_IN_CONSTANTS, pcfg->eMask, sizeof(pcfg->eMask));
 
-        pos = loopBeginPos + 1;
+        pos = loopBeginPos + (g_jit_loop_nop ? 1 : 0);
         this->pos = pos;
         generateProgramPrologue(prog, pcfg, loopBeginPos);
 
@@ -706,7 +894,7 @@ struct JitCompiler {
 
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
-        emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+        emitScratchpadPrefetch();
 
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
@@ -1021,6 +1209,10 @@ struct JitCompiler {
 
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+        imul_rcp_pool_count = 0;
+        prevFPOperation = -1;
+        shortBranchCount = 0;
+        analyzeInvolutionPairs(prog1);
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
@@ -1050,7 +1242,7 @@ struct JitCompiler {
         emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg1);
-        emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+        emitScratchpadPrefetch();
 
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
@@ -1072,6 +1264,8 @@ struct JitCompiler {
 
         instructionCount = 0;
         for (int i = 0; i < RX_REGISTERS_COUNT; i++) registerUsage[i] = -1;
+        prevFPOperation = -1;
+        analyzeInvolutionPairs(prog2);
         memcpy(code + pos, code_loop_load, LOOP_LOAD_SIZE);
         pos += LOOP_LOAD_SIZE;
         for (unsigned i = 0; i < RX_PROGRAM_SIZE; i++) {
@@ -1101,7 +1295,7 @@ struct JitCompiler {
         emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg1);
-        emit(code_prefetch_sp, PREFETCH_SP_SIZE);
+        emitScratchpadPrefetch();
 
         memcpy(code + pos, code_loop_store, LOOP_STORE_SIZE);
         pos += LOOP_STORE_SIZE;
@@ -1182,6 +1376,9 @@ struct JitCompiler {
         emitByte(0x41); emitByte(0x5D); emitByte(0x41); emitByte(0x5C);
         emitByte(0x5E); emitByte(0x5F); emitByte(0x5D); emitByte(0x5B);
         emitByte(0xC3);
+        for (int i = 0; i < imul_rcp_pool_count; i++) {
+            memcpy(code + imulRcpPoolOffset() + i * 8, &imul_rcp_pool[i], 8);
+        }
     }
 };
 
@@ -1314,6 +1511,13 @@ void JitCompiler::h_IMUL_M(rx_instruction* instr, int i) {
 
 void JitCompiler::h_IMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    if (g_jit_bmi2_mulx) {
+        *(uint32_t*)(code + pos) = 0xC4D08B49 + (instr->dst << 16);
+        *(uint32_t*)(code + pos + 4) =
+            0xC0F6FB42 + (instr->dst << 27) + (instr->src << 24);
+        pos += 8;
+        return;
+    }
     *(uint32_t*)(code + pos) = 0xC08B49 + (instr->dst << 16);
     *(uint32_t*)(code + pos + 3) = 0xE0F749 + (instr->src << 16);
     *(uint32_t*)(code + pos + 6) = 0xC28B4C + ((instr->dst & 7) << 19);
@@ -1322,6 +1526,24 @@ void JitCompiler::h_IMULH_R(rx_instruction* instr, int i) {
 
 void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    if (g_jit_bmi2_mulx) {
+        if (instr->src != instr->dst) {
+            genAddressReg(instr, false);
+            *(uint32_t*)(code + pos) = 0xC4D08B49 + (instr->dst << 16);
+            *(uint64_t*)(code + pos + 4) =
+                0x0E04F6FB62ULL + ((uint64_t)instr->dst << 27);
+            pos += 9;
+        } else {
+            *(uint64_t*)(code + pos) =
+                0x86F6FB62C4D08B49ULL +
+                ((uint64_t)instr->dst << 16) +
+                ((uint64_t)instr->dst << 59);
+            *(uint32_t*)(code + pos + 8) =
+                (uint32_t)getImm32(instr) & RX_SPL3_MASK;
+            pos += 12;
+        }
+        return;
+    }
     if (instr->src != instr->dst) {
         genAddressReg(instr, false);
         *(uint64_t*)(code + pos) = 0x0E24F748C08B49ULL + ((uint64_t)instr->dst << 16);
@@ -1363,9 +1585,24 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
         if (imul_rcp_pool_count < IMUL_RCP_POOL_SIZE) {
             imul_rcp_pool[imul_rcp_pool_count] = rcp;
             emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
-            emitByte(0x05 | ((instr->dst & 7) << 3));
-            int32_t disp = (IMUL_RCP_POOL_OFFSET + imul_rcp_pool_count * 8) - (pos + 4);
-            emit32(disp);
+            if (activeStackRcpPool) {
+                int offset = 0x20 + imul_rcp_pool_count * 8;
+                if (offset <= 0x7F) {
+                    emitByte(0x44 | ((instr->dst & 7) << 3));
+                    emitByte(0x24);
+                    emitByte((uint8_t)offset);
+                } else {
+                    emitByte(0x84 | ((instr->dst & 7) << 3));
+                    emitByte(0x24);
+                    emit32(offset);
+                }
+            } else {
+                emitByte(0x05 | ((instr->dst & 7) << 3));
+                int32_t disp =
+                    (imulRcpPoolOffset() + imul_rcp_pool_count * 8) -
+                    (pos + 4);
+                emit32(disp);
+            }
             imul_rcp_pool_count++;
         } else {
             emitByte(0x48); emitByte(0xB8); emit64(rcp);
@@ -1409,8 +1646,18 @@ void JitCompiler::h_IROR_R(rx_instruction* instr, int i) {
         emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
         emitByte(0x49); emitByte(0xD3); emitByte(0xC8 | instr->dst);
     } else {
-        emitByte(0x49); emitByte(0xC1); emitByte(0xC8 | instr->dst);
-        emitByte(getImm32(instr) & 63);
+        int rotate = getImm32(instr) & 63;
+        if (rotate != 0) {
+            if (g_jit_rorx) {
+                emitByte(0xC4); emitByte(0x43); emitByte(0xFB);
+                emitByte(0xF0);
+                emitByte(0xC0 | instr->dst | (instr->dst << 3));
+                emitByte(rotate);
+            } else {
+                emitByte(0x49); emitByte(0xC1);
+                emitByte(0xC8 | instr->dst); emitByte(rotate);
+            }
+        }
     }
 }
 
@@ -1420,8 +1667,18 @@ void JitCompiler::h_IROL_R(rx_instruction* instr, int i) {
         emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
         emitByte(0x49); emitByte(0xD3); emitByte(0xC0 | instr->dst);
     } else {
-        emitByte(0x49); emitByte(0xC1); emitByte(0xC0 | instr->dst);
-        emitByte(getImm32(instr) & 63);
+        int rotate = getImm32(instr) & 63;
+        if (rotate != 0) {
+            if (g_jit_rorx) {
+                emitByte(0xC4); emitByte(0x43); emitByte(0xFB);
+                emitByte(0xF0);
+                emitByte(0xC0 | instr->dst | (instr->dst << 3));
+                emitByte((64 - rotate) & 63);
+            } else {
+                emitByte(0x49); emitByte(0xC1);
+                emitByte(0xC0 | instr->dst); emitByte(rotate);
+            }
+        }
     }
 }
 
@@ -1511,10 +1768,20 @@ void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
-    emitMov64RM(0, instr->src);
+    if (g_jit_cfround_elim && prevCFROUND > prevFPOperation) {
+        memset(code + prevCFROUND, 0x90, (size_t)prevCFROUNDLength);
+    }
+    int start = pos;
     int rotate = (13 - (getImm32(instr) & 63)) & 63;
-    if (rotate != 0) {
-        emitByte(0x48); emitByte(0xC1); emitByte(0xC0); emitByte(rotate);
+    if (g_jit_cfround_rorx) {
+        emitByte(0xC4); emitByte(0xC3); emitByte(0xFB);
+        emitByte(0xF0); emitByte(0xC0 | instr->src);
+        emitByte((64 - rotate) & 63);
+    } else {
+        emitMov64RM(0, instr->src);
+        if (rotate != 0) {
+            emitByte(0x48); emitByte(0xC1); emitByte(0xC0); emitByte(rotate);
+        }
     }
     if (prevFPOperation >= 0 && (pos - prevFPOperation) < 12) {
         emitByte(0x66); emitByte(0x90);
@@ -1525,11 +1792,21 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
     pos += 2;
     *(uint64_t*)(code + pos) = 0x002414AE0F240489ULL;
     pos += 7;
+    prevCFROUND = start;
+    prevCFROUNDLength = pos - start;
 }
 
 void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
+    if (g_jit_jcc_align) {
+        int branchBegin = pos + 7;
+        int branchEnd = branchBegin + 13;
+        if ((branchBegin ^ branchEnd) >= 32)
+            alignCode(32);
+    }
     int reg = instr->dst;
     int target = registerUsage[reg] + 1;
+    if (instructionOffsets[target] <= prevFPOperation)
+        prevFPOperation = pos;
     emitByte(0x49); emitByte(0x81); emitByte(0xC0 | reg);
     int shift = getModCond(instr) + RX_CONDITION_OFFSET;
     uint32_t imm = (uint32_t)getImm32(instr) | (1UL << shift);
@@ -1539,7 +1816,16 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     emitByte(0x49); emitByte(0xF7); emitByte(0xC0 | reg);
     emit32(RX_CONDITION_MASK << shift);
 
-    emitByte(0x0F); emitByte(0x84); emit32(instructionOffsets[target] - (pos + 4));
+    int32_t shortOffset = instructionOffsets[target] - (pos + 2);
+    if (g_jit_short_branches && shortOffset >= -128 && shortOffset <= 127) {
+        emitByte(0x74);
+        emitByte((uint8_t)(int8_t)shortOffset);
+        shortBranchCount++;
+    } else {
+        emitByte(0x0F);
+        emitByte(0x84);
+        emit32(instructionOffsets[target] - (pos + 4));
+    }
 
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
         registerUsage[j] = i;
@@ -1566,6 +1852,21 @@ static uint64_t randomx_reciprocal_fast_impl(uint32_t divisor) {
 extern "C" {
 
 int g_jit_epilogue_skip_mask = 0;
+int g_jit_short_branches = 0;
+int g_jit_involution_pairs = 0;
+int g_jit_branch_align = 0;
+int g_jit_loop_nop = 1;
+int g_jit_sp_prefetch_hint = 0;
+int g_jit_bmi2_mulx = 0;
+int g_jit_cfround_elim = 0;
+int g_jit_large_pages = 0;
+int g_jit_jcc_align = 0;
+int g_jit_near_rcp_pool = 1;
+int g_jit_double_buffer = 0;
+int g_jit_inline_rcp_pool = 0;
+int g_jit_rorx = 0;
+int g_jit_stack_rcp_pool = 0;
+int g_jit_cfround_rorx = 0;
 
 struct rx_jit {
     JitCompiler* compiler;
@@ -1576,29 +1877,67 @@ rx_jit* rx_jit_create(void) {
     rx_jit* jit = (rx_jit*)calloc(1, sizeof(rx_jit));
     jit->compiler = new JitCompiler();
     jit->compiler->superscalar_cache = NULL;
+    jit->compiler->superscalarCacheSlots[0] = NULL;
+    jit->compiler->superscalarCacheSlots[1] = NULL;
+    jit->compiler->codeSlots[0] = NULL;
+    jit->compiler->codeSlots[1] = NULL;
+    jit->compiler->activeCodeSlot = 0;
 
-    jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
-        MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_EXECUTE_READWRITE);
+    jit->compiler->code = NULL;
+    if (g_jit_large_pages) {
+        SIZE_T largePage = GetLargePageMinimum();
+        if (largePage != 0) {
+            SIZE_T allocSize =
+                (RX_TOTAL_CODE_SIZE + largePage - 1) / largePage * largePage;
+            jit->compiler->code = (uint8_t*)VirtualAlloc(
+                NULL, allocSize, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
+                PAGE_EXECUTE_READWRITE);
+        }
+    }
     if (!jit->compiler->code) {
         jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
             MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
     }
     if (!jit->compiler->code) { delete jit->compiler; free(jit); return NULL; }
+    jit->compiler->codeSlots[0] = jit->compiler->code;
+    if (g_jit_double_buffer) {
+        jit->compiler->codeSlots[1] = (uint8_t*)VirtualAlloc(
+            NULL, RX_TOTAL_CODE_SIZE, MEM_RESERVE | MEM_COMMIT,
+            PAGE_EXECUTE_READWRITE);
+        if (!jit->compiler->codeSlots[1]) {
+            VirtualFree(jit->compiler->codeSlots[0], 0, MEM_RELEASE);
+            delete jit->compiler;
+            free(jit);
+            return NULL;
+        }
+    }
     return jit;
 }
 
 void rx_jit_destroy(rx_jit* jit) {
     if (!jit) return;
-    if (jit->compiler->code) VirtualFree(jit->compiler->code, 0, MEM_RELEASE);
+    if (jit->compiler->codeSlots[0])
+        VirtualFree(jit->compiler->codeSlots[0], 0, MEM_RELEASE);
+    if (jit->compiler->codeSlots[1])
+        VirtualFree(jit->compiler->codeSlots[1], 0, MEM_RELEASE);
     delete jit->compiler;
     free(jit);
 }
 
 void rx_jit_generate_program(rx_jit* jit, rx_program* prog, rx_program_config* pcfg, rx_cache* cache) {
+    if (jit->compiler->codeSlots[1]) {
+        jit->compiler->activeCodeSlot ^= 1;
+        jit->compiler->code =
+            jit->compiler->codeSlots[jit->compiler->activeCodeSlot];
+        jit->compiler->superscalar_cache =
+            jit->compiler->superscalarCacheSlots[jit->compiler->activeCodeSlot];
+    }
     jit->compiler->cache = cache;
     jit->compiler->generateProgram(prog, pcfg);
     if (cache && cache != jit->compiler->superscalar_cache) {
         jit->compiler->superscalar_cache = cache;
+        jit->compiler->superscalarCacheSlots[
+            jit->compiler->activeCodeSlot] = cache;
         jit->compiler->generateSuperscalarHash(cache);
     }
 }
@@ -1626,6 +1965,14 @@ int rx_jit_get_instruction_offset(rx_jit* jit, int index) {
 
 int rx_jit_get_num_instructions(rx_jit* jit) {
     return (int)jit->compiler->instructionCount;
+}
+
+int rx_jit_get_short_branch_count(rx_jit* jit) {
+    return jit && jit->compiler ? jit->compiler->shortBranchCount : 0;
+}
+
+int rx_jit_get_generated_code_size(rx_jit* jit) {
+    return jit && jit->compiler ? jit->compiler->generatedCodeSize : 0;
 }
 
 void rx_jit_dump_code(rx_jit* jit) {
