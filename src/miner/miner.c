@@ -358,7 +358,13 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
     for (int i = 0; i < bench_threads; i++) {
         threads[i] = CreateThread(NULL, 0, bench_thread_entry, &args[i], 0, NULL);
     }
-    WaitForMultipleObjects((DWORD)bench_threads, threads, TRUE, 30000);
+    DWORD wait_result = WaitForMultipleObjects((DWORD)bench_threads, threads, TRUE, 30000);
+    if (wait_result == WAIT_TIMEOUT) {
+        /* Threads do bounded, lock-free work and should finish quickly. If the
+           30s probe timed out (e.g. heavy system load), wait it out to
+           completion before destroying the VMs they still reference. */
+        WaitForMultipleObjects((DWORD)bench_threads, threads, TRUE, INFINITE);
+    }
     QueryPerformanceCounter(&end);
 
     for (int i = 0; i < bench_threads; i++) {
