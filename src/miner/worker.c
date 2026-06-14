@@ -235,8 +235,8 @@ job_ready:
             uint8_t hash1[32], hash2[32];
             rx_calculate_hash_dual(vm, vm2, blob, (size_t)blob_len, blob2, (size_t)blob_len, hash1, hash2);
 
-            int ok1 = share_meets_target(is_monero_proto ? hash1 : hash1, current_target, is_monero_proto);
-            int ok2 = share_meets_target(is_monero_proto ? hash2 : hash2, current_target, is_monero_proto);
+            int ok1 = share_meets_target(hash1, current_target, is_monero_proto);
+            int ok2 = share_meets_target(hash2, current_target, is_monero_proto);
             if ((local_loop_count & 0xFFFF) == 0 && w->id == 0) {
                 LOG_DEBUG("[W0] sample dual: n1=%u h1=%08x n2=%u h2=%08x target=%08x",
                           nonce, read_u32_le(hash1), nonce2, read_u32_le(hash2), (uint32_t)current_target);

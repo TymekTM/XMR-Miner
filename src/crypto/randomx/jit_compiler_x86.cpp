@@ -1062,8 +1062,6 @@ struct JitCompiler {
 
     void generateProgramDualInterleaved(rx_program* prog1, rx_program_config* pcfg1,
                                          rx_program* prog2, rx_program_config* pcfg2) {
-        this->cache = cache;
-        pos = 0;
         pos = 0;
 
         static const int VM_STATE_SIZE = 0x110;
