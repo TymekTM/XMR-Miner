@@ -51,6 +51,7 @@ set(SOURCES
     src/stratum/stratum.c
     src/miner/miner.c
     src/miner/pool_utils.c
+    src/miner/blob.c
     src/miner/worker.c
 )
 
@@ -87,6 +88,7 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
         src/stratum/stratum.c
         src/miner/miner.c
         src/miner/pool_utils.c
+        src/miner/blob.c
         src/miner/worker.c
     )
     add_executable(xmr-miner-upstream ${UPSTREAM_MINER_SOURCES})
@@ -190,6 +192,8 @@ add_bench_target(test_json tests/test_json.c "")
 target_sources(test_json PRIVATE src/stratum/json.c)
 add_bench_target(test_config tests/test_config.c "")
 target_sources(test_config PRIVATE src/common/config.c)
+add_bench_target(test_blob tests/test_blob.c "")
+target_sources(test_blob PRIVATE src/miner/blob.c src/crypto/keccak/keccak.c)
 add_bench_target(bench_full tests/bench_full.c "")
 add_bench_target(test_jit_csim tests/test_jit_csim.c "")
 add_bench_target(sysbench_telemetry tools/sysbench_telemetry.c "")
@@ -217,6 +221,8 @@ add_test(NAME json_parser
     COMMAND test_json)
 add_test(NAME config_parser
     COMMAND test_config)
+add_test(NAME blob_helpers
+    COMMAND test_blob)
 if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET test_upstream_backend)
     add_test(NAME upstream_backend
         COMMAND test_upstream_backend)

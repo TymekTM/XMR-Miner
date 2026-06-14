@@ -70,7 +70,7 @@ nul
 mining.conf
 /tools/xmrig-win64
 
-# Benchmark / test output
+# Benchmark / experiment / debug output
 bench_*.txt
 bench_*_err.txt
 test_out.txt
@@ -79,6 +79,14 @@ test_output.txt
 ctest_*.txt
 correctness_*.txt
 tv_*.txt
+berr*.txt
+bout*.txt
+cerr.txt
+cout.txt
+pool_out.txt
+reorder_out.txt
+*.bin
+*.csv
 
 # Miner / xmrig output
 miner_out.txt
@@ -87,5 +95,10 @@ miner_error.txt
 miner_output.txt
 xmrig_*.txt
 
-# Additional build dirs
-build_pgo/
+# One-off / temporary scripts
+run_*.ps1
+tmp_*.ps1
+
+# All build directories (not just build_pgo)
+build_*/
+build/
