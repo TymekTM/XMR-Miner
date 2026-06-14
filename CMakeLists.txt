@@ -53,6 +53,7 @@ set(SOURCES
     src/miner/miner.c
     src/miner/pool_utils.c
     src/miner/blob.c
+    src/miner/affinity.c
     src/miner/worker.c
 )
 
@@ -91,6 +92,7 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
         src/miner/miner.c
         src/miner/pool_utils.c
         src/miner/blob.c
+        src/miner/affinity.c
         src/miner/worker.c
     )
     add_executable(xmr-miner-upstream ${UPSTREAM_MINER_SOURCES})
@@ -200,6 +202,7 @@ add_bench_target(test_blob tests/test_blob.c "")
 target_sources(test_blob PRIVATE src/miner/blob.c src/crypto/keccak/keccak.c)
 add_bench_target(bench_full tests/bench_full.c "")
 add_bench_target(bench_1mh tests/bench_1mh.c "")
+target_sources(bench_1mh PRIVATE src/miner/affinity.c)
 add_bench_target(test_jit_csim tests/test_jit_csim.c "")
 add_bench_target(sysbench_telemetry tools/sysbench_telemetry.c "")
 set_target_properties(sysbench_telemetry PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")

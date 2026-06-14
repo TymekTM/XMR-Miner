@@ -8,13 +8,12 @@
  * single-threaded reference.
  */
 #include "crypto/randomx/randomx.h"
+#include "miner/affinity.h"
 #include "common/log.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define MAX_CORES 128
 
 typedef struct {
     int tid;
@@ -25,97 +24,17 @@ typedef struct {
     uint8_t hash[32];
     double elapsed;
     int ok;
+    const int *affinity_order;
+    int affinity_count;
 } thread_arg_t;
-
-static int g_done_event_idx = 0;
-
-static int detect_affinity(int *order, int max_count) {
-    DWORD len = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return 0;
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = malloc(len);
-    if (!buf) return 0;
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) { free(buf); return 0; }
-
-    int pcore_os[MAX_CORES], ecore_os[MAX_CORES];
-    int pcore_sib[MAX_CORES];
-    int np = 0, ne = 0;
-    BYTE *ptr = (BYTE *)buf;
-    DWORD remaining = len;
-    while (remaining > 0) {
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
-        if (item->Relationship == RelationProcessorCore) {
-            GROUP_AFFINITY mask = item->Processor.GroupMask[0];
-            int first = -1, second = -1, bits = 0;
-            for (int b = 0; b < 64; b++) {
-                if (mask.Mask & (1ULL << b)) {
-                    int cpu = b + mask.Group * 64;
-                    if (first < 0) first = cpu;
-                    else if (second < 0) second = cpu;
-                    bits++;
-                }
-            }
-            if (first >= 0 && np < MAX_CORES) { pcore_os[np] = first; pcore_sib[np] = second; np++; }
-            (void)bits; (void)second;
-        }
-        ptr += item->Size;
-        remaining -= item->Size;
-    }
-    free(buf);
-
-    /* rebuild with P/E detection via sibling count */
-    np = 0; ne = 0;
-    ptr = NULL;
-    /* simpler: redo detection properly */
-    len = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
-    buf = malloc(len);
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) { free(buf); return 0; }
-    ptr = (BYTE *)buf; remaining = len;
-    while (remaining > 0) {
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
-        if (item->Relationship == RelationProcessorCore) {
-            GROUP_AFFINITY mask = item->Processor.GroupMask[0];
-            int first = -1, second = -1, bits = 0;
-            for (int b = 0; b < 64; b++) {
-                if (mask.Mask & (1ULL << b)) {
-                    int cpu = b + mask.Group * 64;
-                    if (first < 0) first = cpu;
-                    else if (second < 0) second = cpu;
-                    bits++;
-                }
-            }
-            if (first >= 0) {
-                if (bits >= 2 && np < MAX_CORES) { pcore_os[np] = first; pcore_sib[np] = second; np++; }
-                else if (ne < MAX_CORES) { ecore_os[ne] = first; ne++; }
-            }
-        }
-        ptr += item->Size;
-        remaining -= item->Size;
-    }
-    free(buf);
-
-    int n = 0;
-    /* P-cores primary, then P-core siblings (HT), then E-cores */
-    for (int i = 0; i < np && n < max_count; i++) pcore_os[i] >= 0 ? (order[n++] = pcore_os[i]) : 0;
-    for (int i = 0; i < np && n < max_count; i++) if (pcore_sib[i] >= 0) order[n++] = pcore_sib[i];
-    for (int i = 0; i < ne && n < max_count; i++) order[n++] = ecore_os[i];
-    return n > 0 ? n : 0;
-}
 
 static DWORD WINAPI bench_thread(LPVOID arg) {
     thread_arg_t *a = (thread_arg_t *)arg;
 
-    if (a->nthreads > 0) {
-        int order[MAX_CORES];
-        int cnt = detect_affinity(order, MAX_CORES);
-        if (cnt > 0) {
-            int cpu = order[a->tid % cnt];
-            GROUP_AFFINITY ga = {0};
-            ga.Group = (WORD)(cpu / 64);
-            ga.Mask = (KAFFINITY)(1ULL << (cpu % 64));
-            SetThreadGroupAffinity(GetCurrentThread(), &ga, NULL);
-        }
+    /* Pin to the same core the production miner would use for this tid. */
+    if (a->affinity_count > 0) {
+        int cpu = a->affinity_order[a->tid % a->affinity_count];
+        affinity_pin_current(cpu);
     }
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
@@ -155,7 +74,7 @@ int main(int argc, char **argv) {
         GetSystemInfo(&si);
         nthreads = (int)si.dwNumberOfProcessors;
     }
-    if (nthreads > MAX_CORES) nthreads = MAX_CORES;
+    if (nthreads > AFFINITY_MAX_CORES) nthreads = AFFINITY_MAX_CORES;
 
     /* ~1,000,000 hashes total, split across threads */
     long total_target = 1000000;
@@ -188,12 +107,26 @@ int main(int argc, char **argv) {
         rx_destroy_vm(vm);
     }
 
+    /* Compute the same affinity order the production miner uses. */
+    int affinity_order[AFFINITY_MAX_CORES * 2];
+    int affinity_count = affinity_detect_and_order(affinity_order, AFFINITY_MAX_CORES * 2);
+    if (affinity_count > 0) {
+        core_list_t cl;
+        affinity_detect_cores(&cl);
+        int np = 0;
+        for (int i = 0; i < cl.count; i++) if (cl.is_pcore[i]) np++;
+        printf("  affinity       : %d cores (%d P, %d E) -> %d slots\n",
+               cl.count, np, cl.count - np, affinity_count);
+    }
+
     thread_arg_t *args = calloc(nthreads, sizeof(thread_arg_t));
     HANDLE *threads = calloc(nthreads, sizeof(HANDLE));
     for (int i = 0; i < nthreads; i++) {
         args[i].tid = i;
         args[i].nthreads = nthreads;
         args[i].hashes_this_thread = per_thread;
+        args[i].affinity_order = affinity_order;
+        args[i].affinity_count = affinity_count;
         memset(args[i].seed, 0, sizeof(args[i].seed));
         args[i].vm = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, cache, dataset);
     }

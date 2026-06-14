@@ -1,5 +1,6 @@
 #include "miner.h"
 #include "worker.h"
+#include "affinity.h"
 #include "stratum/stratum.h"
 #include "crypto/randomx/randomx.h"
 #include "common/config.h"
@@ -14,7 +15,6 @@
 #include <string.h>
 #include <stdlib.h>
 
-#define MAX_CORES 64
 #define MODE_SINGLE 0
 #define MODE_DUAL 1
 #define MODE_CACHE_MAX_THREADS 128
@@ -57,88 +57,6 @@ static void mode_cache_save(void) {
         }
     }
     fclose(f);
-}
-
-typedef struct {
-    int count;
-    int os_index[MAX_CORES];    // OS processor index for each physical core
-    int is_pcore[MAX_CORES];    // 1 = P-core, 0 = E-core
-    int sibling[MAX_CORES];     // second logical processor for HT cores (-1 if none)
-} core_list_t;
-
-static int detect_physical_cores(core_list_t *cores) {
-    cores->count = 0;
-
-    DWORD len = 0;
-    GetLogicalProcessorInformationEx(RelationProcessorCore, NULL, &len);
-    if (GetLastError() != ERROR_INSUFFICIENT_BUFFER) return 0;
-
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *buf = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)malloc(len);
-    if (!buf) return 0;
-
-    if (!GetLogicalProcessorInformationEx(RelationProcessorCore, buf, &len)) {
-        free(buf);
-        return 0;
-    }
-
-    BYTE *ptr = (BYTE *)buf;
-    DWORD remaining = len;
-    while (remaining > 0) {
-        SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *item = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)ptr;
-        if (item->Relationship == RelationProcessorCore) {
-            GROUP_AFFINITY mask = item->Processor.GroupMask[0];
-            int os_idx = -1;
-            int sibling = -1;
-            int bits = 0;
-            for (int b = 0; b < 64 && b < (int)sizeof(mask.Mask) * 8; b++) {
-                if (mask.Mask & (1ULL << b)) {
-                    int cpu = b + mask.Group * 64;
-                    if (os_idx < 0) os_idx = cpu;
-                    else if (sibling < 0) sibling = cpu;
-                    bits++;
-                }
-            }
-            if (os_idx >= 0 && cores->count < MAX_CORES) {
-                cores->os_index[cores->count] = os_idx;
-                cores->is_pcore[cores->count] = (bits == 2) ? 1 : 0;
-                cores->sibling[cores->count] = sibling;
-                cores->count++;
-            }
-        }
-        ptr += item->Size;
-        remaining -= item->Size;
-    }
-
-    free(buf);
-    return cores->count;
-}
-
-static void sort_cores_pcore_first(core_list_t *cores) {
-    // Bubble sort: P-cores first, preserving relative order
-    for (int i = 0; i < cores->count - 1; i++) {
-        for (int j = 0; j < cores->count - 1 - i; j++) {
-            if (cores->is_pcore[j] < cores->is_pcore[j + 1]) {
-                int tmp;
-                tmp = cores->os_index[j]; cores->os_index[j] = cores->os_index[j + 1]; cores->os_index[j + 1] = tmp;
-                tmp = cores->is_pcore[j]; cores->is_pcore[j] = cores->is_pcore[j + 1]; cores->is_pcore[j + 1] = tmp;
-                tmp = cores->sibling[j]; cores->sibling[j] = cores->sibling[j + 1]; cores->sibling[j + 1] = tmp;
-            }
-        }
-    }
-}
-
-static int build_affinity_order(const core_list_t *cores, int *order, int max_count) {
-    int n = 0;
-    for (int i = 0; i < cores->count && n < max_count; i++) {
-        if (cores->is_pcore[i]) order[n++] = cores->os_index[i];
-    }
-    for (int i = 0; i < cores->count && n < max_count; i++) {
-        if (cores->is_pcore[i] && cores->sibling[i] >= 0) order[n++] = cores->sibling[i];
-    }
-    for (int i = 0; i < cores->count && n < max_count; i++) {
-        if (!cores->is_pcore[i]) order[n++] = cores->os_index[i];
-    }
-    return n;
 }
 
 struct miner_ctx {
@@ -316,11 +234,11 @@ static double run_mode_bench(int num_threads, int dual, rx_cache *cache, rx_data
     }
 
     core_list_t cores = {0};
-    int affinity_order[MAX_CORES * 2];
+    int affinity_order[AFFINITY_MAX_CORES * 2];
     int affinity_count = 0;
-    if (detect_physical_cores(&cores) > 0) {
-        sort_cores_pcore_first(&cores);
-        affinity_count = build_affinity_order(&cores, affinity_order, MAX_CORES * 2);
+    if (affinity_detect_cores(&cores) > 0) {
+        affinity_sort_pcore_first(&cores);
+        affinity_count = affinity_build_order(&cores, affinity_order, AFFINITY_MAX_CORES * 2);
     }
 
     for (int i = 0; i < bench_threads; i++) {
@@ -615,10 +533,10 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     }
 
     core_list_t cores;
-    int num_physical = detect_physical_cores(&cores);
-    sort_cores_pcore_first(&cores);
-    int affinity_order[MAX_CORES * 2];
-    int affinity_count = build_affinity_order(&cores, affinity_order, MAX_CORES * 2);
+    int num_physical = affinity_detect_cores(&cores);
+    affinity_sort_pcore_first(&cores);
+    int affinity_order[AFFINITY_MAX_CORES * 2];
+    int affinity_count = affinity_build_order(&cores, affinity_order, AFFINITY_MAX_CORES * 2);
 
     if (num_physical > 0) {
         int pcores = 0;
