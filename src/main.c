@@ -19,6 +19,17 @@ static BOOL WINAPI ctrl_handler(DWORD type) {
     return FALSE;
 }
 
+/* Sleep that returns early if Ctrl-C was requested. */
+static void interruptible_sleep(DWORD ms) {
+    DWORD step = 100;
+    DWORD elapsed = 0;
+    while (g_running && elapsed < ms) {
+        DWORD chunk = (ms - elapsed < step) ? (ms - elapsed) : step;
+        Sleep(chunk);
+        elapsed += chunk;
+    }
+}
+
 int main(int argc, char **argv) {
     config_t cfg;
     if (config_parse_args(&cfg, argc, argv) != 0) {
@@ -53,6 +64,8 @@ int main(int argc, char **argv) {
     scfg.wallet = cfg.wallet;
     scfg.worker_name = cfg.worker;
     scfg.password = cfg.password;
+    scfg.use_tls = cfg.use_tls;
+    scfg.tls_allow = cfg.tls_allow;
 
     stratum_ctx_t *stratum = stratum_create(&scfg);
     if (!stratum) {
@@ -101,17 +114,33 @@ int main(int argc, char **argv) {
 
     while (g_running && stratum_running(stratum)) {
         if (stratum_recv(stratum) != 0) {
-            LOG_WARN("Connection lost, reconnecting in 5s...");
-            Sleep(5000);
+            LOG_WARN("Connection lost, reconnecting...");
             stratum_disconnect(stratum);
-            if (stratum_connect(stratum) != 0) {
-                LOG_ERR("Reconnect failed, retrying in 15s...");
-                Sleep(15000);
-                continue;
+
+            int backoff = 5;      /* seconds, grows on repeated failure */
+            const int cap = 300;  /* 5 min max */
+            while (g_running && stratum_running(stratum)) {
+                int jitter = backoff / 4;
+                int delay = backoff + (int)(jitter * 2.0 * ((double)rand() / RAND_MAX)) - jitter;
+                if (delay < 1) delay = 1;
+                LOG_INFO("Reconnect attempt in %d s (next backoff %d s)...", delay, backoff);
+                interruptible_sleep((DWORD)delay * 1000);
+                if (!g_running) break;
+
+                if (stratum_connect(stratum) == 0) {
+                    if (stratum_login(stratum) == 0) {
+                        LOG_INFO("Reconnected successfully");
+                        backoff = 5;  /* reset after success */
+                        break;
+                    }
+                    LOG_WARN("Login failed after reconnect");
+                    stratum_disconnect(stratum);
+                }
+                backoff = backoff + (backoff >> 1);  /* x1.5 */
+                if (backoff > cap) backoff = cap;
             }
-            stratum_login(stratum);
         }
-        Sleep(10);
+        interruptible_sleep(10);
     }
 
     LOG_INFO("Shutting down...");

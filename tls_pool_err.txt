@@ -1,0 +1,66 @@
+[I] XMR-Miner v0.2.0 - Custom Monero miner (C, Windows x64)
+[I] Monero stratum protocol (login + job + submit)
+[I] ==============================================
+[I] Pool: pool.hashvault.pro:443
+[I] Wallet: invalidwallettest...test
+[I] Threads: auto
+[I] Mode: auto
+[I] Package power limit: off
+[I] Huge pages: yes
+[I] TLS: yes
+[I] TLS verify: disabled
+[I] CPU: Intel(R) Core(TM) i7-14700KF
+[I] Cores: 28 logical
+[I] L3 cache: 33 MB
+[I] Features: AES-NI=yes AVX2=yes SSE2=yes BMI2=yes
+[I] Using 28 mining thread(s)
+[I] [STRATUM] Resolving pool.hashvault.pro:443...
+[I] [STRATUM] Connecting to pool.hashvault.pro:443...
+[I] [TLS] Handshake OK (host=pool.hashvault.pro) header=13 trailer=16 maxmsg=16384
+[I] [STRATUM] Connected (TLS)
+[I] [STRATUM] < {"id":1,"jsonrpc":"2.0","error":{"code":-1,"message":"Your address doesn't look like a valid known coin address. Please check your login details"},"result":null}
+[E] [TLS] DecryptMessage failed: 0x90317
+[I] [STRATUM] Monero protocol not supported, reconnecting for standard stratum...
+[I] [STRATUM] Resolving pool.hashvault.pro:443...
+[I] [STRATUM] Connecting to pool.hashvault.pro:443...
+[I] [TLS] Handshake OK (host=pool.hashvault.pro) header=13 trailer=16 maxmsg=16384
+[I] [STRATUM] Connected (TLS)
+[E] [TLS] DecryptMessage failed: 0x90317
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330
+[E] [TLS] DecryptMessage failed: 0x80090330

@@ -1,5 +1,6 @@
 #include "stratum.h"
 #include "json.h"
+#include "tls.h"
 #include "../common/log.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -28,8 +29,26 @@ struct stratum_ctx {
     uint8_t pending_share_used[256];
     volatile LONG64 job_generation;
     stratum_job_t job;
+    tls_ctx_t *tls;
     CRITICAL_SECTION lock;
 };
+
+/* Unified I/O: routes through TLS when a session is established. */
+static int ctx_send(stratum_ctx_t *ctx, const char *buf, int len) {
+    if (ctx->tls) return tls_send(ctx->tls, buf, len);
+    int total = 0;
+    while (total < len) {
+        int n = send(ctx->sock, buf + total, len - total, 0);
+        if (n <= 0) return -1;
+        total += n;
+    }
+    return total;
+}
+
+static int ctx_recv(stratum_ctx_t *ctx, char *buf, int len) {
+    if (ctx->tls) return tls_recv(ctx->tls, buf, len);
+    return recv(ctx->sock, buf, len, 0);
+}
 
 static int send_line(stratum_ctx_t *ctx, const char *msg) {
     int len = (int)strlen(msg);
@@ -40,15 +59,10 @@ static int send_line(stratum_ctx_t *ctx, const char *msg) {
     ctx->send_buf[len] = '\n';
     ctx->send_buf[len + 1] = '\0';
     int total = len + 1;
-    int sent = 0;
-    while (sent < total) {
-        int n = send(ctx->sock, ctx->send_buf + sent, total - sent, 0);
-        if (n <= 0) {
-            LeaveCriticalSection(&ctx->lock);
-            LOG_ERR("[STRATUM] send failed: %d", WSAGetLastError());
-            return -1;
-        }
-        sent += n;
+    if (ctx_send(ctx, ctx->send_buf, total) < 0) {
+        LeaveCriticalSection(&ctx->lock);
+        LOG_ERR("[STRATUM] send failed: %d", WSAGetLastError());
+        return -1;
     }
     LeaveCriticalSection(&ctx->lock);
     return 0;
@@ -77,7 +91,7 @@ static int recv_more(stratum_ctx_t *ctx) {
     if (!ctx->connected) return -1;
     int avail = STRATUM_BUF_SIZE - ctx->recv_len - 1;
     if (avail < 1024) return -1;
-    int n = recv(ctx->sock, ctx->recv_buf + ctx->recv_len, avail, 0);
+    int n = ctx_recv(ctx, ctx->recv_buf + ctx->recv_len, avail);
     if (n <= 0) return -1;
     ctx->recv_len += n;
     ctx->recv_buf[ctx->recv_len] = '\0';
@@ -328,6 +342,8 @@ stratum_ctx_t *stratum_create(const stratum_config_t *cfg) {
     ctx->cfg.wallet = _strdup(cfg->wallet);
     ctx->cfg.worker_name = _strdup(cfg->worker_name);
     ctx->cfg.password = _strdup(cfg->password);
+    ctx->cfg.use_tls = cfg->use_tls;
+    ctx->cfg.tls_allow = cfg->tls_allow;
     return ctx;
 }
 
@@ -395,13 +411,28 @@ int stratum_connect(stratum_ctx_t *ctx) {
     DWORD keepalive = 1;
     setsockopt(ctx->sock, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, sizeof(keepalive));
 
+    if (ctx->cfg.use_tls) {
+        ctx->tls = tls_connect(ctx->sock, ctx->cfg.pool_url, ctx->cfg.tls_allow);
+        if (!ctx->tls) {
+            LOG_ERR("[STRATUM] TLS handshake failed");
+            closesocket(ctx->sock);
+            ctx->sock = INVALID_SOCKET;
+            WSACleanup();
+            return -1;
+        }
+    }
+
     ctx->connected = 1;
     ctx->recv_len = 0;
-    LOG_INFO("[STRATUM] Connected");
+    LOG_INFO("[STRATUM] Connected (%s)", ctx->cfg.use_tls ? "TLS" : "plain");
     return 0;
 }
 
 void stratum_disconnect(stratum_ctx_t *ctx) {
+    if (ctx->tls) {
+        tls_close(ctx->tls);
+        ctx->tls = NULL;
+    }
     if (ctx->sock != INVALID_SOCKET) {
         closesocket(ctx->sock);
         ctx->sock = INVALID_SOCKET;
@@ -678,7 +709,7 @@ int stratum_recv(stratum_ctx_t *ctx) {
     int avail = STRATUM_BUF_SIZE - ctx->recv_len - 1;
     if (avail < 1024) return -1;
 
-    int n = recv(ctx->sock, ctx->recv_buf + ctx->recv_len, avail, 0);
+    int n = ctx_recv(ctx, ctx->recv_buf + ctx->recv_len, avail);
     if (n <= 0) {
         int err = WSAGetLastError();
         if (err == WSAETIMEDOUT) return 0;

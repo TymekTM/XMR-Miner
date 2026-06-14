@@ -49,6 +49,7 @@ set(SOURCES
     src/crypto/randomx/msr.c
     src/stratum/json.c
     src/stratum/stratum.c
+    src/stratum/tls.c
     src/miner/miner.c
     src/miner/pool_utils.c
     src/miner/blob.c
@@ -86,6 +87,7 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
         src/crypto/randomx/msr.c
         src/stratum/json.c
         src/stratum/stratum.c
+        src/stratum/tls.c
         src/miner/miner.c
         src/miner/pool_utils.c
         src/miner/blob.c
@@ -190,11 +192,14 @@ add_bench_target(test_pool_protocol tests/test_pool_protocol.c "")
 target_sources(test_pool_protocol PRIVATE src/stratum/json.c src/stratum/stratum.c)
 add_bench_target(test_json tests/test_json.c "")
 target_sources(test_json PRIVATE src/stratum/json.c)
+add_bench_target(test_tls tests/test_tls.c "")
+target_sources(test_tls PRIVATE src/stratum/tls.c)
 add_bench_target(test_config tests/test_config.c "")
 target_sources(test_config PRIVATE src/common/config.c)
 add_bench_target(test_blob tests/test_blob.c "")
 target_sources(test_blob PRIVATE src/miner/blob.c src/crypto/keccak/keccak.c)
 add_bench_target(bench_full tests/bench_full.c "")
+add_bench_target(bench_1mh tests/bench_1mh.c "")
 add_bench_target(test_jit_csim tests/test_jit_csim.c "")
 add_bench_target(sysbench_telemetry tools/sysbench_telemetry.c "")
 set_target_properties(sysbench_telemetry PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded")

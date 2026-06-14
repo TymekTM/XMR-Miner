@@ -36,6 +36,10 @@ static void set_config_value(config_t *cfg, const char *key, const char *val) {
         else if (strcmp(val, "dual") == 0) cfg->mode = MINER_MODE_DUAL;
     } else if (strcmp(key, "huge_pages") == 0) {
         cfg->huge_pages = (atoi(val) != 0);
+    } else if (strcmp(key, "tls") == 0) {
+        cfg->use_tls = (atoi(val) != 0);
+    } else if (strcmp(key, "tls_allow") == 0) {
+        cfg->tls_allow = (atoi(val) != 0);
     } else if (strcmp(key, "power_limit") == 0) {
         cfg->power_limit = atof(val);
     } else if (strcmp(key, "verbose") == 0 || strcmp(key, "v") == 0) {
@@ -99,6 +103,8 @@ static void print_usage(const char *prog) {
     printf("  --mode <auto|single|dual> Mining mode (default: auto)\n");
     printf("  --power-limit <W>        Set package PL1/PL2 while mining (default: off)\n");
     printf("  --no-huge-pages          Disable huge pages\n");
+    printf("  --tls                    Connect to pool over TLS\n");
+    printf("  --tls-allow              Skip TLS certificate validation\n");
     printf("  -v, --verbose            Verbose output\n");
     printf("  -h, --help               Show this help\n");
 }
@@ -152,6 +158,10 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "--no-huge-pages") == 0) {
             cfg->huge_pages = 0;
+        } else if (strcmp(argv[i], "--tls") == 0) {
+            cfg->use_tls = 1;
+        } else if (strcmp(argv[i], "--tls-allow") == 0) {
+            cfg->tls_allow = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             cfg->verbose = 1;
             cfg->log_level = LOG_DEBUG;
@@ -186,4 +196,7 @@ void config_print(const config_t *cfg) {
     else
         LOG_INFO("Package power limit: off");
     LOG_INFO("Huge pages: %s", cfg->huge_pages ? "yes" : "no");
+    LOG_INFO("TLS: %s", cfg->use_tls ? "yes" : "no");
+    if (cfg->use_tls)
+        LOG_INFO("TLS verify: %s", cfg->tls_allow ? "disabled" : "enabled");
 }

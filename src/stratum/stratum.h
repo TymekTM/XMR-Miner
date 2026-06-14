@@ -12,6 +12,8 @@ typedef struct {
     char *wallet;
     char *worker_name;
     char *password;
+    int   use_tls;
+    int   tls_allow;
 } stratum_config_t;
 
 typedef struct {

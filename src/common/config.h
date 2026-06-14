@@ -20,6 +20,8 @@ typedef struct {
     int  threads;
     int  huge_pages;
     int  mode;
+    int  use_tls;
+    int  tls_allow;
     double power_limit;
     int  log_level;
     int  verbose;
