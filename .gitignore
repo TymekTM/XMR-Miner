@@ -85,6 +85,9 @@ cerr.txt
 cout.txt
 pool_out.txt
 reorder_out.txt
+tls_pool_out.txt
+tls_pool_err.txt
+tls_test_out.txt
 *.bin
 *.csv
 
