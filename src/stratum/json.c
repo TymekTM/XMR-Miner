@@ -83,7 +83,7 @@ static const char *parse_string(const char *js, const char *end, json_token_t *t
     return js + 1;
 }
 
-static const char *parse_value(const char *js, const char *end, json_token_t *t, json_parser_t *p);
+static const char *parse_value(const char *js, const char *end, json_token_t *t, json_parser_t *p, int depth);
 
 static const char *parse_number(const char *js, const char *end, json_token_t *t) {
     t->start = js;
@@ -100,7 +100,7 @@ static const char *parse_number(const char *js, const char *end, json_token_t *t
     return js;
 }
 
-static const char *parse_object(const char *js, const char *end, json_token_t *t, json_parser_t *p) {
+static const char *parse_object(const char *js, const char *end, json_token_t *t, json_parser_t *p, int depth) {
     if (*js != '{') return NULL;
     js++;
     t->start = js;
@@ -130,7 +130,7 @@ static const char *parse_object(const char *js, const char *end, json_token_t *t
         js = skip_ws(js);
         if (p->count < JSON_MAX_TOKENS) {
             json_token_t *child = &p->tokens[p->count++];
-            js = parse_value(js, end, child, p);
+            js = parse_value(js, end, child, p, depth + 1);
             if (!js) return NULL;
             child->parent = (int)(t - p->tokens);
             count++;
@@ -141,7 +141,7 @@ static const char *parse_object(const char *js, const char *end, json_token_t *t
     return NULL;
 }
 
-static const char *parse_array(const char *js, const char *end, json_token_t *t, json_parser_t *p) {
+static const char *parse_array(const char *js, const char *end, json_token_t *t, json_parser_t *p, int depth) {
     if (*js != '[') return NULL;
     js++;
     t->start = js;
@@ -155,7 +155,7 @@ static const char *parse_array(const char *js, const char *end, json_token_t *t,
 
         if (p->count < JSON_MAX_TOKENS) {
             json_token_t *child = &p->tokens[p->count++];
-            js = parse_value(js, end, child, p);
+            js = parse_value(js, end, child, p, depth + 1);
             if (!js) return NULL;
             child->parent = (int)(t - p->tokens);
             count++;
@@ -166,13 +166,14 @@ static const char *parse_array(const char *js, const char *end, json_token_t *t,
     return NULL;
 }
 
-static const char *parse_value(const char *js, const char *end, json_token_t *t, json_parser_t *p) {
+static const char *parse_value(const char *js, const char *end, json_token_t *t, json_parser_t *p, int depth) {
+    if (depth > JSON_MAX_DEPTH) return NULL;
     js = skip_ws(js);
     if (js >= end) return NULL;
 
     if (*js == '"') return parse_string(js, end, t);
-    if (*js == '{') return parse_object(js, end, t, p);
-    if (*js == '[') return parse_array(js, end, t, p);
+    if (*js == '{') return parse_object(js, end, t, p, depth);
+    if (*js == '[') return parse_array(js, end, t, p, depth);
     if (*js == 't') {
         if (js + 3 < end && js[1] == 'r' && js[2] == 'u' && js[3] == 'e') {
             t->type = JSON_BOOL; t->start = js; t->end = js + 4; return js + 4;
@@ -200,7 +201,7 @@ int json_parse(json_parser_t *p, const char *js, size_t len) {
     if (len == 0) return -1;
     const char *end = js + len;
     if (p->count < JSON_MAX_TOKENS) {
-        const char *r = parse_value(js, end, &p->tokens[p->count++], p);
+        const char *r = parse_value(js, end, &p->tokens[p->count++], p, 1);
         if (!r) return -1;
         return 0;
     }

@@ -171,6 +171,35 @@ static void test_token_overflow(void) {
     CHECK(json_parse(&jp, buf, strlen(buf)) == -1);
 }
 
+static void test_depth_limit(void) {
+    /* JSON_MAX_DEPTH is 16. Build a moderately nested structure (within limit)
+       and an excessively nested one (must be rejected without stack overflow). */
+    char ok[512], deep[4096];
+    int p;
+
+    /* 10 nested arrays around an int -> depth 11, within limit of 16 */
+    p = 0;
+    for (int i = 0; i < 10; i++) ok[p++] = '[';
+    ok[p++] = '1';
+    for (int i = 0; i < 10; i++) ok[p++] = ']';
+    ok[p] = '\0';
+    {
+        json_parser_t jp;
+        CHECK(json_parse(&jp, ok, strlen(ok)) == 0);
+    }
+
+    /* 50 nested arrays -> depth 51, must be rejected (not stack-overflow) */
+    p = 0;
+    for (int i = 0; i < 50; i++) deep[p++] = '[';
+    deep[p++] = '1';
+    for (int i = 0; i < 50 && p < (int)sizeof(deep) - 1; i++) deep[p++] = ']';
+    deep[p] = '\0';
+    {
+        json_parser_t jp;
+        CHECK(json_parse(&jp, deep, strlen(deep)) == -1);
+    }
+}
+
 int main(void) {
     printf("[TEST] JSON parser/writer\n");
     test_valid_object();
@@ -183,6 +212,7 @@ int main(void) {
     test_string_with_escapes();
     test_writer_string_escape();
     test_token_overflow();
+    test_depth_limit();
 
     printf("[TEST] %d checks, %d failures\n", checks, failures);
     printf("[TEST] %s\n", failures == 0 ? "PASS" : "FAIL");
