@@ -202,10 +202,26 @@ set_target_properties(sysbench_telemetry PROPERTIES MSVC_RUNTIME_LIBRARY "MultiT
 
 add_test(NAME randomx_conformance
     COMMAND test_randomx_conformance)
+add_test(NAME hash_vector
+    COMMAND test_hash_vector)
+add_test(NAME jit_correctness
+    COMMAND test_jit_correctness)
+add_test(NAME jit_correctness2
+    COMMAND test_jit_correctness2)
+add_test(NAME jit_csim
+    COMMAND test_jit_csim)
+add_test(NAME pool_hash
+    COMMAND test_pool_hash)
+add_test(NAME share_validate
+    COMMAND test_share_validate)
 add_test(NAME pool_pipeline
     COMMAND test_pool_pipeline)
 add_test(NAME pool_protocol
     COMMAND test_pool_protocol)
+if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET test_upstream_backend)
+    add_test(NAME upstream_backend
+        COMMAND test_upstream_backend)
+endif()
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/tools/xmrig-win64/xmrig-6.26.0/WinRing0x64.sys")
     set(MSR_TARGETS xmr-miner bench_full bench_mt_scaling)
