@@ -62,12 +62,14 @@ static int config_parse_file(config_t *cfg, const char *path) {
         char *val = eq + 1;
 
         while (*key == ' ' || *key == '\t') key++;
-        char *kend = key + strlen(key) - 1;
-        while (kend > key && (*kend == ' ' || *kend == '\t')) *kend-- = '\0';
+        if (*key == '\0') continue;  /* empty key, e.g. "=value" */
+        size_t klen = strlen(key);
+        while (klen > 0 && (key[klen-1] == ' ' || key[klen-1] == '\t')) key[--klen] = '\0';
 
         while (*val == ' ' || *val == '\t') val++;
-        char *vend = val + strlen(val) - 1;
-        while (vend > val && (*vend == ' ' || *vend == '\t' || *vend == '\n' || *vend == '\r')) *vend-- = '\0';
+        size_t vlen = strlen(val);
+        while (vlen > 0 && (val[vlen-1] == ' ' || val[vlen-1] == '\t' ||
+               val[vlen-1] == '\n' || val[vlen-1] == '\r')) val[--vlen] = '\0';
 
         set_config_value(cfg, key, val);
     }

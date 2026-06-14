@@ -109,6 +109,7 @@ static void test_config_file(void) {
     fprintf(f, "# comment line\n");
     fprintf(f, "pool = my.pool.com:9000 \n");
     fprintf(f, "wallet=WalletFromConfig\n");
+    fprintf(f, "=value_with_empty_key\n");
     fprintf(f, "threads = 4\n");
     fprintf(f, "mode=single\n");
     fprintf(f, "password=hunter2\n");
