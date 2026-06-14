@@ -186,6 +186,8 @@ add_bench_target(test_pool_pipeline tests/test_pool_pipeline.c "")
 target_sources(test_pool_pipeline PRIVATE src/miner/pool_utils.c)
 add_bench_target(test_pool_protocol tests/test_pool_protocol.c "")
 target_sources(test_pool_protocol PRIVATE src/stratum/json.c src/stratum/stratum.c)
+add_bench_target(test_json tests/test_json.c "")
+target_sources(test_json PRIVATE src/stratum/json.c)
 add_bench_target(bench_full tests/bench_full.c "")
 add_bench_target(test_jit_csim tests/test_jit_csim.c "")
 add_bench_target(sysbench_telemetry tools/sysbench_telemetry.c "")
@@ -209,6 +211,8 @@ add_test(NAME pool_pipeline
     COMMAND test_pool_pipeline)
 add_test(NAME pool_protocol
     COMMAND test_pool_protocol)
+add_test(NAME json_parser
+    COMMAND test_json)
 if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET test_upstream_backend)
     add_test(NAME upstream_backend
         COMMAND test_upstream_backend)
