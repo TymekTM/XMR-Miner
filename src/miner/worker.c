@@ -183,6 +183,14 @@ void worker_run(worker_t *w) {
                     continue;
                 }
                 blob_len = 76;
+                nonce_off = get_monero_nonce_offset(blob, blob_len);
+                if (nonce_off < 0 || nonce_off + 4 > blob_len) {
+                    LOG_ERR("[W%d] Bad blob format: len=%d nonce_off=%d", w->id, blob_len, nonce_off);
+                    free(safe_id); free(safe_coinb1); free(safe_coinb2);
+                    free(safe_en1); free(safe_prev); free(safe_ntime); free(safe_version);
+                    Sleep(500);
+                    continue;
+                }
                 nonce = w->nonce_offset;
                 saved_en2_size = job->extranonce2_size;
                 strncpy(saved_ntime, safe_ntime, sizeof(saved_ntime) - 1);
