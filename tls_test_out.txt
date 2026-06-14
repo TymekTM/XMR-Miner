@@ -1,9 +1,0 @@
-[OK]   TCP connected to google.com:443
-[..]   calling tls_send...
-[OK]   tls_send returned 37 (asked 37)
-[I] [TLS] Handshake OK (host=google.com) header=13 trailer=16 maxmsg=16384
-[..]   tls_recv returned 511
-[OK]   tls_recv returned 511 bytes
-[OK]   response: HTTP/1.0 301 Moved Permanently
-
-[PASS] TLS send/recv verified
