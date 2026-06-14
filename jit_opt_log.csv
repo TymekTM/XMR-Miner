@@ -1,8 +1,0 @@
-Opt,Description,JIT_ST_H/s,JIT_MT_H/s,Interp_ST_H/s,Interp_MT_H/s,Hash_OK,Notes
-0,Baseline (no opts),~587,N/A,N/A,N/A,N/A,Original code before any changes
-3,IMULH_M/ISMULH_M prefetch,+4.5%,N/A,N/A,N/A,YES,Prefetch scratchpad before high-latency multiply. KEEP
-7,FADD_M/FSUB_M/FDIV_M prefetch,+2.4%,N/A,N/A,N/A,YES,Prefetch scratchpad before FP memory ops. KEEP
-12,FIX: Dataset prefetch wrong address (single JIT),+36%,N/A,N/A,N/A,YES,BUG: prefetch hit old addr (hi32 rbp) instead of next iter (lo32 rbp). KEEP
-12b,FIX: Same bug in dual JIT VM1+VM2,OK,N/A,N/A,N/A,YES,Applied same fix to generateProgramDual. KEEP
-FINAL,All optimizations combined,982,7659,187,1761,YES,Hash c5600a03f426c083. ST speedup 5.2x, MT speedup 4.3x over interp
-FIX,hash_next nonce bug: same hash for all nonces,493,N/A,493,N/A,YES,hash_first+hash_next produces same hash regardless of nonce. Switched to rx_calculate_hash. KEEP
