@@ -68,7 +68,8 @@ int affinity_build_order(const core_list_t *cores, int *order, int max_count) {
     for (int i = 0; i < cores->count && n < max_count; i++) {
         if (cores->is_pcore[i]) order[n++] = cores->os_index[i];
     }
-    /* P-core HT siblings second */
+    /* P-core HT siblings second (measured ~188 H/s, slightly faster than
+       E-cores ~176 H/s on 14th gen for RandomX) */
     for (int i = 0; i < cores->count && n < max_count; i++) {
         if (cores->is_pcore[i] && cores->sibling[i] >= 0) order[n++] = cores->sibling[i];
     }

@@ -6,16 +6,16 @@ XMR-Miner 1 MH benchmark
 [I] [DATASET] Allocated 2080 MB (LARGE PAGES)
 [I] [DATASET] Loading cached dataset from disk (2048.0 MB)...
 [I] [DATASET] Cached dataset loaded successfully
-[I] [DATASET] Touched 2080 MB pages (0.0 s)
   init dataset   : ... done
+[I] [DATASET] Touched 2080 MB pages (0.0 s)
   affinity       : 20 cores (8 P, 12 E) -> 28 slots
 
   running 1000000 hashes on 16 threads ...
 
 ==================== RESULTS ====================
-  wall time            : 140.767 s
-  total hashrate       : 7103.9 H/s  (7.104 kH/s)
-  hashrate / thread    : 444.0 H/s
-  time for 1 MH        : 140.77 s  (2.3 min)
+  wall time            : 142.705 s
+  total hashrate       : 7007.4 H/s  (7.007 kH/s)
+  hashrate / thread    : 438.0 H/s
+  time for 1 MH        : 142.71 s  (2.4 min)
   correctness (vs ref) : OK
 ================================================
