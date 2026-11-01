@@ -69,6 +69,7 @@ if(NOT WIN32)
         src/crypto/randomx/superscalar_jit.c
         src/crypto/randomx/vm.c
         src/crypto/randomx/jit_compiler_x86.cpp
+        src/crypto/randomx/jit_multi_x86.cpp
         src/crypto/randomx/msr.c
     )
     target_include_directories(rxcore PUBLIC src)
@@ -81,12 +82,14 @@ if(NOT WIN32)
 
     add_rx_target(bench_rx tests/bench_rx.c)
     add_rx_target(test_randomx_conformance tests/test_randomx_conformance.c)
+    add_rx_target(test_multilane tests/test_multilane.c)
     add_rx_target(test_hash_vector tests/test_hash_vector.c)
     add_rx_target(test_blob tests/test_blob.c src/miner/blob.c)
     add_rx_target(test_json tests/test_json.c src/stratum/json.c)
     add_rx_target(test_config tests/test_config.c src/common/config.c)
 
     add_test(NAME randomx_conformance COMMAND test_randomx_conformance)
+    add_test(NAME multilane COMMAND test_multilane)
     add_test(NAME hash_vector COMMAND test_hash_vector)
     add_test(NAME blob_helpers COMMAND test_blob)
     add_test(NAME json_parser COMMAND test_json)
@@ -114,6 +117,7 @@ set(SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/jit_multi_x86.cpp
     src/crypto/randomx/msr.c
     src/stratum/json.c
     src/stratum/stratum.c
@@ -219,6 +223,7 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/jit_multi_x86.cpp
     src/crypto/randomx/msr.c
     src/common/vmem.c
 )

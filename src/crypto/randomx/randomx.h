@@ -50,6 +50,22 @@ void rx_calculate_hash_last(rx_vm *vm, void *output);
 void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations);
 void rx_calculate_commitment(const void *input, size_t input_size, const void *hash_in, void *com_out);
 
+/*
+ * Multi-lane hashing: K (1..2) hashes computed by one thread with a single
+ * interleaved JIT program per chain (see jit_multi_x86.cpp). Returns NULL if
+ * the CPU lacks the required features (AVX-512F/VL/DQ for K = 2).
+ */
+typedef struct rx_vm_group rx_vm_group;
+rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset);
+void rx_destroy_vm_group(rx_vm_group *g);
+int rx_vm_group_lanes(rx_vm_group *g);
+rx_vm *rx_vm_group_vm(rx_vm_group *g, int lane);
+void rx_group_hash_first(rx_vm_group *g, const void *const *inputs, const size_t *sizes);
+void rx_group_hash_next(rx_vm_group *g, const void *const *next_inputs, const size_t *sizes, void *const *outputs);
+void rx_group_hash_last(rx_vm_group *g, void *const *outputs);
+void rx_group_hash(rx_vm_group *g, const void *const *inputs, const size_t *sizes, void *const *outputs);
+int rx_cpu_has_avx512_lanes(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1039,3 +1039,141 @@ void rx_calculate_commitment(const void *input, size_t input_size, const void *h
     blake2b_update(&state, hash_in, RX_HASH_SIZE);
     blake2b_final(&state, com_out, RX_HASH_SIZE);
 }
+
+/* ------------------------------------------------------------------------
+ * Multi-lane VM group
+ * ------------------------------------------------------------------------ */
+
+struct rx_vm_group {
+    int lanes;
+    rx_vm *vm[RX_MULTI_MAX_LANES];
+    rx_mjit *mjit;
+    rx_multi_params params;
+};
+
+static unsigned long long rx_xgetbv0(void) {
+#ifdef _MSC_VER
+    return _xgetbv(0);
+#else
+    unsigned int lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return ((unsigned long long)hi << 32) | lo;
+#endif
+}
+
+int rx_cpu_has_avx512_lanes(void) {
+    int info[4];
+    __cpuidex(info, 0, 0);
+    if (info[0] < 7) return 0;
+    __cpuidex(info, 1, 0);
+    int osxsave = (info[2] >> 27) & 1;
+    if (!osxsave) return 0;
+    unsigned long long xcr0 = rx_xgetbv0();
+    if ((xcr0 & 0xE6) != 0xE6) return 0; /* SSE, AVX, opmask, ZMM_Hi256, Hi16_ZMM */
+    __cpuidex(info, 7, 0);
+    int f = (info[1] >> 16) & 1, dq = (info[1] >> 17) & 1, vl = (info[1] >> 31) & 1;
+    return f && dq && vl;
+}
+
+rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset) {
+    if (lanes < 1 || lanes > 2) return NULL;
+    if ((flags & RX_FLAG_V2) || !dataset) return NULL;
+    if (lanes > 1 && !rx_cpu_has_avx512_lanes()) return NULL;
+    rx_vm_group *g = (rx_vm_group *)calloc(1, sizeof(rx_vm_group));
+    if (!g) return NULL;
+    g->lanes = lanes;
+    for (int l = 0; l < lanes; l++) {
+        g->vm[l] = rx_create_vm(flags | RX_FLAG_JIT, cache, dataset);
+        if (!g->vm[l]) { rx_destroy_vm_group(g); return NULL; }
+    }
+    g->mjit = rx_mjit_create();
+    if (!g->mjit) { rx_destroy_vm_group(g); return NULL; }
+    return g;
+}
+
+void rx_destroy_vm_group(rx_vm_group *g) {
+    if (!g) return;
+    for (int l = 0; l < g->lanes; l++) rx_destroy_vm(g->vm[l]);
+    rx_mjit_destroy(g->mjit);
+    free(g);
+}
+
+int rx_vm_group_lanes(rx_vm_group *g) { return g->lanes; }
+rx_mjit *rx_vm_group_mjit(rx_vm_group *g) { return g->mjit; }
+rx_vm *rx_vm_group_vm(rx_vm_group *g, int lane) { return g->vm[lane]; }
+
+static void group_run(rx_vm_group *g) {
+    rx_program *progs[RX_MULTI_MAX_LANES];
+    rx_program_config *cfgs[RX_MULTI_MAX_LANES];
+    rx_multi_params *p = &g->params;
+    int K = g->lanes;
+    for (int l = 0; l < K; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_fill_aes4rx4(vm->tempHash, sizeof(rx_program), &vm->program);
+        vm_initialize(vm);
+        progs[l] = &vm->program;
+        cfgs[l] = &vm->config;
+    }
+    rx_mjit_generate(g->mjit, K, progs, cfgs);
+    p->iterations = RX_PROGRAM_ITERATIONS;
+    p->lanes = (uint32_t)K;
+    p->mantMask[0] = p->mantMask[1] = RX_DYN_MANTISSA_MASK;
+    p->scaleMask[0] = p->scaleMask[1] = 0x80F0000000000000ULL;
+    for (int l = 0; l < K; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_lane_params *lp = &p->lane[l];
+        lp->reg = &vm->reg;
+        lp->mx_ma = vm->mem.mx_ma;
+        lp->sp = vm->scratchpad;
+        lp->ds = vm->mem.memory + vm->datasetOffset;
+        lp->mxcsr = vm->mxcsrState;
+        lp->eMask[0] = vm->config.eMask[0];
+        lp->eMask[1] = vm->config.eMask[1];
+    }
+    typedef void (RX_JIT_ABI *MultiFunc)(rx_multi_params *);
+    ((MultiFunc)rx_mjit_code(g->mjit))(p);
+    for (int l = 0; l < K; l++) {
+        g->vm[l]->mem.mx_ma = p->lane[l].mx_ma;
+        g->vm[l]->mxcsrState = p->lane[l].mxcsr;
+    }
+}
+
+static void group_run_chains(rx_vm_group *g) {
+    for (int l = 0; l < g->lanes; l++) g->vm[l]->mxcsrState = RX_MXCSR_DEFAULT;
+    for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
+        group_run(g);
+        for (int l = 0; l < g->lanes; l++)
+            rx_blake2b_regfile(g->vm[l]->tempHash, &g->vm[l]->reg);
+    }
+    group_run(g);
+}
+
+void rx_group_hash_first(rx_vm_group *g, const void *const *inputs, const size_t *sizes) {
+    for (int l = 0; l < g->lanes; l++)
+        rx_calculate_hash_first(g->vm[l], inputs[l], sizes[l]);
+}
+
+void rx_group_hash_next(rx_vm_group *g, const void *const *next_inputs, const size_t *sizes, void *const *outputs) {
+    uint32_t saved_mxcsr = _mm_getcsr();
+    group_run_chains(g);
+    _mm_setcsr(saved_mxcsr);
+    for (int l = 0; l < g->lanes; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_blake2b_blob(vm->tempHash, next_inputs[l], sizes[l]);
+        rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
+        blake2b(outputs[l], RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+    }
+}
+
+void rx_group_hash_last(rx_vm_group *g, void *const *outputs) {
+    uint32_t saved_mxcsr = _mm_getcsr();
+    group_run_chains(g);
+    _mm_setcsr(saved_mxcsr);
+    for (int l = 0; l < g->lanes; l++)
+        rx_vm_get_final_result(g->vm[l], outputs[l]);
+}
+
+void rx_group_hash(rx_vm_group *g, const void *const *inputs, const size_t *sizes, void *const *outputs) {
+    rx_group_hash_first(g, inputs, sizes);
+    rx_group_hash_last(g, outputs);
+}

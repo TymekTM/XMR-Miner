@@ -94,7 +94,8 @@ typedef struct {
     int cpu;
     int hashes;
     int repeats;
-    int full_mode;
+    int full_mode; /* 0 batch, 1 full, 2 dual, 3 group (multi-lane batch) */
+    int lanes;
     rx_cache *cache;
     rx_dataset *dataset;
     double *seconds; /* [repeats] */
@@ -113,8 +114,50 @@ static void *worker_main(void *p)
     worker_t *w = (worker_t *)p;
     if (g_pin && w->cpu >= 0) pin_self(w->cpu);
 
+    if (w->full_mode == 3) {
+        rx_vm_group *g = rx_create_vm_group(w->lanes, RX_FLAG_DEFAULT, w->cache, w->dataset);
+        if (!g) { fprintf(stderr, "group alloc failed (lanes=%d)\n", w->lanes); exit(3); }
+        w->sp_kind = rx_vm_group_vm(g, 0)->sp_page_kind;
+        int K = w->lanes;
+        uint8_t blobs[RX_MULTI_MAX_LANES][76];
+        uint8_t outs_[RX_MULTI_MAX_LANES][32];
+        const void *in[RX_MULTI_MAX_LANES];
+        void *out[RX_MULTI_MAX_LANES];
+        size_t sz[RX_MULTI_MAX_LANES];
+        uint32_t gn = 0;
+        for (int l = 0; l < K; l++) {
+            memset(blobs[l], 0, 76);
+            blobs[l][0] = 0x10; blobs[l][1] = 0x03; blobs[l][2] = 0xe3;
+            blobs[l][3] = (uint8_t)w->tid; blobs[l][4] = (uint8_t)l;
+            in[l] = blobs[l]; out[l] = outs_[l]; sz[l] = 76;
+        }
+        rx_group_hash_first(g, in, sz);
+        for (int i = 0; i < 2; i++) {
+            gn++;
+            for (int l = 0; l < K; l++) memcpy(blobs[l] + 39, &gn, 4);
+            rx_group_hash_next(g, in, sz, out);
+        }
+        for (int r = 0; r < w->repeats; r++) {
+            barrier_wait();
+            double t0 = now_sec();
+            for (int i = 0; i < w->hashes; i += K) {
+                gn++;
+                for (int l = 0; l < K; l++) memcpy(blobs[l] + 39, &gn, 4);
+                rx_group_hash_next(g, in, sz, out);
+            }
+            w->seconds[r] = now_sec() - t0;
+            barrier_wait();
+        }
+        rx_destroy_vm_group(g);
+#ifdef _WIN32
+        return 0;
+#else
+        return NULL;
+#endif
+    }
     rx_vm *vm = rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset);
-    if (!vm) { fprintf(stderr, "VM alloc failed\n"); exit(3); }
+    rx_vm *vm2 = w->full_mode == 2 ? rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset) : NULL;
+    if (!vm || (w->full_mode == 2 && !vm2)) { fprintf(stderr, "VM alloc failed\n"); exit(3); }
     w->sp_kind = vm->sp_page_kind;
 
     uint8_t blob[76];
@@ -134,7 +177,15 @@ static void *worker_main(void *p)
     for (int r = 0; r < w->repeats; r++) {
         barrier_wait();
         double t0 = now_sec();
-        if (w->full_mode) {
+        if (w->full_mode == 2) {
+            uint8_t blob2[76], hash2[32];
+            memcpy(blob2, blob, sizeof(blob2));
+            blob2[5] ^= 0x80;
+            for (int i = 0; i < w->hashes; i += 2) {
+                nonce++; memcpy(blob + 39, &nonce, 4); memcpy(blob2 + 39, &nonce, 4);
+                rx_calculate_hash_dual(vm, vm2, blob, sizeof(blob), blob2, sizeof(blob2), hash, hash2);
+            }
+        } else if (w->full_mode) {
             for (int i = 0; i < w->hashes; i++) {
                 nonce++; memcpy(blob + 39, &nonce, 4);
                 rx_calculate_hash(vm, blob, sizeof(blob), hash);
@@ -150,6 +201,7 @@ static void *worker_main(void *p)
     }
     memcpy(w->last_hash, hash, 32);
     rx_destroy_vm(vm);
+    rx_destroy_vm(vm2);
 #ifdef _WIN32
     return 0;
 #else
@@ -206,6 +258,7 @@ int main(int argc, char **argv) {
     int repeats = 5;
     int pages = 1;
     int full_mode = 0;
+    int lanes = 1;
     int check = 1;
     int cpu_list[MAX_THREADS];
     int cpu_list_n = 0;
@@ -217,6 +270,19 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "-p") && i + 1 < argc) pages = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--no-pin")) g_pin = 0;
         else if (!strcmp(argv[i], "--full")) full_mode = 1;
+        else if (!strcmp(argv[i], "--dual")) full_mode = 2;
+        else if (!strcmp(argv[i], "--lanes") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 3; }
+        else if (!strcmp(argv[i], "--gran") && i + 1 < argc) g_mjit_granularity = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--mxskip")) g_mjit_mxcsr_skip = 1;
+        else if (!strcmp(argv[i], "--set") && i + 1 < argc) {
+            /* --set name=value for experiment knobs */
+            char name[64]; int val;
+            if (sscanf(argv[++i], "%63[^=]=%d", name, &val) == 2) {
+                if (!strcmp(name, "rcp_pool")) g_mjit_rcp_pool = val;
+                else if (!strcmp(name, "prefetch")) g_mjit_prefetch_mode = val;
+                else { printf("unknown knob %s\n", name); return 2; }
+            }
+        }
         else if (!strcmp(argv[i], "--no-check")) check = 0;
         else if (!strcmp(argv[i], "-c") && i + 1 < argc) {
             char *s = argv[++i];
@@ -234,8 +300,8 @@ int main(int argc, char **argv) {
     if (threads > MAX_THREADS) threads = MAX_THREADS;
     if (repeats < 1) repeats = 1;
 
-    printf("bench_rx: threads=%d hashes/thread=%d repeats=%d pages=%d mode=%s pin=%d\n",
-           threads, hashes, repeats, pages, full_mode ? "full" : "batch", g_pin);
+    printf("bench_rx: threads=%d hashes/thread=%d repeats=%d pages=%d lanes=%d gran=%d mode=%s pin=%d\n",
+           threads, hashes, repeats, pages, lanes, g_mjit_granularity, full_mode == 3 ? "group" : full_mode == 2 ? "dual" : full_mode ? "full" : "batch", g_pin);
 
     const char key[] = "test key 000";
     double t0 = now_sec();
@@ -261,6 +327,7 @@ int main(int argc, char **argv) {
         w[i].hashes = hashes;
         w[i].repeats = repeats;
         w[i].full_mode = full_mode;
+        w[i].lanes = lanes;
         w[i].cache = cache;
         w[i].dataset = dataset;
         w[i].seconds = (double *)calloc(repeats, sizeof(double));

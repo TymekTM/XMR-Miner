@@ -419,9 +419,41 @@ typedef struct {
     uint32_t mxcsr2;
 } RxDualParams;
 
+#define RX_MULTI_MAX_LANES 4
+
+/* Parameters for the multi-lane JIT (jit_multi_x86.cpp). */
+typedef struct {
+    rx_register_file *reg;   /* in: a; out: r, f, e */
+    uint64_t mx_ma;          /* in/out */
+    uint8_t *sp;             /* scratchpad */
+    uint8_t *ds;             /* dataset memory + datasetOffset */
+    uint32_t mxcsr;          /* in/out: lane rounding mode */
+    uint32_t pad;
+    RX_ALIGNAS(16) uint64_t eMask[2];
+} rx_lane_params;
+
+typedef struct {
+    uint32_t iterations;
+    uint32_t lanes;
+    RX_ALIGNAS(16) uint64_t mantMask[2];
+    uint64_t scaleMask[2];
+    rx_lane_params lane[RX_MULTI_MAX_LANES];
+} rx_multi_params;
+
+typedef struct rx_mjit rx_mjit;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+rx_mjit *rx_mjit_create(void);
+void rx_mjit_destroy(rx_mjit *m);
+int rx_mjit_generate(rx_mjit *m, int K, rx_program **progs, rx_program_config **cfgs);
+void *rx_mjit_code(rx_mjit *m);
+extern int g_mjit_granularity;
+extern int g_mjit_mxcsr_skip;
+extern int g_mjit_rcp_pool;
+extern int g_mjit_prefetch_mode;
 
 uint64_t rx_reciprocal(uint32_t divisor);
 
