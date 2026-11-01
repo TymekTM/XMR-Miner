@@ -1061,7 +1061,7 @@ static unsigned long long rx_xgetbv0(void) {
 #endif
 }
 
-int rx_cpu_has_avx512_lanes(void) {
+static int rx_cpu_has_avx512_lanes_uncached(void) {
     int info[4];
     __cpuidex(info, 0, 0);
     if (info[0] < 7) return 0;
@@ -1075,10 +1075,17 @@ int rx_cpu_has_avx512_lanes(void) {
     return f && dq && vl;
 }
 
+/* CPUID traps to the hypervisor in a VM (microseconds), so cache it. */
+int rx_cpu_has_avx512_lanes(void) {
+    static volatile int cached = -1;
+    int v = cached;
+    if (v < 0) { v = rx_cpu_has_avx512_lanes_uncached(); cached = v; }
+    return v;
+}
+
 rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset) {
-    if (lanes < 1 || lanes > 3) return NULL;
+    if (lanes < 1 || lanes > RX_MULTI_MAX_LANES) return NULL;
     if ((flags & RX_FLAG_V2) || !dataset) return NULL;
-    if (lanes > 1 && !rx_cpu_has_avx512_lanes()) return NULL;
     rx_vm_group *g = (rx_vm_group *)calloc(1, sizeof(rx_vm_group));
     if (!g) return NULL;
     g->lanes = lanes;

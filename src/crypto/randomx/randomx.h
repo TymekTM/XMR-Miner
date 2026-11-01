@@ -51,9 +51,11 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations);
 void rx_calculate_commitment(const void *input, size_t input_size, const void *hash_in, void *com_out);
 
 /*
- * Multi-lane hashing: K (1..2) hashes computed by one thread with a single
- * interleaved JIT program per chain (see jit_multi_x86.cpp). Returns NULL if
- * the CPU lacks the required features (AVX-512F/VL/DQ for K = 2).
+ * Multi-lane hashing: K (1..4) hashes computed by one thread with a single
+ * interleaved JIT program per chain (see jit_multi_x86.cpp). With AVX-512
+ * (VL/DQ) and K <= 3 the FP registers of every lane stay resident; otherwise
+ * they are spilled at lane switches (AVX2 is sufficient). V1 (rx/0) only;
+ * returns NULL for V2 or without a dataset.
  */
 typedef struct rx_vm_group rx_vm_group;
 rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset);

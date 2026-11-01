@@ -121,6 +121,7 @@ static int apply_knobs(const char *spec) {
     g_mjit_pinned_regs = 1;
     g_mjit_diag = 0;
     g_mjit_ds_prefetch = 0;
+    g_mjit_fp_spill = 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", spec);
     char *save = NULL;
@@ -134,6 +135,7 @@ static int apply_knobs(const char *spec) {
         else if (!strcmp(name, "pinned")) g_mjit_pinned_regs = val;
         else if (!strcmp(name, "diag")) g_mjit_diag = val;
         else if (!strcmp(name, "dspf")) g_mjit_ds_prefetch = val;
+        else if (!strcmp(name, "spill")) g_mjit_fp_spill = val;
         else if (!strcmp(name, "lanes")) {}
         else { printf("unknown knob %s\n", name); return 0; }
     }

@@ -457,6 +457,7 @@ extern int g_mjit_prefetch_mode;
 extern int g_mjit_pinned_regs;
 extern int g_mjit_diag;
 extern int g_mjit_ds_prefetch;
+extern int g_mjit_fp_spill;
 
 uint64_t rx_reciprocal(uint32_t divisor);
 

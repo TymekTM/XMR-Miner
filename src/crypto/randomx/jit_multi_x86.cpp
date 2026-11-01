@@ -41,6 +41,10 @@ int g_mjit_pinned_regs = 1;        /* lane 1 keeps r0..r2 in rbx/rbp/rdi (5-reg 
    the L2 mask, bit1 = dataset reads confined to 64 KB, bit2 = no LDMXCSR. */
 int g_mjit_diag = 0;
 int g_mjit_ds_prefetch = 0;        /* dataset prefetch hint: 0 nta, 1 t0, 2 t1, 3 t2 */
+/* FP banking: 0 = auto (EVEX banks when AVX-512VL/DQ is available, else spill
+   f/e to the stack at lane switches), 1 = always spill (portable, AVX2). */
+int g_mjit_fp_spill = 0;
+int rx_cpu_has_avx512_lanes(void);
 }
 
 namespace {
@@ -51,7 +55,7 @@ enum { RAX = 0, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8, R9, R10, R11, R12, R13, R
 static const int FR_PARAMS = 0;
 static const int FR_COUNT = 8;
 static const int FR_LANE0 = 64;
-static const int FR_LANE_SIZE = 208;
+static const int FR_LANE_SIZE = 336;
 /* per-lane slot offsets */
 static const int SL_R = 0;        /* 8 qwords */
 static const int SL_SP0 = 64;     /* pointer to spAddr0 line */
@@ -62,6 +66,7 @@ static const int SL_SPB = 96;     /* scratchpad base */
 static const int SL_MXCSR = 104;  /* dword */
 static const int SL_A = 128;      /* 4 x 16 bytes: a registers (lanes >= 3) */
 static const int SL_EMASK = 192;  /* 16 bytes: eMask (lanes >= 3) */
+static const int SL_FE = 208;     /* 8 x 16 bytes: f0-3, e0-3 (FP spill mode) */
 
 struct Mem {
     int base;   /* -1: none */
@@ -100,6 +105,7 @@ struct MultiJit {
     uint8_t *code;
     int pos;
     int K;
+    int fpSpill;
     int mantMask, scaleMask;
     LaneState lane[RX_MULTI_MAX_LANES];
     uint64_t pool[MJ_POOL_MAX];
@@ -107,29 +113,43 @@ struct MultiJit {
     PoolFixup fix[MJ_POOL_MAX];
     int fixCount;
 
-    /* ------------------------------------------------------------------ */
+    /* ------------------------------------------------------------------
+     * Encoder. Every instruction is assembled in a local buffer (IB) and
+     * copied with one memcpy: emitting byte by byte through code[pos++]
+     * made the compiler reload this->pos after every (char-typed, hence
+     * potentially aliasing) store, which cost ~15 cycles per code byte.
+     * ------------------------------------------------------------------ */
+    struct IB {
+        uint8_t v[32];
+        int n;
+        IB() : n(0) {}
+        void u8(uint8_t x) { v[n++] = x; }
+        void u32(uint32_t x) { memcpy(v + n, &x, 4); n += 4; }
+        void u64(uint64_t x) { memcpy(v + n, &x, 8); n += 8; }
+    };
+    void put(const IB &I) { memcpy(code + pos, I.v, 16); pos += I.n; }
+
     void b(uint8_t v) { code[pos++] = v; }
     void d32(uint32_t v) { memcpy(code + pos, &v, 4); pos += 4; }
     void q64(uint64_t v) { memcpy(code + pos, &v, 8); pos += 8; }
 
-    void rex(int w, int reg, int index, int base, bool force = false) {
+    static void rexI(IB &I, int w, int reg, int index, int base, bool force = false) {
         uint8_t r = (uint8_t)(0x40 | (w << 3) | (((reg >> 3) & 1) << 2) |
                               (((index >> 3) & 1) << 1) | ((base >> 3) & 1));
-        if (r != 0x40 || force) b(r);
+        if (r != 0x40 || force) I.u8(r);
     }
-
-    void modrmRR(int reg, int rm) { b((uint8_t)(0xC0 | ((reg & 7) << 3) | (rm & 7))); }
+    static void modrmRRI(IB &I, int reg, int rm) { I.u8((uint8_t)(0xC0 | ((reg & 7) << 3) | (rm & 7))); }
 
     /* ModRM + SIB + displacement for a memory operand. forceDisp32 is used by
        EVEX encodings to avoid compressed disp8*N semantics. */
-    void modrmMem(int reg, const Mem &m, bool forceDisp32 = false) {
+    static void modrmMemI(IB &I, int reg, const Mem &m, bool forceDisp32 = false) {
         int r = (reg & 7) << 3;
         if (m.base < 0) {
             /* [index*s + disp32] or [disp32] */
-            b((uint8_t)(0x04 | r));
+            I.u8((uint8_t)(0x04 | r));
             int idx = m.index < 0 ? 4 : (m.index & 7);
-            b((uint8_t)((m.scale << 6) | (idx << 3) | 5));
-            d32((uint32_t)m.disp);
+            I.u8((uint8_t)((m.scale << 6) | (idx << 3) | 5));
+            I.u32((uint32_t)m.disp);
             return;
         }
         int mod;
@@ -138,24 +158,30 @@ struct MultiJit {
         else mod = 2;
         bool sib = m.index >= 0 || (m.base & 7) == 4;
         if (sib) {
-            b((uint8_t)((mod << 6) | r | 4));
+            I.u8((uint8_t)((mod << 6) | r | 4));
             int idx = m.index < 0 ? 4 : (m.index & 7);
-            b((uint8_t)((m.scale << 6) | (idx << 3) | (m.base & 7)));
+            I.u8((uint8_t)((m.scale << 6) | (idx << 3) | (m.base & 7)));
         } else {
-            b((uint8_t)((mod << 6) | r | (m.base & 7)));
+            I.u8((uint8_t)((mod << 6) | r | (m.base & 7)));
         }
-        if (mod == 1) b((uint8_t)(int8_t)m.disp);
-        else if (mod == 2) d32((uint32_t)m.disp);
+        if (mod == 1) I.u8((uint8_t)(int8_t)m.disp);
+        else if (mod == 2) I.u32((uint32_t)m.disp);
     }
+    static int mIdx(const Mem &m) { return m.index < 0 ? 0 : m.index; }
+    static int mBase(const Mem &m) { return m.base < 0 ? 0 : m.base; }
+
+    void rex(int w, int reg, int index, int base, bool force = false) { IB I; rexI(I, w, reg, index, base, force); put(I); }
+    void modrmRR(int reg, int rm) { IB I; modrmRRI(I, reg, rm); put(I); }
+    void modrmMem(int reg, const Mem &m, bool forceDisp32 = false) { IB I; modrmMemI(I, reg, m, forceDisp32); put(I); }
 
     /* opcode with reg + r/m register */
-    void opRR(int w, uint8_t op, int reg, int rm) { rex(w, reg, 0, rm); b(op); modrmRR(reg, rm); }
-    void opRR0F(int w, uint8_t op, int reg, int rm) { rex(w, reg, 0, rm); b(0x0F); b(op); modrmRR(reg, rm); }
+    void opRR(int w, uint8_t op, int reg, int rm) { IB I; rexI(I, w, reg, 0, rm); I.u8(op); modrmRRI(I, reg, rm); put(I); }
+    void opRR0F(int w, uint8_t op, int reg, int rm) { IB I; rexI(I, w, reg, 0, rm); I.u8(0x0F); I.u8(op); modrmRRI(I, reg, rm); put(I); }
     void opRM(int w, uint8_t op, int reg, const Mem &m) {
-        rex(w, reg, m.index < 0 ? 0 : m.index, m.base < 0 ? 0 : m.base); b(op); modrmMem(reg, m);
+        IB I; rexI(I, w, reg, mIdx(m), mBase(m)); I.u8(op); modrmMemI(I, reg, m); put(I);
     }
     void opRM0F(int w, uint8_t op, int reg, const Mem &m) {
-        rex(w, reg, m.index < 0 ? 0 : m.index, m.base < 0 ? 0 : m.base); b(0x0F); b(op); modrmMem(reg, m);
+        IB I; rexI(I, w, reg, mIdx(m), mBase(m)); I.u8(0x0F); I.u8(op); modrmMemI(I, reg, m); put(I);
     }
 
     /* integer helpers (64-bit unless noted) */
@@ -165,22 +191,30 @@ struct MultiJit {
     void load32(int dst, const Mem &m) { opRM(0, 0x8B, dst, m); }
     void store(const Mem &m, int src) { opRM(1, 0x89, src, m); }
     void store32(const Mem &m, int src) { opRM(0, 0x89, src, m); }
-    void storeImm32(const Mem &m, int32_t imm, int w = 1) { opRM(w, 0xC7, 0, m); d32((uint32_t)imm); }
+    void storeImm32(const Mem &m, int32_t imm, int w = 1) {
+        IB I; rexI(I, w, 0, mIdx(m), mBase(m)); I.u8(0xC7); modrmMemI(I, 0, m); I.u32((uint32_t)imm); put(I);
+    }
     void lea(int dst, const Mem &m) { opRM(1, 0x8D, dst, m); }
     void lea32(int dst, const Mem &m) { opRM(0, 0x8D, dst, m); }
     void aluRR(uint8_t op, int dst, int src) { opRR(1, op, dst, src); }   /* 03 add, 2B sub, 33 xor, 23 and */
     void aluRM(uint8_t op, int dst, const Mem &m) { opRM(1, op, dst, m); }
-    void aluRI(int ext, int dst, int32_t imm, int w = 1) { rex(w, 0, 0, dst); b(0x81); modrmRR(ext, dst); d32((uint32_t)imm); }
+    void aluRI(int ext, int dst, int32_t imm, int w = 1) {
+        IB I; rexI(I, w, 0, 0, dst); I.u8(0x81); modrmRRI(I, ext, dst); I.u32((uint32_t)imm); put(I);
+    }
     void imulRR(int dst, int src) { opRR0F(1, 0xAF, dst, src); }
     void imulRM(int dst, const Mem &m) { opRM0F(1, 0xAF, dst, m); }
-    void imulRRI(int dst, int src, int32_t imm) { opRR(1, 0x69, dst, src); d32((uint32_t)imm); }
-    void unaryR(int ext, int r) { rex(1, 0, 0, r); b(0xF7); modrmRR(ext, r); }        /* /3 neg /4 mul /5 imul */
+    void imulRRI(int dst, int src, int32_t imm) {
+        IB I; rexI(I, 1, dst, 0, src); I.u8(0x69); modrmRRI(I, dst, src); I.u32((uint32_t)imm); put(I);
+    }
+    void unaryR(int ext, int r) { IB I; rexI(I, 1, 0, 0, r); I.u8(0xF7); modrmRRI(I, ext, r); put(I); } /* /3 neg /4 mul /5 imul */
     void unaryM(int ext, const Mem &m) { opRM(1, 0xF7, ext, m); }
-    void shiftCl(int ext, int r) { rex(1, 0, 0, r); b(0xD3); modrmRR(ext, r); }       /* /0 rol /1 ror */
-    void shiftI(int ext, int r, int imm) { rex(1, 0, 0, r); b(0xC1); modrmRR(ext, r); b((uint8_t)imm); } /* /5 shr */
+    void shiftCl(int ext, int r) { IB I; rexI(I, 1, 0, 0, r); I.u8(0xD3); modrmRRI(I, ext, r); put(I); } /* /0 rol /1 ror */
+    void shiftI(int ext, int r, int imm) {
+        IB I; rexI(I, 1, 0, 0, r); I.u8(0xC1); modrmRRI(I, ext, r); I.u8((uint8_t)imm); put(I);
+    } /* /5 shr */
     void xchg(int a, int c) { opRR(1, 0x87, a, c); }
-    void testRI(int r, int32_t imm) { rex(1, 0, 0, r); b(0xF7); modrmRR(0, r); d32((uint32_t)imm); }
-    void movImm64(int r, uint64_t imm) { rex(1, 0, 0, r, true); b((uint8_t)(0xB8 + (r & 7))); q64(imm); }
+    void testRI(int r, int32_t imm) { IB I; rexI(I, 1, 0, 0, r); I.u8(0xF7); modrmRRI(I, 0, r); I.u32((uint32_t)imm); put(I); }
+    void movImm64(int r, uint64_t imm) { IB I; rexI(I, 1, 0, 0, r, true); I.u8((uint8_t)(0xB8 + (r & 7))); I.u64(imm); put(I); }
     void prefetch(int hint, const Mem &m) { opRM0F(0, 0x18, hint, m); } /* 0 nta, 1 t0, 2 t1 */
     void ldmxcsr(const Mem &m) { opRM0F(0, 0xAE, 2, m); }
     void push(int r) { if (r >= 8) b(0x41); b((uint8_t)(0x50 + (r & 7))); }
@@ -188,7 +222,7 @@ struct MultiJit {
 
     /* ---------------- VEX / EVEX (map 0F, 128-bit) ---------------- */
     /* pp: 0 none, 1 66, 2 F3, 3 F2.  rmIsReg: rm is an xmm register index. */
-    void vexOrEvex(uint8_t op, int pp, int wEvex, int reg, int vvvv, bool rmIsReg, int rm, const Mem *m) {
+    static void vexI(IB &I, uint8_t op, int pp, int wEvex, int reg, int vvvv, bool rmIsReg, int rm, const Mem *m) {
         bool needEvex = reg >= 16 || vvvv >= 16 || (rmIsReg && rm >= 16);
         int R = (reg >> 3) & 1;
         int vv = vvvv < 0 ? 0 : vvvv;
@@ -197,37 +231,35 @@ struct MultiJit {
             if (rmIsReg) B = (rm >> 3) & 1;
             else { X = m->index >= 0 ? (m->index >> 3) & 1 : 0; B = m->base >= 0 ? (m->base >> 3) & 1 : 0; }
             if (!X && !B) {
-                b(0xC5);
-                b((uint8_t)(((~R & 1) << 7) | ((~vv & 15) << 3) | pp));
+                I.u8(0xC5);
+                I.u8((uint8_t)(((~R & 1) << 7) | ((~vv & 15) << 3) | pp));
             } else {
-                b(0xC4);
-                b((uint8_t)(((~R & 1) << 7) | ((~X & 1) << 6) | ((~B & 1) << 5) | 1));
-                b((uint8_t)(((~vv & 15) << 3) | pp));
+                I.u8(0xC4);
+                I.u8((uint8_t)(((~R & 1) << 7) | ((~X & 1) << 6) | ((~B & 1) << 5) | 1));
+                I.u8((uint8_t)(((~vv & 15) << 3) | pp));
             }
-            b(op);
-            if (rmIsReg) modrmRR(reg, rm);
-            else modrmMem(reg, *m);
+            I.u8(op);
+            if (rmIsReg) modrmRRI(I, reg, rm);
+            else modrmMemI(I, reg, *m);
         } else {
             int Rp = (reg >> 4) & 1;
             int X, B;
             if (rmIsReg) { B = (rm >> 3) & 1; X = (rm >> 4) & 1; }
             else { X = m->index >= 0 ? (m->index >> 3) & 1 : 0; B = m->base >= 0 ? (m->base >> 3) & 1 : 0; }
             int Vp = (vv >> 4) & 1;
-            b(0x62);
-            b((uint8_t)(((~R & 1) << 7) | ((~X & 1) << 6) | ((~B & 1) << 5) | ((~Rp & 1) << 4) | 1));
-            b((uint8_t)((wEvex << 7) | ((~vv & 15) << 3) | 4 | pp));
-            b((uint8_t)(((~Vp & 1) << 3)));
-            b(op);
-            if (rmIsReg) modrmRR(reg, rm);
-            else modrmMem(reg, *m, true);
+            I.u8(0x62);
+            I.u8((uint8_t)(((~R & 1) << 7) | ((~X & 1) << 6) | ((~B & 1) << 5) | ((~Rp & 1) << 4) | 1));
+            I.u8((uint8_t)((wEvex << 7) | ((~vv & 15) << 3) | 4 | pp));
+            I.u8((uint8_t)(((~Vp & 1) << 3)));
+            I.u8(op);
+            if (rmIsReg) modrmRRI(I, reg, rm);
+            else modrmMemI(I, reg, *m, true);
         }
     }
-    void vpdRR(uint8_t op, int dst, int src1, int src2) { vexOrEvex(op, 1, 1, dst, src1, true, src2, NULL); }
-    void vpdRM(uint8_t op, int dst, int src1, const Mem &m, bool evex) {
-        /* force EVEX if any xmm >= 16 */
-        (void)evex;
-        vexOrEvex(op, 1, 1, dst, src1, false, 0, &m);
+    void vexOrEvex(uint8_t op, int pp, int wEvex, int reg, int vvvv, bool rmIsReg, int rm, const Mem *m) {
+        IB I; vexI(I, op, pp, wEvex, reg, vvvv, rmIsReg, rm, m); put(I);
     }
+    void vpdRR(uint8_t op, int dst, int src1, int src2) { vexOrEvex(op, 1, 1, dst, src1, true, src2, NULL); }
     void vaddpd(int d, int s1, int s2) { vpdRR(0x58, d, s1, s2); }
     void vsubpd(int d, int s1, int s2) { vpdRR(0x5C, d, s1, s2); }
     void vmulpd(int d, int s1, int s2) { vpdRR(0x59, d, s1, s2); }
@@ -236,7 +268,9 @@ struct MultiJit {
     void vorpd(int d, int s1, int s2) { vpdRR(0x56, d, s1, s2); }
     void vxorpd(int d, int s1, int s2) { vpdRR(0x57, d, s1, s2); }
     void vsqrtpd(int d, int s) { vexOrEvex(0x51, 1, 1, d, -1, true, s, NULL); }
-    void vshufpd(int d, int s1, int s2, int imm) { vpdRR(0xC6, d, s1, s2); b((uint8_t)imm); }
+    void vshufpd(int d, int s1, int s2, int imm) {
+        IB I; vexI(I, 0xC6, 1, 1, d, s1, true, s2, NULL); I.u8((uint8_t)imm); put(I);
+    }
     void vcvtdq2pdM(int d, const Mem &m) { vexOrEvex(0xE6, 2, 0, d, -1, false, 0, &m); }
     void vmovupdLoad(int d, const Mem &m) { vexOrEvex(0x10, 1, 1, d, -1, false, 0, &m); }
     void vmovupdStore(const Mem &m, int s) { vexOrEvex(0x11, 1, 1, s, -1, false, 0, &m); }
@@ -332,10 +366,11 @@ struct MultiJit {
                 uint64_t rcp = rx_reciprocal(divisor);
                 if (g_mjit_rcp_pool && poolCount < MJ_POOL_MAX) {
                     /* imul rd, [rip + disp32] */
-                    rex(1, rd, 0, 0); b(0x0F); b(0xAF); b((uint8_t)(0x05 | ((rd & 7) << 3)));
-                    fix[fixCount].patchPos = pos; fix[fixCount].index = poolCount; fixCount++;
+                    IB I; rexI(I, 1, rd, 0, 0); I.u8(0x0F); I.u8(0xAF); I.u8((uint8_t)(0x05 | ((rd & 7) << 3)));
+                    fix[fixCount].patchPos = pos + I.n; fix[fixCount].index = poolCount; fixCount++;
                     pool[poolCount++] = rcp;
-                    d32(0);
+                    I.u32(0);
+                    put(I);
                 } else {
                     movImm64(RAX, rcp); imulRR(rd, RAX);
                 }
@@ -402,11 +437,13 @@ struct MultiJit {
             aluRI(0, rd, (int32_t)imm);
             testRI(rd, (int32_t)(RX_CONDITION_MASK << shift));
             int32_t rel8 = ls.instrOffset[target] - (pos + 2);
+            IB J;
             if (rel8 >= -128) {
-                b(0x74); b((uint8_t)(int8_t)rel8);
+                J.u8(0x74); J.u8((uint8_t)(int8_t)rel8);
             } else {
-                b(0x0F); b(0x84); d32((uint32_t)(ls.instrOffset[target] - (pos + 4)));
+                J.u8(0x0F); J.u8(0x84); J.u32((uint32_t)(ls.instrOffset[target] - (pos + 6)));
             }
+            put(J);
             for (int j = 0; j < RX_REGISTERS_COUNT; j++) ls.regUsage[j] = i;
         } else if (op < RX_CEIL_RX_CFROUND) {
             int rot = (13 - (instr->imm32 & 63)) & 63;
@@ -480,8 +517,17 @@ struct MultiJit {
         store(M(RSP, slot(L, SL_SP1)), RDX);
     }
 
-    void emitSwitch(int from, int to) {
+    void emitSwitch(int from, int to, int toSeg) {
         if (from == to) return;
+        if (fpSpill) {
+            const LaneRegs &xf = lane[from].x, &xt = lane[to].x;
+            for (int i = 0; i < 4; i++) vmovupdStore(M(RSP, slot(from, SL_FE + 16 * i)), xf.f[i]);
+            for (int i = 0; i < 4; i++) vmovupdStore(M(RSP, slot(from, SL_FE + 64 + 16 * i)), xf.e[i]);
+            if (toSeg != 0) { /* the head of a new iteration reloads f/e itself */
+                for (int i = 0; i < 4; i++) vmovupdLoad(xt.f[i], M(RSP, slot(to, SL_FE + 16 * i)));
+                for (int i = 0; i < 4; i++) vmovupdLoad(xt.e[i], M(RSP, slot(to, SL_FE + 64 + 16 * i)));
+            }
+        }
         for (int i = 0; i < 8; i++)
             if (lane[from].swapped[i]) store(M(RSP, slot(from, SL_R + 8 * i)), lane[from].map[i]);
         for (int i = 0; i < 8; i++)
@@ -516,7 +562,17 @@ struct MultiJit {
 
     void setupLaneRegs(int L) {
         LaneRegs &x = lane[L].x;
-        if (K <= 2) {
+        if (fpSpill) {
+            /* every lane uses xmm0-7 for f/e, spilled at lane switches */
+            for (int i = 0; i < 4; i++) {
+                x.f[i] = i;
+                x.e[i] = 4 + i;
+                x.a[i] = -1;
+            }
+            x.tmp = 12;
+            x.emask = -1;
+            x.aMem = 1;
+        } else if (K <= 2) {
             int base = L == 0 ? 0 : 16;
             for (int i = 0; i < 4; i++) {
                 x.f[i] = base + i;
@@ -556,8 +612,9 @@ struct MultiJit {
         pos = 0;
         poolCount = 0;
         fixCount = 0;
-        mantMask = K <= 2 ? 13 : 25;
-        scaleMask = K <= 2 ? 15 : 26;
+        fpSpill = K > 1 && (g_mjit_fp_spill || K > 3 || !rx_cpu_has_avx512_lanes());
+        mantMask = (fpSpill || K <= 2) ? 13 : 25;
+        scaleMask = (fpSpill || K <= 2) ? 15 : 26;
         for (int L = 0; L < K; L++) {
             lane[L].prog = progs[L];
             lane[L].cfg = cfgs[L];
@@ -647,7 +704,7 @@ struct MultiJit {
         int cur = lastLane;
         for (int n = 0; n < nsched; n++) {
             int L = schedLane[n], s = schedSeg[n];
-            emitSwitch(cur, L);
+            emitSwitch(cur, L, s);
             cur = L;
             if (s == 0) emitHead(L);
             for (int i = lane[L].segStart[s]; i < lane[L].segStart[s + 1]; i++)
@@ -672,8 +729,15 @@ struct MultiJit {
                 load(RAX, M(RSP, slot(L, SL_R + 8 * i)));
                 store(M(RDX, 8 * i), RAX);
             }
-            for (int i = 0; i < 4; i++) vmovupdStore(M(RDX, (int)offsetof(rx_register_file, f) + 16 * i), x.f[i]);
-            for (int i = 0; i < 4; i++) vmovupdStore(M(RDX, (int)offsetof(rx_register_file, e) + 16 * i), x.e[i]);
+            if (fpSpill && L != cur) {
+                for (int i = 0; i < 8; i++) {
+                    vmovupdLoad(x.tmp, M(RSP, slot(L, SL_FE + 16 * i)));
+                    vmovupdStore(M(RDX, (int)offsetof(rx_register_file, f) + 16 * i), x.tmp);
+                }
+            } else {
+                for (int i = 0; i < 4; i++) vmovupdStore(M(RDX, (int)offsetof(rx_register_file, f) + 16 * i), x.f[i]);
+                for (int i = 0; i < 4; i++) vmovupdStore(M(RDX, (int)offsetof(rx_register_file, e) + 16 * i), x.e[i]);
+            }
             load(RAX, M(RSP, slot(L, SL_MXMA)));
             store(M(RCX, lp + (int)offsetof(rx_lane_params, mx_ma)), RAX);
             load32(RAX, M(RSP, slot(L, SL_MXCSR)));
@@ -722,7 +786,7 @@ void rx_mjit_destroy(rx_mjit *m) {
 }
 
 int rx_mjit_generate(rx_mjit *m, int K, rx_program **progs, rx_program_config **cfgs) {
-    if (K < 1 || K > 3) return -1;
+    if (K < 1 || K > RX_MULTI_MAX_LANES) return -1;
     return m->j->generate(K, progs, cfgs);
 }
 

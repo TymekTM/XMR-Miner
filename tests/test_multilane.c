@@ -64,7 +64,11 @@ int main(int argc, char **argv) {
     }
 
     static const int grans[] = { 256, 128, 64, 32, 16, 8, 1 };
-    for (int lanes = 1; lanes <= 3; lanes++) {
+    for (int cfg = 0; cfg < 7; cfg++) {
+        /* lanes 1..4 auto banking, then lanes 2..4 forced FP spill */
+        int lanes = cfg < 4 ? cfg + 1 : cfg - 2;
+        int spill = cfg >= 4;
+        g_mjit_fp_spill = spill;
         rx_vm_group *g = rx_create_vm_group(lanes, RX_FLAG_DEFAULT, cache, ds);
         if (!g) { printf("[SKIP] lanes=%d group unavailable\n", lanes); continue; }
         for (size_t gi = 0; gi < sizeof(grans) / sizeof(grans[0]); gi++) {
@@ -76,33 +80,33 @@ int main(int argc, char **argv) {
 
                 /* official vector on every lane */
                 const char *tv = "This is a test";
-                const void *in[3] = { tv, tv, tv };
-                size_t sz[3] = { strlen(tv), strlen(tv), strlen(tv) };
-                uint8_t out[3][32];
-                void *outs[3] = { out[0], out[1], out[2] };
+                const void *in[4] = { tv, tv, tv, tv };
+                size_t sz[4] = { strlen(tv), strlen(tv), strlen(tv), strlen(tv) };
+                uint8_t out[4][32];
+                void *outs[4] = { out[0], out[1], out[2], out[3] };
                 rx_group_hash(g, in, sz, outs);
                 for (int l = 0; l < lanes; l++) {
-                    snprintf(label, sizeof(label), "lanes=%d gran=%d opt=%d official vector lane %d",
-                             lanes, grans[gi], opt, l);
+                    snprintf(label, sizeof(label), "lanes=%d spill=%d gran=%d opt=%d official vector lane %d",
+                             lanes, spill, grans[gi], opt, l);
                     check(memcmp(out[l], expected, 32) == 0, label);
                 }
 
                 /* batch pipeline with distinct inputs per lane */
-                uint8_t blobs[3][8][200];
+                uint8_t blobs[4][8][200];
                 size_t lens[8] = { 76, 76, 77, 43, 76, 128, 129, 200 };
                 int nb = rounds < 8 ? rounds : 8;
-                for (int l = 0; l < 3; l++)
+                for (int l = 0; l < 4; l++)
                     for (int k = 0; k < nb; k++)
                         fill(blobs[l][k], lens[k], (uint64_t)(l * 1000 + k * 17 + gi * 7 + opt + lanes * 100000));
-                const void *first[3] = { blobs[0][0], blobs[1][0], blobs[2][0] };
-                size_t fsz[3] = { lens[0], lens[0], lens[0] };
+                const void *first[4] = { blobs[0][0], blobs[1][0], blobs[2][0], blobs[3][0] };
+                size_t fsz[4] = { lens[0], lens[0], lens[0], lens[0] };
                 rx_group_hash_first(g, first, fsz);
                 for (int k = 1; k <= nb; k++) {
-                    uint8_t got[3][32];
-                    void *gouts[3] = { got[0], got[1], got[2] };
+                    uint8_t got[4][32];
+                    void *gouts[4] = { got[0], got[1], got[2], got[3] };
                     if (k < nb) {
-                        const void *nx[3] = { blobs[0][k], blobs[1][k], blobs[2][k] };
-                        size_t nsz[3] = { lens[k], lens[k], lens[k] };
+                        const void *nx[4] = { blobs[0][k], blobs[1][k], blobs[2][k], blobs[3][k] };
+                        size_t nsz[4] = { lens[k], lens[k], lens[k], lens[k] };
                         rx_group_hash_next(g, nx, nsz, gouts);
                     } else {
                         rx_group_hash_last(g, gouts);
@@ -110,10 +114,10 @@ int main(int argc, char **argv) {
                     for (int l = 0; l < lanes; l++) {
                         uint8_t want[32];
                         rx_calculate_hash(ref, blobs[l][k - 1], lens[k - 1], want);
-                        snprintf(label, sizeof(label), "lanes=%d gran=%d opt=%d batch item %d lane %d",
-                                 lanes, grans[gi], opt, k - 1, l);
+                        snprintf(label, sizeof(label), "lanes=%d spill=%d gran=%d opt=%d batch item %d lane %d",
+                                 lanes, spill, grans[gi], opt, k - 1, l);
                         check(memcmp(got[l], want, 32) == 0, label);
-                        if (gi == 0 && opt == 0 && k == 1) {
+                        if (gi == 0 && opt == 0 && k == 1 && !spill) {
                             uint8_t w2[32];
                             rx_calculate_hash(interp, blobs[l][0], lens[0], w2);
                             snprintf(label, sizeof(label), "lanes=%d interpreter cross-check lane %d", lanes, l);
@@ -123,7 +127,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
-        if (dump && lanes == 2) {
+        if (dump && lanes == 2 && !spill) {
             rx_program *progs[2] = { &rx_vm_group_vm(g, 0)->program, &rx_vm_group_vm(g, 1)->program };
             rx_program_config *cfgs[2] = { &rx_vm_group_vm(g, 0)->config, &rx_vm_group_vm(g, 1)->config };
             extern rx_mjit *rx_vm_group_mjit(rx_vm_group *);
