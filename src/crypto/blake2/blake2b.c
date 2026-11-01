@@ -250,14 +250,20 @@ void rx_blake2b_blob(void *out, const void *input, size_t len) {
     h[5] = blake2b_IV[5];
     h[6] = blake2b_IV[6];
     h[7] = blake2b_IV[7];
-    if (len <= BLAKE2B_BLOCKBYTES) {
+    if (len > BLAKE2B_BLOCKBYTES) {
+        /*
+         * Multi-block inputs: the old fast path compressed in+128 as a full
+         * block without zero padding (reading past the input) and ignored
+         * everything beyond 256 bytes. Use the generic implementation.
+         */
+        blake2b(out, 64, input, len, NULL, 0);
+        return;
+    }
+    {
         u8 buf[BLAKE2B_BLOCKBYTES];
         memcpy(buf, in, len);
         memset(buf + len, 0, BLAKE2B_BLOCKBYTES - len);
         blake2b_compress_fast(h, buf, len, 0, (u64)-1, 0);
-    } else {
-        blake2b_compress_fast(h, in, BLAKE2B_BLOCKBYTES, 0, 0, 0);
-        blake2b_compress_fast(h, in + BLAKE2B_BLOCKBYTES, len, 0, (u64)-1, 0);
     }
     for (i = 0; i < 8; ++i) store64((u8 *)out + i * 8, h[i]);
 }
