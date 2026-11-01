@@ -81,3 +81,108 @@ Further gains would require fundamental changes like:
 - Dual-program interleaving (running 2 programs simultaneously)
 - Hardware prefetch tuning via MSR
 - CPU microcode-level optimizations (not possible in software)
+
+---
+
+# Phase 6 — Linux port + multi-lane ("software SMT") JIT
+
+Machine: 4 vCPU KVM guest (Firecracker), Intel Xeon family 6 model 207
+(Emerald Rapids), ~3.2 GHz under load (estimated from a dependent `imul`
+chain), 2 MB L2/core, 260 MB L3, 15 GB RAM, Linux 6.18, GCC 13.3 `-O2
+-march=native`. Single-thread figures are ~1/3 of the 14700K numbers above
+because of the lower clock and the much higher L2-miss/DRAM latency of a
+mesh Xeon inside a VM.
+
+## Methodology
+
+- `bench_rx` (new, portable): verifies the official RandomX vector and the
+  batch pipeline against the interpreter before every run.
+- VM noise is +-10% between runs, so decisions use `bench_rx --ab A B`:
+  both configurations run in the same process and threads, alternated
+  ABBA in short slices; the median per-round B/A ratio and its IQR are
+  reported. An A/A run gives median 0.00%, IQR +-2%.
+- Correctness gates: `test_randomx_conformance` (243 checks),
+  `test_multilane` (2138 checks: lanes 1..4, banked and spilled FP,
+  7 granularities x 4 option sets, official vector, JIT and interpreter
+  cross-checks), `test_pool_lanes` (48 checks of the miner pipeline).
+
+## Key finding: the VM loop is latency bound
+
+- 1 lane: ~670 cycles per RandomX iteration for ~560 fused uops (IPC ~0.5).
+  `llvm-mca -mcpu=sapphirerapids` puts the resource bound at ~108-174
+  cycles per iteration, i.e. 3/4 of the time is latency.
+- The cause is structural: every iteration starts with scratchpad loads
+  whose address comes from the end of the previous iteration, and the
+  dataset address is known only one iteration in advance, so the
+  out-of-order window cannot overlap iterations of one program.
+
+## Multi-lane JIT (`jit_multi_x86.cpp`)
+
+One generated loop executes the programs of K independent hashes,
+interleaved in segments cut right after a CBRANCH (a RandomX branch never
+jumps before the previous CBRANCH, so a taken branch stays in its segment).
+Integer registers are swapped through per-lane stack slots at lane
+switches; FP registers are banked (lane 0: xmm0-15 VEX, lane 1: xmm16-31
+EVEX) or, without AVX-512, spilled; MXCSR is per lane.
+
+| Experiment (4 threads unless noted) | Result | Status |
+|---|---|---|
+| Old dual JIT (iteration-level, full state spill) vs single, 1T | +30% (372 vs 287 H/s) | baseline for the idea |
+| New 2-lane JIT vs single, 1T | +43% (409 vs 289 H/s) | **kept** |
+| 2 lanes, granularity 16 / 48 / 64 vs 32 | -3.4% / +2.5% / +2.5% | **G=64 kept** |
+| Lane 1 pins r0..r2 in rbx/rbp/rdi (5-reg swaps) | +0.7% | kept (harmless) |
+| 3 lanes (f/e resident, a/eMask memory operands) vs 2 | +9.2% | **kept** |
+| 3 lanes G=32 / G=128 vs 2 lanes G=64 | +4.9% / +8.7% | G=64 kept |
+| 4 lanes (FP spilled) vs 3 lanes | +1.8% (noise) | not default |
+| FP spill (AVX2 only) vs AVX-512 banks, 2 / 3 lanes | +1.1% / -1.5% | spill is a free fallback |
+| Skip LDMXCSR when both lanes share the mode | +0.8% / -0.2% | rejected |
+| IMUL_RCP constant pool off | +0.8% (noise) | rejected |
+| Scratchpad prefetch at iteration end off | -0.3% | kept on |
+| Dataset prefetch hint t0 / t1 / t2 instead of NTA | -1.4% / -3.0% / -6.7% | NTA kept |
+| 1 GB dataset pages vs 2 MB/THP (3 lanes, 3 alternating runs) | ~+5% | **kept (bench default)** |
+| 4 KB vs 2 MB pages (1 lane) | -15% | huge pages required |
+| CPUID result cached (it traps to the hypervisor) | JIT gen 46.8 -> 21.4 us / 3 programs | **kept** |
+| Encoder: one memcpy per instruction instead of per byte | 46.8 -> 44.4 us | kept |
+
+## Where the remaining time goes (diagnostic knobs, wrong hashes on purpose)
+
+`g_mjit_diag` removes one cost at a time; A/B gain if it were free:
+
+| Removed cost | 1 lane | 2 lanes | 3 lanes |
+|---|---|---|---|
+| Scratchpad L3 region fits in L2 | +13% | +11% | +13% |
+| Dataset served from cache (no DRAM) | +41% | +19% | +15% |
+| No LDMXCSR | 0% | +3% | +5% |
+| All three | +91% | +64% | +48% |
+
+More lanes hide the dataset latency (+41% -> +15%) but each lane adds a
+2 MB scratchpad to a 2 MB L2, so returns diminish after 3 lanes.
+
+Non-VM work per hash at 3 lanes (~480 H/s/thread): AES hash_and_fill
+66-82 us, multi-JIT generation ~57 us (7.1 us per lane-program, vs 3.2 us
+for the old JIT), blake2b/program fill < 5 us: ~6% of the hash time.
+
+## Final paired result (bench_rx --ab, same process and dataset, 1 GB pages)
+
+| Threads | Original path (old JIT, hash_first/next) | 3-lane JIT, G=64 | Gain |
+|---:|---:|---:|---:|
+| 1 | 290.2 H/s | 459.2 H/s | **+56.0%** |
+| 4 | 1233.2 H/s | 1837.8 H/s | **+52.5%** |
+
+1 GB dataset pages add ~5% on top for both paths.
+
+## Bug fixed on the way
+
+`rx_blake2b_blob()` (used by `hash_next` for the next nonce's blob) read up
+to 96 bytes past the input and ignored data past 256 bytes for blobs longer
+than 128 bytes -> wrong batch hashes for long blobs. Found by
+`test_randomx_conformance` (241/243 -> 243/243).
+
+## Open ideas not done
+
+- Faster multi-JIT code generation (still 2x slower than the old JIT, ~3%).
+- VAES (AVX-512) `hash_and_fill`: the 4 AES lanes map onto one zmm (~1-2%).
+- LDMXCSR elimination via per-rounding-mode code variants with AVX-512
+  embedded rounding (<= 5%, but 512-bit uops and code size make it risky).
+- Validate lane count / granularity on the 14700K (no AVX-512: spill mode;
+  E-cores have 1 MB L2 per core, so they may prefer 2 lanes).

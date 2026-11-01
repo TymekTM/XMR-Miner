@@ -48,6 +48,23 @@ Synthetic benchmark, identical hardware, identical feature flags (mine mode, JIT
 
 > ℹ️ XMRig numbers are **real pool mining** (network + job-switch overhead); XMR-Miner numbers are **synthetic batch benchmarks**. They are not strictly like-for-like. The fairest like-for-like comparison is the head-to-head table above vs upstream RandomX.
 
+### Phase 6: multi-lane JIT (Linux port, Xeon VM)
+
+A second experiment ported the core to Linux and attacked the latency wall
+directly: one JIT loop now interleaves the programs of 2-4 independent
+hashes per thread ("software SMT"). Paired A/B on a 4-vCPU Emerald Rapids VM,
+same process and dataset:
+
+| Threads | Original path | 3-lane JIT | Gain |
+|--------:|--------------:|-----------:|-----:|
+| 1       | 290 H/s       | 459 H/s    | **+56 %** |
+| 4       | 1233 H/s      | 1838 H/s   | **+52 %** |
+
+Details, rejected experiments and the cost breakdown are in
+[`OPTIMIZATION_LOG.md`](OPTIMIZATION_LOG.md#phase-6--linux-port--multi-lane-software-smt-jit).
+The miner uses it via `--lanes` (default auto). Note: these numbers come from
+a VM with ~3.2 GHz cores; they are not comparable with the 14700K tables above.
+
 ---
 
 ## What this is
@@ -185,6 +202,21 @@ The upstream-RandomX comparison backend is fetched via `FetchContent` (pinned co
 
 `WinRing0x64.sys` is copied next to the binaries automatically if present under `tools/`; it is required for MSR tuning and the `--power-limit` feature.
 
+### Linux (RandomX core, benchmark and tests)
+
+The pool client is still Windows-only (Winsock + SChannel), but the RandomX
+core, `bench_rx` and the portable tests build with GCC or Clang:
+
+```bash
+cmake -S . -B build-linux -G Ninja -DCMAKE_BUILD_TYPE=Release
+ninja -C build-linux
+# huge pages: 2 MB for scratchpads, optionally 1 GB for the dataset (root)
+echo 1300 | sudo tee /proc/sys/vm/nr_hugepages
+./build-linux/test_randomx_conformance && ./build-linux/test_multilane
+./build-linux/bench_rx -t 4 --lanes 3 --gran 64
+./build-linux/bench_rx -t 4 --ab "lanes=0" "lanes=3,gran=64"   # paired A/B
+```
+
 ## Run
 
 ```powershell
@@ -217,6 +249,7 @@ build\Release\xmr-miner.exe -c mining.conf
 | `-t, --threads <N>` | Mining threads (default: auto) |
 | `--mode <auto\|single\|dual>` | Mining mode (default `auto`) |
 | `--power-limit <W>` | Set package PL1/PL2 while mining (needs `WinRing0`) |
+| `--lanes <0-4>` | Hashes interleaved per thread by the multi-lane JIT (0 = auto, 1 = off) |
 | `--no-huge-pages` | Disable 2 MB huge pages |
 | `--tls` | Connect to pool over TLS |
 | `--tls-allow` | Skip TLS certificate validation |
