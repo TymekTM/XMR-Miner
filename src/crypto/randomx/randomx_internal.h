@@ -454,6 +454,9 @@ extern int g_mjit_granularity;
 extern int g_mjit_mxcsr_skip;
 extern int g_mjit_rcp_pool;
 extern int g_mjit_prefetch_mode;
+extern int g_mjit_pinned_regs;
+extern int g_mjit_diag;
+extern int g_mjit_ds_prefetch;
 
 uint64_t rx_reciprocal(uint32_t divisor);
 

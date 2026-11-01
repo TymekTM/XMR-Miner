@@ -7,7 +7,7 @@
  *   bench_rx [-t threads] [-n hashes/thread] [-r repeats] [-p pages]
  *            [--no-pin] [--full] [--no-check] [-c cpu_list]
  *
- *   pages: 0 = 4 KB, 1 = 2 MB huge pages (default), 2 = 1 GB pages
+ *   pages: 0 = 4 KB, 1 = 2 MB huge pages, 2 = 1 GB pages (default; falls back to 2 MB)
  *
  * Before measuring it verifies the official RandomX test vector
  * (key "test key 000", input "This is a test") with the JIT VM, and that
@@ -105,6 +105,46 @@ typedef struct {
 
 static int g_pin = 1;
 
+/* ---- A/B experiment support ---- */
+typedef struct { int lanes; char knobs[256]; } ab_config;
+static ab_config g_ab[2];
+static int g_ab_mode = 0;
+static double *g_ab_time[2]; /* [round * threads + tid] */
+static int g_ab_rounds = 0;
+
+static int apply_knobs(const char *spec) {
+    /* every config starts from the defaults so A and B differ only in spec */
+    g_mjit_granularity = 256;
+    g_mjit_mxcsr_skip = 0;
+    g_mjit_rcp_pool = 1;
+    g_mjit_prefetch_mode = 1;
+    g_mjit_pinned_regs = 1;
+    g_mjit_diag = 0;
+    g_mjit_ds_prefetch = 0;
+    char buf[256];
+    snprintf(buf, sizeof(buf), "%s", spec);
+    char *save = NULL;
+    for (char *t = strtok_r(buf, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+        char name[64]; int val;
+        if (sscanf(t, "%63[^=]=%d", name, &val) != 2) continue;
+        if (!strcmp(name, "gran")) g_mjit_granularity = val;
+        else if (!strcmp(name, "mxskip")) g_mjit_mxcsr_skip = val;
+        else if (!strcmp(name, "rcp_pool")) g_mjit_rcp_pool = val;
+        else if (!strcmp(name, "prefetch")) g_mjit_prefetch_mode = val;
+        else if (!strcmp(name, "pinned")) g_mjit_pinned_regs = val;
+        else if (!strcmp(name, "diag")) g_mjit_diag = val;
+        else if (!strcmp(name, "dspf")) g_mjit_ds_prefetch = val;
+        else if (!strcmp(name, "lanes")) {}
+        else { printf("unknown knob %s\n", name); return 0; }
+    }
+    return 1;
+}
+
+static int knob_lanes(const char *spec) {
+    const char *p = strstr(spec, "lanes=");
+    return p ? atoi(p + 6) : 1;
+}
+
 #ifdef _WIN32
 static DWORD WINAPI worker_main(LPVOID p)
 #else
@@ -114,6 +154,54 @@ static void *worker_main(void *p)
     worker_t *w = (worker_t *)p;
     if (g_pin && w->cpu >= 0) pin_self(w->cpu);
 
+    if (g_ab_mode) {
+        rx_vm_group *grp[2];
+        int K[2];
+        uint8_t blobs[RX_MULTI_MAX_LANES][76];
+        uint8_t outs_[RX_MULTI_MAX_LANES][32];
+        const void *in[RX_MULTI_MAX_LANES];
+        void *out[RX_MULTI_MAX_LANES];
+        size_t sz[RX_MULTI_MAX_LANES];
+        uint32_t gn = 0;
+        for (int l = 0; l < RX_MULTI_MAX_LANES; l++) {
+            memset(blobs[l], 0, 76);
+            blobs[l][0] = 0x10; blobs[l][3] = (uint8_t)w->tid; blobs[l][4] = (uint8_t)l;
+            in[l] = blobs[l]; out[l] = outs_[l]; sz[l] = 76;
+        }
+        for (int c = 0; c < 2; c++) {
+            K[c] = g_ab[c].lanes;
+            grp[c] = rx_create_vm_group(K[c], RX_FLAG_DEFAULT, w->cache, w->dataset);
+            if (!grp[c]) { fprintf(stderr, "group alloc failed\n"); exit(3); }
+            rx_group_hash_first(grp[c], in, sz);
+        }
+        for (int r = 0; r < g_ab_rounds; r++) {
+            for (int k = 0; k < 2; k++) {
+                int c = (r & 1) ? 1 - k : k;   /* ABBA ordering */
+                barrier_wait();
+                if (w->tid == 0) apply_knobs(g_ab[c].knobs);
+                barrier_wait();
+                /* one warm-up hash per slice (JIT/knob change) */
+                gn++; for (int l = 0; l < K[c]; l++) memcpy(blobs[l] + 39, &gn, 4);
+                rx_group_hash_next(grp[c], in, sz, out);
+                double t0 = now_sec();
+                for (int i = 0; i < w->hashes; i += K[c]) {
+                    gn++;
+                    for (int l = 0; l < K[c]; l++) memcpy(blobs[l] + 39, &gn, 4);
+                    rx_group_hash_next(grp[c], in, sz, out);
+                }
+                double dt = now_sec() - t0;
+                int done = ((w->hashes + K[c] - 1) / K[c]) * K[c];
+                g_ab_time[c][r * g_barrier_total + w->tid] = dt / done;
+            }
+        }
+        rx_destroy_vm_group(grp[0]);
+        rx_destroy_vm_group(grp[1]);
+#ifdef _WIN32
+        return 0;
+#else
+        return NULL;
+#endif
+    }
     if (w->full_mode == 3) {
         rx_vm_group *g = rx_create_vm_group(w->lanes, RX_FLAG_DEFAULT, w->cache, w->dataset);
         if (!g) { fprintf(stderr, "group alloc failed (lanes=%d)\n", w->lanes); exit(3); }
@@ -256,7 +344,7 @@ int main(int argc, char **argv) {
     int threads = num_cpus();
     int hashes = 200;
     int repeats = 5;
-    int pages = 1;
+    int pages = 2;
     int full_mode = 0;
     int lanes = 1;
     int check = 1;
@@ -274,6 +362,13 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--lanes") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 3; }
         else if (!strcmp(argv[i], "--gran") && i + 1 < argc) g_mjit_granularity = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mxskip")) g_mjit_mxcsr_skip = 1;
+        else if (!strcmp(argv[i], "--ab") && i + 2 < argc) {
+            g_ab_mode = 1;
+            snprintf(g_ab[0].knobs, sizeof(g_ab[0].knobs), "%s", argv[++i]);
+            snprintf(g_ab[1].knobs, sizeof(g_ab[1].knobs), "%s", argv[++i]);
+            g_ab[0].lanes = knob_lanes(g_ab[0].knobs);
+            g_ab[1].lanes = knob_lanes(g_ab[1].knobs);
+        }
         else if (!strcmp(argv[i], "--set") && i + 1 < argc) {
             /* --set name=value for experiment knobs */
             char name[64]; int val;
@@ -318,6 +413,13 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    if (g_ab_mode) {
+        g_ab_rounds = repeats;
+        g_ab_time[0] = (double *)calloc((size_t)repeats * threads, sizeof(double));
+        g_ab_time[1] = (double *)calloc((size_t)repeats * threads, sizeof(double));
+        printf("  A/B: A=\"%s\" (lanes %d)  B=\"%s\" (lanes %d)  rounds=%d\n",
+               g_ab[0].knobs, g_ab[0].lanes, g_ab[1].knobs, g_ab[1].lanes, repeats);
+    }
     worker_t *w = (worker_t *)calloc(threads, sizeof(worker_t));
     g_barrier_total = threads;
     int ncpu = num_cpus();
@@ -342,6 +444,28 @@ int main(int argc, char **argv) {
     for (int i = 0; i < threads; i++) pthread_join(th[i], NULL);
 #endif
 
+    if (g_ab_mode) {
+        double *ratio = (double *)calloc(repeats, sizeof(double));
+        double *ha = (double *)calloc(repeats, sizeof(double));
+        double *hb = (double *)calloc(repeats, sizeof(double));
+        for (int r = 0; r < repeats; r++) {
+            double ra = 0, rb = 0;
+            for (int t = 0; t < threads; t++) {
+                ra += 1.0 / g_ab_time[0][r * threads + t];
+                rb += 1.0 / g_ab_time[1][r * threads + t];
+            }
+            ha[r] = ra; hb[r] = rb; ratio[r] = rb / ra;
+        }
+        qsort(ratio, repeats, sizeof(double), cmp_double);
+        qsort(ha, repeats, sizeof(double), cmp_double);
+        qsort(hb, repeats, sizeof(double), cmp_double);
+        int q1 = repeats / 4, q3 = (3 * repeats) / 4;
+        if (q3 >= repeats) q3 = repeats - 1;
+        printf("ABRESULT A=%.1f H/s B=%.1f H/s  B/A median=%+.2f%%  IQR=[%+.2f%%, %+.2f%%]\n",
+               ha[repeats / 2], hb[repeats / 2], (ratio[repeats / 2] - 1) * 100,
+               (ratio[q1] - 1) * 100, (ratio[q3] - 1) * 100);
+        return 0;
+    }
     printf("  scratchpad pages: %s\n", vmem_kind_name(w[0].sp_kind));
     double *rates = (double *)calloc(repeats, sizeof(double));
     for (int r = 0; r < repeats; r++) {

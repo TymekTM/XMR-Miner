@@ -1076,7 +1076,7 @@ int rx_cpu_has_avx512_lanes(void) {
 }
 
 rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset) {
-    if (lanes < 1 || lanes > 2) return NULL;
+    if (lanes < 1 || lanes > 3) return NULL;
     if ((flags & RX_FLAG_V2) || !dataset) return NULL;
     if (lanes > 1 && !rx_cpu_has_avx512_lanes()) return NULL;
     rx_vm_group *g = (rx_vm_group *)calloc(1, sizeof(rx_vm_group));

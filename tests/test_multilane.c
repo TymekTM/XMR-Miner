@@ -64,7 +64,7 @@ int main(int argc, char **argv) {
     }
 
     static const int grans[] = { 256, 128, 64, 32, 16, 8, 1 };
-    for (int lanes = 1; lanes <= 2; lanes++) {
+    for (int lanes = 1; lanes <= 3; lanes++) {
         rx_vm_group *g = rx_create_vm_group(lanes, RX_FLAG_DEFAULT, cache, ds);
         if (!g) { printf("[SKIP] lanes=%d group unavailable\n", lanes); continue; }
         for (size_t gi = 0; gi < sizeof(grans) / sizeof(grans[0]); gi++) {
@@ -76,10 +76,10 @@ int main(int argc, char **argv) {
 
                 /* official vector on every lane */
                 const char *tv = "This is a test";
-                const void *in[2] = { tv, tv };
-                size_t sz[2] = { strlen(tv), strlen(tv) };
-                uint8_t out[2][32];
-                void *outs[2] = { out[0], out[1] };
+                const void *in[3] = { tv, tv, tv };
+                size_t sz[3] = { strlen(tv), strlen(tv), strlen(tv) };
+                uint8_t out[3][32];
+                void *outs[3] = { out[0], out[1], out[2] };
                 rx_group_hash(g, in, sz, outs);
                 for (int l = 0; l < lanes; l++) {
                     snprintf(label, sizeof(label), "lanes=%d gran=%d opt=%d official vector lane %d",
@@ -88,21 +88,21 @@ int main(int argc, char **argv) {
                 }
 
                 /* batch pipeline with distinct inputs per lane */
-                uint8_t blobs[2][8][200];
+                uint8_t blobs[3][8][200];
                 size_t lens[8] = { 76, 76, 77, 43, 76, 128, 129, 200 };
                 int nb = rounds < 8 ? rounds : 8;
-                for (int l = 0; l < 2; l++)
+                for (int l = 0; l < 3; l++)
                     for (int k = 0; k < nb; k++)
                         fill(blobs[l][k], lens[k], (uint64_t)(l * 1000 + k * 17 + gi * 7 + opt + lanes * 100000));
-                const void *first[2] = { blobs[0][0], blobs[1][0] };
-                size_t fsz[2] = { lens[0], lens[0] };
+                const void *first[3] = { blobs[0][0], blobs[1][0], blobs[2][0] };
+                size_t fsz[3] = { lens[0], lens[0], lens[0] };
                 rx_group_hash_first(g, first, fsz);
                 for (int k = 1; k <= nb; k++) {
-                    uint8_t got[2][32];
-                    void *gouts[2] = { got[0], got[1] };
+                    uint8_t got[3][32];
+                    void *gouts[3] = { got[0], got[1], got[2] };
                     if (k < nb) {
-                        const void *nx[2] = { blobs[0][k], blobs[1][k] };
-                        size_t nsz[2] = { lens[k], lens[k] };
+                        const void *nx[3] = { blobs[0][k], blobs[1][k], blobs[2][k] };
+                        size_t nsz[3] = { lens[k], lens[k], lens[k] };
                         rx_group_hash_next(g, nx, nsz, gouts);
                     } else {
                         rx_group_hash_last(g, gouts);
