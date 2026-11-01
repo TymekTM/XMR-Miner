@@ -1,5 +1,6 @@
 #include "randomx_internal.h"
 #include "msr.h"
+#ifdef _WIN32
 #include <windows.h>
 #include <stdio.h>
 
@@ -301,3 +302,13 @@ int msr_init(void) {
 void msr_destroy(void) {
     close_driver();
 }
+#else
+/* MSR access via WinRing0 is Windows-only; on other OSes these are no-ops. */
+int msr_init(void) { return 0; }
+void msr_destroy(void) {}
+int msr_read_package_energy(double *joules) { (void)joules; return 0; }
+int msr_set_package_power_limit(double watts, uint64_t *original) { (void)watts; (void)original; return 0; }
+int msr_restore_package_power_limit(uint64_t original) { (void)original; return 0; }
+int msr_set_prefetch_control(uint64_t value, uint64_t *original) { (void)value; (void)original; return 0; }
+int msr_restore_prefetch_control(uint64_t original) { (void)original; return 0; }
+#endif

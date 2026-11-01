@@ -6,7 +6,10 @@
 #include "randomx.h"
 #include <string.h>
 #include <math.h>
+#include <assert.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <smmintrin.h>
 #include <wmmintrin.h>
 #include <immintrin.h>
@@ -73,7 +76,7 @@ static __forceinline int64_t rx_smulh(int64_t a, int64_t b) {
 }
 
 static __forceinline uint64_t rx_mulh(uint64_t a, uint64_t b) {
-    unsigned __int64 high;
+    unsigned long long high;
     _mulx_u64(a, b, &high);
     return high;
 }
@@ -357,7 +360,7 @@ typedef struct {
     uint32_t size;
     int addrReg;
     uint8_t *code;
-    void (*fn)(uint64_t *);
+    void (RX_JIT_ABI *fn)(uint64_t *);
 } rx_superscalar_program;
 
 typedef struct rx_cache {
@@ -374,6 +377,7 @@ typedef struct rx_cache {
 typedef struct rx_dataset {
     uint8_t *memory;
     int large_pages;
+    int page_kind;
 } rx_dataset;
 
 typedef struct rx_jit rx_jit;
@@ -392,6 +396,7 @@ typedef struct rx_vm {
     int useJit;
     int large_pages;
     int flagV2;
+    int sp_page_kind;
     rx_jit *jit;
     uint8_t datasetItem[64];
     RX_ALIGNAS(16) uint64_t tempHash[8];
@@ -436,6 +441,7 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash);
 void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer);
 void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer);
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state);
+void vm_initialize(rx_vm *vm);
 extern int g_aes_hash_fill_upstream;
 
 #ifdef __cplusplus

@@ -3,6 +3,7 @@
 #include "crypto/blake2/blake2b.h"
 #include <string.h>
 #include <stdio.h>
+#include "common/vmem.h"
 
 #ifndef RX_ENABLE_DUAL_INTERLEAVED_JIT
 #define RX_ENABLE_DUAL_INTERLEAVED_JIT 1
@@ -12,23 +13,6 @@ extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx
 extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
 extern void* rx_jit_get_program_func(rx_jit*);
 
-#ifdef _WIN32
-static int enable_lock_pages_privilege(void) {
-    HANDLE token;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
-        return 0;
-    TOKEN_PRIVILEGES tp;
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!LookupPrivilegeValueA(NULL, SE_LOCK_MEMORY_NAME, &tp.Privileges[0].Luid)) {
-        CloseHandle(token);
-        return 0;
-    }
-    int ok = AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL) && GetLastError() == 0;
-    CloseHandle(token);
-    return ok;
-}
-#endif
 
 
 static __forceinline uint32_t load32_le(const void *p) {
@@ -443,7 +427,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
             rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
         }
 
-        typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
+        typedef void (RX_JIT_ABI *ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
         ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
 
         if (func) {
@@ -836,13 +820,9 @@ void rx_calculate_hash_last(rx_vm *vm, void *output) {
 rx_cache *rx_alloc_cache(int large_pages) {
     rx_cache *c = (rx_cache *)calloc(1, sizeof(rx_cache));
     if (!c) return NULL;
-    c->large_pages = large_pages;
-    if (large_pages) {
-        c->memory = (uint8_t *)VirtualAlloc(NULL, RX_CACHE_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (!c->memory) c->large_pages = 0;
-    }
-    if (!c->memory)
-        c->memory = (uint8_t *)calloc(1, RX_CACHE_SIZE);
+    int kind = VMEM_KIND_NORMAL;
+    c->memory = (uint8_t *)vmem_alloc(RX_CACHE_SIZE, large_pages ? VMEM_LARGE_PAGES : 0, &kind);
+    c->large_pages = (kind != VMEM_KIND_NORMAL);
     if (!c->memory) { free(c); return NULL; }
     return c;
 }
@@ -855,12 +835,7 @@ void *rx_get_cache_memory(rx_cache *cache) { return cache->memory; }
 
 void rx_free_cache(rx_cache *cache) {
     if (!cache) return;
-    if (cache->memory) {
-        if (cache->large_pages)
-            VirtualFree(cache->memory, 0, MEM_RELEASE);
-        else
-            free(cache->memory);
-    }
+    vmem_free(cache->memory);
     if (cache->reciprocalCache) free(cache->reciprocalCache);
     for (int i = 0; i < RX_CACHE_ACCESSES; i++)
         ss_jit_free(&cache->programs[i]);
@@ -870,31 +845,17 @@ void rx_free_cache(rx_cache *cache) {
 rx_dataset *rx_alloc_dataset(int large_pages) {
     rx_dataset *ds = (rx_dataset *)calloc(1, sizeof(rx_dataset));
     if (!ds) return NULL;
-    ds->large_pages = 0;
-
     size_t alloc_size = (size_t)RX_DATASET_SIZE;
-#ifdef _WIN32
-    if (large_pages && enable_lock_pages_privilege()) {
-        size_t large_page_min = 2097152;
-        size_t aligned_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, aligned_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (ds->memory) {
-            ds->large_pages = 1;
-            LOG_INFO("[DATASET] Allocated %.0f MB (LARGE PAGES)", (double)alloc_size / (1024*1024));
-        } else {
-            LOG_INFO("[DATASET] Large pages failed, using regular pages");
-        }
-    }
-    if (!ds->memory) {
-        LOG_INFO("[DATASET] Using regular pages");
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        if (ds->memory) {
-            LOG_INFO("[DATASET] Allocated %.0f MB (regular pages)", (double)alloc_size / (1024*1024));
-        }
-    }
-#endif
+    int flags = 0;
+    if (large_pages) flags |= VMEM_LARGE_PAGES;
+    if (large_pages >= 2) flags |= VMEM_1GB_PAGES;
+    int kind = VMEM_KIND_NORMAL;
+    ds->memory = (uint8_t *)vmem_alloc(alloc_size, flags, &kind);
     if (!ds->memory) { free(ds); return NULL; }
-    VirtualLock(ds->memory, alloc_size);
+    ds->large_pages = (kind == VMEM_KIND_2MB || kind == VMEM_KIND_1GB);
+    ds->page_kind = kind;
+    LOG_INFO("[DATASET] Allocated %.0f MB (%s)", (double)alloc_size / (1024*1024), vmem_kind_name(kind));
+    vmem_lock(ds->memory, alloc_size);
     return ds;
 }
 
@@ -935,9 +896,7 @@ void *rx_get_dataset_memory(rx_dataset *ds) { return ds->memory; }
 
 void rx_free_dataset(rx_dataset *ds) {
     if (!ds) return;
-    if (ds->memory) {
-        VirtualFree(ds->memory, 0, MEM_RELEASE);
-    }
+    vmem_free(ds->memory);
     free(ds);
 }
 
@@ -960,16 +919,12 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     vm->datasetPtr = dataset;
     if (dataset) vm->mem.memory = dataset->memory;
     else if (cache) vm->mem.memory = cache->memory;
-    vm->scratchpad = NULL;
-    vm->large_pages = 0;
-    if (large_pages) {
-        vm->scratchpad = (uint8_t *)VirtualAlloc(NULL, RX_SCRATCHPAD_L3, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (vm->scratchpad) vm->large_pages = 1;
-    }
-    if (!vm->scratchpad)
-        vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
+    int sp_kind = VMEM_KIND_NORMAL;
+    vm->scratchpad = (uint8_t *)vmem_alloc(RX_SCRATCHPAD_L3, large_pages ? VMEM_LARGE_PAGES : 0, &sp_kind);
     if (!vm->scratchpad) { free(vm); return NULL; }
-    VirtualLock(vm->scratchpad, RX_SCRATCHPAD_L3);
+    vm->large_pages = (sp_kind != VMEM_KIND_NORMAL);
+    vm->sp_page_kind = sp_kind;
+    vmem_lock(vm->scratchpad, RX_SCRATCHPAD_L3);
     vm->mxcsrState = RX_MXCSR_DEFAULT;
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
@@ -980,12 +935,7 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
 
 void rx_destroy_vm(rx_vm *vm) {
     if (!vm) return;
-    if (vm->scratchpad) {
-        if (vm->large_pages)
-            VirtualFree(vm->scratchpad, 0, MEM_RELEASE);
-        else
-            _aligned_free(vm->scratchpad);
-    }
+    vmem_free(vm->scratchpad);
     if (vm->jit) {
         extern void rx_jit_destroy(rx_jit *jit);
         rx_jit_destroy(vm->jit);
@@ -1007,7 +957,7 @@ void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t i
         rx_jit_generate_program_dual_interleaved(vm1->jit, &vm1->program, &vm1->config,
                                                   &vm2->program, &vm2->config, vm1->cachePtr);
 
-        typedef void (*DualInterleavedFunc)(RxDualParams*);
+        typedef void (RX_JIT_ABI *DualInterleavedFunc)(RxDualParams*);
         DualInterleavedFunc func = (DualInterleavedFunc)rx_jit_get_program_func(vm1->jit);
 
         if (func) {

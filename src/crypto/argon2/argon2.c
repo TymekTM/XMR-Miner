@@ -2,7 +2,13 @@
 #include "../blake2/blake2b.h"
 #include <string.h>
 #include <stdlib.h>
+#ifdef _MSC_VER
 #include <intrin.h>
+#define RX_ALIGN64 __declspec(align(64))
+#else
+#include <x86intrin.h>
+#define RX_ALIGN64 __attribute__((aligned(64)))
+#endif
 
 #define BLOCK_SIZE 1024
 #define QWORDS 128
@@ -41,7 +47,7 @@ static void fill_block(const u64 *prev, const u64 *ref, u64 *next, int with_xor)
         _mm_prefetch((const char *)(prev + i), _MM_HINT_T0);
         _mm_prefetch((const char *)(ref + i), _MM_HINT_T0);
     }
-    __declspec(align(64)) u64 R[QWORDS];
+    RX_ALIGN64 u64 R[QWORDS];
     for (int i = 0; i < QWORDS; i++)
         R[i] = prev[i] ^ ref[i];
 

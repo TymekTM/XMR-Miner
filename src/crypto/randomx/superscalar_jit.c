@@ -1,7 +1,7 @@
 #include "randomx_internal.h"
 #include <string.h>
 #include <stdlib.h>
-#include <windows.h>
+#include "common/vmem.h"
 
 #define SSJIT_CODE_SIZE 8192
 
@@ -267,8 +267,7 @@ static void emit_instruction(ssjit_emitter *e, const rx_instruction *instr, cons
 }
 
 void ss_jit_compile(rx_superscalar_program *prog, const uint64_t *reciprocals) {
-    uint8_t *code = (uint8_t *)VirtualAlloc(NULL, SSJIT_CODE_SIZE,
-        MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
+    uint8_t *code = (uint8_t *)vmem_alloc(SSJIT_CODE_SIZE, VMEM_EXEC, NULL);
     if (!code) return;
 
     ssjit_emitter em;
@@ -283,16 +282,15 @@ void ss_jit_compile(rx_superscalar_program *prog, const uint64_t *reciprocals) {
 
     eepilogue(&em);
 
-    DWORD old_protect;
-    VirtualProtect(code, SSJIT_CODE_SIZE, PAGE_EXECUTE_READ, &old_protect);
+    vmem_protect_rx(code, SSJIT_CODE_SIZE);
 
     prog->code = code;
-    prog->fn = (void(*)(uint64_t *))code;
+    prog->fn = (void (RX_JIT_ABI *)(uint64_t *))code;
 }
 
 void ss_jit_free(rx_superscalar_program *prog) {
     if (prog->code) {
-        VirtualFree(prog->code, 0, MEM_RELEASE);
+        vmem_free(prog->code);
         prog->code = NULL;
         prog->fn = NULL;
     }

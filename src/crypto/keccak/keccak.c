@@ -24,7 +24,7 @@ static const int keccak_rotations[25] = {
     18,  2, 61, 56, 14
 };
 
-#define ROTL64(x, n) (((x) << (n)) | ((x) >> (64 - (n))))
+#define ROTL64(x, n) (((x) << (n)) | ((x) >> ((64 - (n)) & 63)))
 
 void keccakf1600(uint64_t *state) {
     uint64_t C[5], D[5], B[25];

@@ -2,7 +2,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include "crypto/randomx/randomx_internal.h"
 
 extern int g_jit_epilogue_skip_mask;

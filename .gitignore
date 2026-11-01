@@ -105,3 +105,6 @@ tmp_*.ps1
 # All build directories (not just build_pgo)
 build_*/
 build/
+
+# Linux build
+build-linux*/
