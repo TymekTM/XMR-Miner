@@ -38,7 +38,8 @@ int g_mjit_rcp_pool = 1;           /* IMUL_RCP: RIP-relative constant pool */
 int g_mjit_prefetch_mode = 1;      /* scratchpad prefetch at iteration end: 0 none, 1 t0 */
 int g_mjit_pinned_regs = 1;        /* lane 1 keeps r0..r2 in rbx/rbp/rdi (5-reg swaps) */
 /* DIAGNOSTIC ONLY (produces wrong hashes): bit0 = scratchpad L3 accesses use
-   the L2 mask, bit1 = dataset reads confined to 64 KB, bit2 = no LDMXCSR. */
+   the L2 mask, bit1 = dataset reads confined to 64 KB, bit2 = no LDMXCSR,
+   bit3 = 20 extra NOP uops per lane switch (sensitivity to uop count). */
 int g_mjit_diag = 0;
 int g_mjit_ds_prefetch = 0;        /* dataset prefetch hint: 0 nta, 1 t0, 2 t1, 3 t2 */
 /* FP banking: 0 = auto (EVEX banks when AVX-512VL/DQ is available, else spill
@@ -519,6 +520,7 @@ struct MultiJit {
 
     void emitSwitch(int from, int to, int toSeg) {
         if (from == to) return;
+        if (g_mjit_diag & 8) for (int i = 0; i < 20; i++) b(0x90); /* diag: extra uops */
         if (fpSpill) {
             const LaneRegs &xf = lane[from].x, &xt = lane[to].x;
             for (int i = 0; i < 4; i++) vmovupdStore(M(RSP, slot(from, SL_FE + 16 * i)), xf.f[i]);

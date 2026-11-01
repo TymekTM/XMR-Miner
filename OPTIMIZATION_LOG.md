@@ -178,6 +178,20 @@ to 96 bytes past the input and ignored data past 256 bytes for blobs longer
 than 128 bytes -> wrong batch hashes for long blobs. Found by
 `test_randomx_conformance` (241/243 -> 243/243).
 
+## Late experiments (3 lanes, 4 threads, A/B vs G=64)
+
+| Change | B/A median | IQR | Verdict |
+|---|---:|---|---|
+| +20 NOP uops per lane switch (`diag` bit 3) | -0.7% | [-4.8%, +2.9%] | loop is not uop/decode bound: trimming switch code won't help |
+| G=48 | -0.8% | - | noise |
+| G=80 | -1.2% | - | noise |
+| G=96 (10 rounds, then 2x16 rounds) | +4.7%, +0.5%, +4.9% | all cross 0 | not confirmed, G=64 kept |
+| G=160 | +2.1% | [-0.5%, +3.8%] | noise |
+
+Granularity is flat between 48 and 160 at 3 lanes; the remaining gap is
+memory latency (dataset DRAM + scratchpad spilling out of L2), not the
+instruction stream.
+
 ## Open ideas not done
 
 - Faster multi-JIT code generation (still 2x slower than the old JIT, ~3%).
