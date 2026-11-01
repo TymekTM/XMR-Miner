@@ -5,8 +5,14 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 14)
 enable_testing()
 
+if(WIN32)
+    set(XMR_UPSTREAM_DEFAULT ON)
+else()
+    set(XMR_UPSTREAM_DEFAULT OFF)
+endif()
 option(XMR_BUILD_UPSTREAM_BACKEND
-    "Build the optimized miner backend using pinned upstream RandomX" ON)
+    "Build the optimized miner backend using pinned upstream RandomX" ${XMR_UPSTREAM_DEFAULT})
+option(XMR_NATIVE "GCC/Clang: compile with -march=native" ON)
 
 if(XMR_BUILD_UPSTREAM_BACKEND)
     include(FetchContent)
@@ -27,11 +33,78 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS NOMINMAX WIN32_LEAN_AND_MEAN NDEBUG)
 endif()
 
+if(NOT WIN32)
+    # ------------------------------------------------------------------
+    # Linux / POSIX build (GCC or Clang): RandomX core, benchmark, tests.
+    # The pool client (Winsock + SChannel TLS) is Windows-only for now.
+    # ------------------------------------------------------------------
+    if(NOT CMAKE_BUILD_TYPE)
+        set(CMAKE_BUILD_TYPE Release)
+    endif()
+    if(XMR_NATIVE)
+        set(XMR_ARCH_FLAGS "-march=native")
+    else()
+        set(XMR_ARCH_FLAGS "-mavx2 -maes -mbmi2 -msse4.1")
+    endif()
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${XMR_ARCH_FLAGS} -fno-strict-aliasing -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${XMR_ARCH_FLAGS} -fno-strict-aliasing -Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -Wno-class-memaccess")
+    set(CMAKE_C_FLAGS_RELEASE "-O2 -DNDEBUG")
+    set(CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG")
+    find_package(Threads REQUIRED)
+
+    add_library(rxcore STATIC
+        src/common/log.c
+        src/common/cpu.c
+        src/common/vmem.c
+        src/crypto/blake2/blake2b.c
+        src/crypto/blake2/blake2_generator.c
+        src/crypto/aes/aes_ni.c
+        src/crypto/argon2/argon2.c
+        src/crypto/keccak/keccak.c
+        src/crypto/randomx/reciprocal.c
+        src/crypto/randomx/aes_hash.c
+        src/crypto/randomx/dataset.c
+        src/crypto/randomx/dataset_cache.c
+        src/crypto/randomx/superscalar.c
+        src/crypto/randomx/superscalar_jit.c
+        src/crypto/randomx/vm.c
+        src/crypto/randomx/jit_compiler_x86.cpp
+        src/crypto/randomx/jit_multi_x86.cpp
+        src/crypto/randomx/msr.c
+    )
+    target_include_directories(rxcore PUBLIC src)
+    target_link_libraries(rxcore PUBLIC Threads::Threads m)
+
+    macro(add_rx_target NAME)
+        add_executable(${NAME} ${ARGN})
+        target_link_libraries(${NAME} rxcore)
+    endmacro()
+
+    add_rx_target(bench_rx tests/bench_rx.c)
+    add_rx_target(test_randomx_conformance tests/test_randomx_conformance.c)
+    add_rx_target(test_multilane tests/test_multilane.c)
+    add_rx_target(test_pool_lanes tests/test_pool_lanes.c src/miner/pool_utils.c)
+    add_rx_target(test_hash_vector tests/test_hash_vector.c)
+    add_rx_target(test_blob tests/test_blob.c src/miner/blob.c)
+    add_rx_target(test_json tests/test_json.c src/stratum/json.c)
+    add_rx_target(test_config tests/test_config.c src/common/config.c)
+
+    add_test(NAME randomx_conformance COMMAND test_randomx_conformance)
+    add_test(NAME multilane COMMAND test_multilane)
+    add_test(NAME pool_lanes COMMAND test_pool_lanes)
+    add_test(NAME hash_vector COMMAND test_hash_vector)
+    add_test(NAME blob_helpers COMMAND test_blob)
+    add_test(NAME json_parser COMMAND test_json)
+    add_test(NAME config_parser COMMAND test_config)
+    return()
+endif()
+
 set(SOURCES
     src/main.c
     src/common/log.c
     src/common/cpu.c
     src/common/memory.c
+    src/common/vmem.c
     src/common/config.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
@@ -46,6 +119,7 @@ set(SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/jit_multi_x86.cpp
     src/crypto/randomx/msr.c
     src/stratum/json.c
     src/stratum/stratum.c
@@ -151,7 +225,9 @@ set(RANDOMX_SOURCES
     src/crypto/randomx/superscalar_jit.c
     src/crypto/randomx/vm.c
     src/crypto/randomx/jit_compiler_x86.cpp
+    src/crypto/randomx/jit_multi_x86.cpp
     src/crypto/randomx/msr.c
+    src/common/vmem.c
 )
 
 set(COMMON_LIBS
@@ -200,6 +276,10 @@ add_bench_target(test_config tests/test_config.c "")
 target_sources(test_config PRIVATE src/common/config.c)
 add_bench_target(test_blob tests/test_blob.c "")
 target_sources(test_blob PRIVATE src/miner/blob.c src/crypto/keccak/keccak.c)
+add_bench_target(test_multilane tests/test_multilane.c "")
+add_bench_target(test_pool_lanes tests/test_pool_lanes.c "")
+target_sources(test_pool_lanes PRIVATE src/miner/pool_utils.c)
+add_bench_target(bench_rx tests/bench_rx.c "")
 add_bench_target(bench_full tests/bench_full.c "")
 add_bench_target(bench_1mh tests/bench_1mh.c "")
 target_sources(bench_1mh PRIVATE src/miner/affinity.c)
@@ -231,6 +311,10 @@ add_test(NAME config_parser
     COMMAND test_config)
 add_test(NAME blob_helpers
     COMMAND test_blob)
+add_test(NAME multilane
+    COMMAND test_multilane)
+add_test(NAME pool_lanes
+    COMMAND test_pool_lanes)
 if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET test_upstream_backend)
     add_test(NAME upstream_backend
         COMMAND test_upstream_backend)

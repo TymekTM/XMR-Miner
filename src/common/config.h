@@ -20,6 +20,7 @@ typedef struct {
     int  threads;
     int  huge_pages;
     int  mode;
+    int  lanes;      /* hashes interleaved per thread: 0 = auto, 1 = off, 2..4 */
     int  use_tls;
     int  tls_allow;
     double power_limit;

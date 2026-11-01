@@ -3,6 +3,7 @@
 #include "crypto/blake2/blake2b.h"
 #include <string.h>
 #include <stdio.h>
+#include "common/vmem.h"
 
 #ifndef RX_ENABLE_DUAL_INTERLEAVED_JIT
 #define RX_ENABLE_DUAL_INTERLEAVED_JIT 1
@@ -12,23 +13,6 @@ extern void rx_jit_generate_program(rx_jit*, rx_program*, rx_program_config*, rx
 extern void rx_jit_generate_program_light(rx_jit*, rx_program*, rx_program_config*, rx_cache*, uint32_t);
 extern void* rx_jit_get_program_func(rx_jit*);
 
-#ifdef _WIN32
-static int enable_lock_pages_privilege(void) {
-    HANDLE token;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &token))
-        return 0;
-    TOKEN_PRIVILEGES tp;
-    tp.PrivilegeCount = 1;
-    tp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
-    if (!LookupPrivilegeValueA(NULL, SE_LOCK_MEMORY_NAME, &tp.Privileges[0].Luid)) {
-        CloseHandle(token);
-        return 0;
-    }
-    int ok = AdjustTokenPrivileges(token, FALSE, &tp, 0, NULL, NULL) && GetLastError() == 0;
-    CloseHandle(token);
-    return ok;
-}
-#endif
 
 
 static __forceinline uint32_t load32_le(const void *p) {
@@ -443,7 +427,7 @@ void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
             rx_jit_generate_program(vm->jit, &vm->program, &vm->config, vm->cachePtr);
         }
 
-        typedef void (*ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
+        typedef void (RX_JIT_ABI *ProgramFunc)(rx_register_file*, rx_memory_regs*, uint8_t*, uint32_t);
         ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(vm->jit);
 
         if (func) {
@@ -836,13 +820,9 @@ void rx_calculate_hash_last(rx_vm *vm, void *output) {
 rx_cache *rx_alloc_cache(int large_pages) {
     rx_cache *c = (rx_cache *)calloc(1, sizeof(rx_cache));
     if (!c) return NULL;
-    c->large_pages = large_pages;
-    if (large_pages) {
-        c->memory = (uint8_t *)VirtualAlloc(NULL, RX_CACHE_SIZE, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (!c->memory) c->large_pages = 0;
-    }
-    if (!c->memory)
-        c->memory = (uint8_t *)calloc(1, RX_CACHE_SIZE);
+    int kind = VMEM_KIND_NORMAL;
+    c->memory = (uint8_t *)vmem_alloc(RX_CACHE_SIZE, large_pages ? VMEM_LARGE_PAGES : 0, &kind);
+    c->large_pages = (kind != VMEM_KIND_NORMAL);
     if (!c->memory) { free(c); return NULL; }
     return c;
 }
@@ -855,12 +835,7 @@ void *rx_get_cache_memory(rx_cache *cache) { return cache->memory; }
 
 void rx_free_cache(rx_cache *cache) {
     if (!cache) return;
-    if (cache->memory) {
-        if (cache->large_pages)
-            VirtualFree(cache->memory, 0, MEM_RELEASE);
-        else
-            free(cache->memory);
-    }
+    vmem_free(cache->memory);
     if (cache->reciprocalCache) free(cache->reciprocalCache);
     for (int i = 0; i < RX_CACHE_ACCESSES; i++)
         ss_jit_free(&cache->programs[i]);
@@ -870,31 +845,17 @@ void rx_free_cache(rx_cache *cache) {
 rx_dataset *rx_alloc_dataset(int large_pages) {
     rx_dataset *ds = (rx_dataset *)calloc(1, sizeof(rx_dataset));
     if (!ds) return NULL;
-    ds->large_pages = 0;
-
     size_t alloc_size = (size_t)RX_DATASET_SIZE;
-#ifdef _WIN32
-    if (large_pages && enable_lock_pages_privilege()) {
-        size_t large_page_min = 2097152;
-        size_t aligned_size = ((alloc_size + large_page_min - 1) / large_page_min) * large_page_min;
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, aligned_size, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (ds->memory) {
-            ds->large_pages = 1;
-            LOG_INFO("[DATASET] Allocated %.0f MB (LARGE PAGES)", (double)alloc_size / (1024*1024));
-        } else {
-            LOG_INFO("[DATASET] Large pages failed, using regular pages");
-        }
-    }
-    if (!ds->memory) {
-        LOG_INFO("[DATASET] Using regular pages");
-        ds->memory = (uint8_t *)VirtualAlloc(NULL, alloc_size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
-        if (ds->memory) {
-            LOG_INFO("[DATASET] Allocated %.0f MB (regular pages)", (double)alloc_size / (1024*1024));
-        }
-    }
-#endif
+    int flags = 0;
+    if (large_pages) flags |= VMEM_LARGE_PAGES;
+    if (large_pages >= 2) flags |= VMEM_1GB_PAGES;
+    int kind = VMEM_KIND_NORMAL;
+    ds->memory = (uint8_t *)vmem_alloc(alloc_size, flags, &kind);
     if (!ds->memory) { free(ds); return NULL; }
-    VirtualLock(ds->memory, alloc_size);
+    ds->large_pages = (kind == VMEM_KIND_2MB || kind == VMEM_KIND_1GB);
+    ds->page_kind = kind;
+    LOG_INFO("[DATASET] Allocated %.0f MB (%s)", (double)alloc_size / (1024*1024), vmem_kind_name(kind));
+    vmem_lock(ds->memory, alloc_size);
     return ds;
 }
 
@@ -935,9 +896,7 @@ void *rx_get_dataset_memory(rx_dataset *ds) { return ds->memory; }
 
 void rx_free_dataset(rx_dataset *ds) {
     if (!ds) return;
-    if (ds->memory) {
-        VirtualFree(ds->memory, 0, MEM_RELEASE);
-    }
+    vmem_free(ds->memory);
     free(ds);
 }
 
@@ -960,16 +919,12 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     vm->datasetPtr = dataset;
     if (dataset) vm->mem.memory = dataset->memory;
     else if (cache) vm->mem.memory = cache->memory;
-    vm->scratchpad = NULL;
-    vm->large_pages = 0;
-    if (large_pages) {
-        vm->scratchpad = (uint8_t *)VirtualAlloc(NULL, RX_SCRATCHPAD_L3, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, PAGE_READWRITE);
-        if (vm->scratchpad) vm->large_pages = 1;
-    }
-    if (!vm->scratchpad)
-        vm->scratchpad = (uint8_t *)_aligned_malloc(RX_SCRATCHPAD_L3, 64);
+    int sp_kind = VMEM_KIND_NORMAL;
+    vm->scratchpad = (uint8_t *)vmem_alloc(RX_SCRATCHPAD_L3, large_pages ? VMEM_LARGE_PAGES : 0, &sp_kind);
     if (!vm->scratchpad) { free(vm); return NULL; }
-    VirtualLock(vm->scratchpad, RX_SCRATCHPAD_L3);
+    vm->large_pages = (sp_kind != VMEM_KIND_NORMAL);
+    vm->sp_page_kind = sp_kind;
+    vmem_lock(vm->scratchpad, RX_SCRATCHPAD_L3);
     vm->mxcsrState = RX_MXCSR_DEFAULT;
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
@@ -980,12 +935,7 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
 
 void rx_destroy_vm(rx_vm *vm) {
     if (!vm) return;
-    if (vm->scratchpad) {
-        if (vm->large_pages)
-            VirtualFree(vm->scratchpad, 0, MEM_RELEASE);
-        else
-            _aligned_free(vm->scratchpad);
-    }
+    vmem_free(vm->scratchpad);
     if (vm->jit) {
         extern void rx_jit_destroy(rx_jit *jit);
         rx_jit_destroy(vm->jit);
@@ -1007,7 +957,7 @@ void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t i
         rx_jit_generate_program_dual_interleaved(vm1->jit, &vm1->program, &vm1->config,
                                                   &vm2->program, &vm2->config, vm1->cachePtr);
 
-        typedef void (*DualInterleavedFunc)(RxDualParams*);
+        typedef void (RX_JIT_ABI *DualInterleavedFunc)(RxDualParams*);
         DualInterleavedFunc func = (DualInterleavedFunc)rx_jit_get_program_func(vm1->jit);
 
         if (func) {
@@ -1088,4 +1038,149 @@ void rx_calculate_commitment(const void *input, size_t input_size, const void *h
     blake2b_update(&state, input, input_size);
     blake2b_update(&state, hash_in, RX_HASH_SIZE);
     blake2b_final(&state, com_out, RX_HASH_SIZE);
+}
+
+/* ------------------------------------------------------------------------
+ * Multi-lane VM group
+ * ------------------------------------------------------------------------ */
+
+struct rx_vm_group {
+    int lanes;
+    rx_vm *vm[RX_MULTI_MAX_LANES];
+    rx_mjit *mjit;
+    rx_multi_params params;
+};
+
+static unsigned long long rx_xgetbv0(void) {
+#ifdef _MSC_VER
+    return _xgetbv(0);
+#else
+    unsigned int lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    return ((unsigned long long)hi << 32) | lo;
+#endif
+}
+
+static int rx_cpu_has_avx512_lanes_uncached(void) {
+    int info[4];
+    __cpuidex(info, 0, 0);
+    if (info[0] < 7) return 0;
+    __cpuidex(info, 1, 0);
+    int osxsave = (info[2] >> 27) & 1;
+    if (!osxsave) return 0;
+    unsigned long long xcr0 = rx_xgetbv0();
+    if ((xcr0 & 0xE6) != 0xE6) return 0; /* SSE, AVX, opmask, ZMM_Hi256, Hi16_ZMM */
+    __cpuidex(info, 7, 0);
+    int f = (info[1] >> 16) & 1, dq = (info[1] >> 17) & 1, vl = (info[1] >> 31) & 1;
+    return f && dq && vl;
+}
+
+/* CPUID traps to the hypervisor in a VM (microseconds), so cache it. */
+int rx_cpu_has_avx512_lanes(void) {
+    static volatile int cached = -1;
+    int v = cached;
+    if (v < 0) { v = rx_cpu_has_avx512_lanes_uncached(); cached = v; }
+    return v;
+}
+
+rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_dataset *dataset) {
+    if (lanes < 1 || lanes > RX_MULTI_MAX_LANES) return NULL;
+    if ((flags & RX_FLAG_V2) || !dataset) return NULL;
+    rx_vm_group *g = (rx_vm_group *)calloc(1, sizeof(rx_vm_group));
+    if (!g) return NULL;
+    g->lanes = lanes;
+    for (int l = 0; l < lanes; l++) {
+        g->vm[l] = rx_create_vm(flags | RX_FLAG_JIT, cache, dataset);
+        if (!g->vm[l]) { rx_destroy_vm_group(g); return NULL; }
+    }
+    g->mjit = rx_mjit_create();
+    if (!g->mjit) { rx_destroy_vm_group(g); return NULL; }
+    return g;
+}
+
+void rx_destroy_vm_group(rx_vm_group *g) {
+    if (!g) return;
+    for (int l = 0; l < g->lanes; l++) rx_destroy_vm(g->vm[l]);
+    rx_mjit_destroy(g->mjit);
+    free(g);
+}
+
+int rx_vm_group_lanes(rx_vm_group *g) { return g->lanes; }
+rx_mjit *rx_vm_group_mjit(rx_vm_group *g) { return g->mjit; }
+rx_vm *rx_vm_group_vm(rx_vm_group *g, int lane) { return g->vm[lane]; }
+
+static void group_run(rx_vm_group *g) {
+    rx_program *progs[RX_MULTI_MAX_LANES];
+    rx_program_config *cfgs[RX_MULTI_MAX_LANES];
+    rx_multi_params *p = &g->params;
+    int K = g->lanes;
+    for (int l = 0; l < K; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_fill_aes4rx4(vm->tempHash, sizeof(rx_program), &vm->program);
+        vm_initialize(vm);
+        progs[l] = &vm->program;
+        cfgs[l] = &vm->config;
+    }
+    rx_mjit_generate(g->mjit, K, progs, cfgs);
+    p->iterations = RX_PROGRAM_ITERATIONS;
+    p->lanes = (uint32_t)K;
+    p->mantMask[0] = p->mantMask[1] = RX_DYN_MANTISSA_MASK;
+    p->scaleMask[0] = p->scaleMask[1] = 0x80F0000000000000ULL;
+    for (int l = 0; l < K; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_lane_params *lp = &p->lane[l];
+        lp->reg = &vm->reg;
+        lp->mx_ma = vm->mem.mx_ma;
+        lp->sp = vm->scratchpad;
+        lp->ds = vm->mem.memory + vm->datasetOffset;
+        lp->mxcsr = vm->mxcsrState;
+        lp->eMask[0] = vm->config.eMask[0];
+        lp->eMask[1] = vm->config.eMask[1];
+    }
+    typedef void (RX_JIT_ABI *MultiFunc)(rx_multi_params *);
+    ((MultiFunc)rx_mjit_code(g->mjit))(p);
+    for (int l = 0; l < K; l++) {
+        g->vm[l]->mem.mx_ma = p->lane[l].mx_ma;
+        g->vm[l]->mxcsrState = p->lane[l].mxcsr;
+    }
+}
+
+static void group_run_chains(rx_vm_group *g) {
+    for (int l = 0; l < g->lanes; l++) g->vm[l]->mxcsrState = RX_MXCSR_DEFAULT;
+    for (int chain = 0; chain < RX_PROGRAM_COUNT - 1; chain++) {
+        group_run(g);
+        for (int l = 0; l < g->lanes; l++)
+            rx_blake2b_regfile(g->vm[l]->tempHash, &g->vm[l]->reg);
+    }
+    group_run(g);
+}
+
+void rx_group_hash_first(rx_vm_group *g, const void *const *inputs, const size_t *sizes) {
+    for (int l = 0; l < g->lanes; l++)
+        rx_calculate_hash_first(g->vm[l], inputs[l], sizes[l]);
+}
+
+void rx_group_hash_next(rx_vm_group *g, const void *const *next_inputs, const size_t *sizes, void *const *outputs) {
+    uint32_t saved_mxcsr = _mm_getcsr();
+    group_run_chains(g);
+    _mm_setcsr(saved_mxcsr);
+    for (int l = 0; l < g->lanes; l++) {
+        rx_vm *vm = g->vm[l];
+        rx_blake2b_blob(vm->tempHash, next_inputs[l], sizes[l]);
+        rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
+        blake2b(outputs[l], RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+    }
+}
+
+void rx_group_hash_last(rx_vm_group *g, void *const *outputs) {
+    uint32_t saved_mxcsr = _mm_getcsr();
+    group_run_chains(g);
+    _mm_setcsr(saved_mxcsr);
+    for (int l = 0; l < g->lanes; l++)
+        rx_vm_get_final_result(g->vm[l], outputs[l]);
+}
+
+void rx_group_hash(rx_vm_group *g, const void *const *inputs, const size_t *sizes, void *const *outputs) {
+    rx_group_hash_first(g, inputs, sizes);
+    rx_group_hash_last(g, outputs);
 }

@@ -87,6 +87,7 @@ int main(int argc, char **argv) {
 
     miner_ctx_t *miner = miner_create(threads, cfg.huge_pages, cpu.physical_cores,
                                       cfg.mode, cfg.power_limit, stratum);
+    if (miner) miner_set_lanes(miner, cfg.lanes);
     if (!miner) {
         LOG_ERR("Failed to create miner");
         stratum_destroy(stratum);

@@ -1,9 +1,15 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include "randomx_internal.h"
 #include "crypto/blake2/blake2_generator.h"
 #include "crypto/argon2/argon2.h"
 #include "common/log.h"
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 static const uint64_t ssMul0 = 6364136223846793005ULL;
 static const uint64_t ssAdd1 = 9298411001130361340ULL;
@@ -166,6 +172,7 @@ typedef struct {
 
 #define DS_MAX_CORES 128
 
+#ifdef _WIN32
 typedef struct {
     int count;
     int os_index[DS_MAX_CORES];
@@ -227,14 +234,28 @@ static void ds_sort_pcore_first(ds_core_list_t *cores) {
     }
 }
 
-static DWORD WINAPI ds_init_thread(LPVOID param) {
-    ds_thread_arg_t *arg = (ds_thread_arg_t *)param;
+#endif
+
+static void ds_init_range(ds_thread_arg_t *arg) {
     uint8_t *ptr = arg->ds->memory + (size_t)arg->start * RX_CACHE_LINE_SIZE;
     for (uint32_t i = 0; i < arg->count; i++, ptr += RX_CACHE_LINE_SIZE) {
         rx_init_dataset_item(arg->cache, ptr, arg->start + i);
     }
+}
+
+#ifdef _WIN32
+static DWORD WINAPI ds_init_thread(LPVOID param) {
+    ds_init_range((ds_thread_arg_t *)param);
     return 0;
 }
+#else
+#include <pthread.h>
+#include <sched.h>
+static void *ds_init_thread(void *param) {
+    ds_init_range((ds_thread_arg_t *)param);
+    return NULL;
+}
+#endif
 
 void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_item, uint32_t count, int num_threads, int num_physical_cores) {
     if (num_threads < 1) num_threads = 1;
@@ -252,7 +273,7 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
         }
     } else {
         LOG_INFO("[DATASET] Initializing with %d threads...", num_threads);
-
+#ifdef _WIN32
         ds_core_list_t cores;
         int num_cores = ds_detect_cores(&cores);
         ds_sort_pcore_first(&cores);
@@ -312,6 +333,33 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
             CloseHandle(threads[t]);
         free(threads);
         free(args);
+#else
+        pthread_t *threads = (pthread_t *)malloc(num_threads * sizeof(pthread_t));
+        ds_thread_arg_t *args = (ds_thread_arg_t *)malloc(num_threads * sizeof(ds_thread_arg_t));
+        uint32_t per_thread = count / num_threads;
+        uint32_t remainder = count % num_threads;
+        uint32_t offset = start_item;
+        int ncpu = (int)sysconf(_SC_NPROCESSORS_ONLN);
+        for (int t = 0; t < num_threads; t++) {
+            args[t].ds = ds;
+            args[t].cache = cache;
+            args[t].start = offset;
+            args[t].count = per_thread + ((uint32_t)t < remainder ? 1 : 0);
+            args[t].thread_id = t;
+            offset += args[t].count;
+            pthread_create(&threads[t], NULL, ds_init_thread, &args[t]);
+            if (ncpu > 0) {
+                cpu_set_t set;
+                CPU_ZERO(&set);
+                CPU_SET(t % ncpu, &set);
+                pthread_setaffinity_np(threads[t], sizeof(set), &set);
+            }
+        }
+        for (int t = 0; t < num_threads; t++)
+            pthread_join(threads[t], NULL);
+        free(threads);
+        free(args);
+#endif
     }
 
     LOG_INFO("[DATASET] Initialization complete: %u items", count);

@@ -6,7 +6,10 @@
 #include "randomx.h"
 #include <string.h>
 #include <math.h>
+#include <assert.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 #include <smmintrin.h>
 #include <wmmintrin.h>
 #include <immintrin.h>
@@ -73,7 +76,7 @@ static __forceinline int64_t rx_smulh(int64_t a, int64_t b) {
 }
 
 static __forceinline uint64_t rx_mulh(uint64_t a, uint64_t b) {
-    unsigned __int64 high;
+    unsigned long long high;
     _mulx_u64(a, b, &high);
     return high;
 }
@@ -357,7 +360,7 @@ typedef struct {
     uint32_t size;
     int addrReg;
     uint8_t *code;
-    void (*fn)(uint64_t *);
+    void (RX_JIT_ABI *fn)(uint64_t *);
 } rx_superscalar_program;
 
 typedef struct rx_cache {
@@ -374,6 +377,7 @@ typedef struct rx_cache {
 typedef struct rx_dataset {
     uint8_t *memory;
     int large_pages;
+    int page_kind;
 } rx_dataset;
 
 typedef struct rx_jit rx_jit;
@@ -392,6 +396,7 @@ typedef struct rx_vm {
     int useJit;
     int large_pages;
     int flagV2;
+    int sp_page_kind;
     rx_jit *jit;
     uint8_t datasetItem[64];
     RX_ALIGNAS(16) uint64_t tempHash[8];
@@ -414,9 +419,45 @@ typedef struct {
     uint32_t mxcsr2;
 } RxDualParams;
 
+#define RX_MULTI_MAX_LANES 4
+
+/* Parameters for the multi-lane JIT (jit_multi_x86.cpp). */
+typedef struct {
+    rx_register_file *reg;   /* in: a; out: r, f, e */
+    uint64_t mx_ma;          /* in/out */
+    uint8_t *sp;             /* scratchpad */
+    uint8_t *ds;             /* dataset memory + datasetOffset */
+    uint32_t mxcsr;          /* in/out: lane rounding mode */
+    uint32_t pad;
+    RX_ALIGNAS(16) uint64_t eMask[2];
+} rx_lane_params;
+
+typedef struct {
+    uint32_t iterations;
+    uint32_t lanes;
+    RX_ALIGNAS(16) uint64_t mantMask[2];
+    uint64_t scaleMask[2];
+    rx_lane_params lane[RX_MULTI_MAX_LANES];
+} rx_multi_params;
+
+typedef struct rx_mjit rx_mjit;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+rx_mjit *rx_mjit_create(void);
+void rx_mjit_destroy(rx_mjit *m);
+int rx_mjit_generate(rx_mjit *m, int K, rx_program **progs, rx_program_config **cfgs);
+void *rx_mjit_code(rx_mjit *m);
+extern int g_mjit_granularity;
+extern int g_mjit_mxcsr_skip;
+extern int g_mjit_rcp_pool;
+extern int g_mjit_prefetch_mode;
+extern int g_mjit_pinned_regs;
+extern int g_mjit_diag;
+extern int g_mjit_ds_prefetch;
+extern int g_mjit_fp_spill;
 
 uint64_t rx_reciprocal(uint32_t divisor);
 
@@ -436,6 +477,7 @@ void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash);
 void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer);
 void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer);
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state);
+void vm_initialize(rx_vm *vm);
 extern int g_aes_hash_fill_upstream;
 
 #ifdef __cplusplus

@@ -1,6 +1,10 @@
 #include "cpu.h"
 #include "log.h"
+#ifdef _WIN32
 #include <windows.h>
+#else
+#include <unistd.h>
+#endif
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -15,6 +19,7 @@ static void cpuid(u32 func, u32 subfunc, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
     *edx = (u32)cpuinfo[3];
 }
 
+#ifdef _WIN32
 static int get_logical_cores(void) {
     SYSTEM_INFO si;
     GetSystemInfo(&si);
@@ -39,6 +44,36 @@ static int get_physical_cores(void) {
     free(buf);
     return count > 0 ? count : get_logical_cores();
 }
+
+#else
+static int get_logical_cores(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return n > 0 ? (int)n : 1;
+}
+
+/* Count distinct (physical_package_id, core_id) pairs from sysfs. */
+static int get_physical_cores(void) {
+    int n = get_logical_cores();
+    int seen[1024];
+    int count = 0;
+    for (int cpu = 0; cpu < n && cpu < 1024; cpu++) {
+        char path[128];
+        int pkg = 0, core = cpu;
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/core_id", cpu);
+        FILE *f = fopen(path, "r");
+        if (f) { if (fscanf(f, "%d", &core) != 1) core = cpu; fclose(f); }
+        snprintf(path, sizeof(path), "/sys/devices/system/cpu/cpu%d/topology/physical_package_id", cpu);
+        f = fopen(path, "r");
+        if (f) { if (fscanf(f, "%d", &pkg) != 1) pkg = 0; fclose(f); }
+        int key = pkg * 4096 + core;
+        int dup = 0;
+        for (int i = 0; i < count; i++) if (seen[i] == key) { dup = 1; break; }
+        if (!dup) seen[count++] = key;
+    }
+    return count > 0 ? count : n;
+}
+
+#endif
 
 void cpu_detect(cpu_info_t *info) {
     memset(info, 0, sizeof(*info));
@@ -69,6 +104,7 @@ void cpu_detect(cpu_info_t *info) {
     info->physical_cores = get_physical_cores();
 
     info->l3_cache_kb = 0;
+#ifdef _WIN32
     {
         DWORD len = 0;
         GetLogicalProcessorInformationEx(RelationCache, NULL, &len);
@@ -89,6 +125,19 @@ void cpu_detect(cpu_info_t *info) {
         }
         free(buf);
     }
+#else
+    {
+        FILE *f = fopen("/sys/devices/system/cpu/cpu0/cache/index3/size", "r");
+        if (f) {
+            int kb = 0; char unit = 0;
+            if (fscanf(f, "%d%c", &kb, &unit) >= 1) {
+                if (unit == 'M') kb *= 1024;
+                info->l3_cache_kb = kb;
+            }
+            fclose(f);
+        }
+    }
+#endif
     if (info->l3_cache_kb == 0) {
         u32 max_ext2;
         cpuid(0x80000000, 0, &max_ext2, &ebx, &ecx, &edx);

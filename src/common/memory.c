@@ -1,5 +1,6 @@
 #include "memory.h"
 #include "log.h"
+#ifdef _WIN32
 #include <windows.h>
 
 void *memory_alloc_large(size_t size) {
@@ -85,3 +86,14 @@ void memory_free_huge_pages(void *ptr, size_t size) {
 void memory_flush_instruction_cache(void *ptr, size_t size) {
     FlushInstructionCache(GetCurrentProcess(), ptr, size);
 }
+#else
+#include "vmem.h"
+
+void *memory_alloc_large(size_t size) { return vmem_alloc(size, 0, NULL); }
+void *memory_alloc_huge_pages(size_t size) { return vmem_alloc(size, VMEM_LARGE_PAGES, NULL); }
+void memory_free_large(void *ptr, size_t size) { UNUSED(size); vmem_free(ptr); }
+void memory_free_huge_pages(void *ptr, size_t size) { UNUSED(size); vmem_free(ptr); }
+void memory_flush_instruction_cache(void *ptr, size_t size) {
+    __builtin___clear_cache((char *)ptr, (char *)ptr + size);
+}
+#endif

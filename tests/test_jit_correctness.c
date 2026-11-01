@@ -1,7 +1,9 @@
 #include "crypto/randomx/randomx.h"
 #include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
 static void hex_dump(const char *label, const uint8_t *data, int len) {
     printf("  %s: ", label);

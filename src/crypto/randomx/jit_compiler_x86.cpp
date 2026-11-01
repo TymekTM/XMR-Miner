@@ -1,4 +1,5 @@
 #include "randomx_internal.h"
+#include "common/vmem.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -1881,29 +1882,14 @@ rx_jit* rx_jit_create(void) {
     jit->compiler->codeSlots[1] = NULL;
     jit->compiler->activeCodeSlot = 0;
 
-    jit->compiler->code = NULL;
-    if (g_jit_large_pages) {
-        SIZE_T largePage = GetLargePageMinimum();
-        if (largePage != 0) {
-            SIZE_T allocSize =
-                (RX_TOTAL_CODE_SIZE + largePage - 1) / largePage * largePage;
-            jit->compiler->code = (uint8_t*)VirtualAlloc(
-                NULL, allocSize, MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES,
-                PAGE_EXECUTE_READWRITE);
-        }
-    }
-    if (!jit->compiler->code) {
-        jit->compiler->code = (uint8_t*)VirtualAlloc(NULL, RX_TOTAL_CODE_SIZE,
-            MEM_RESERVE | MEM_COMMIT, PAGE_EXECUTE_READWRITE);
-    }
+    jit->compiler->code = (uint8_t*)vmem_alloc(RX_TOTAL_CODE_SIZE,
+        VMEM_EXEC | (g_jit_large_pages ? VMEM_LARGE_PAGES : 0), NULL);
     if (!jit->compiler->code) { delete jit->compiler; free(jit); return NULL; }
     jit->compiler->codeSlots[0] = jit->compiler->code;
     if (g_jit_double_buffer) {
-        jit->compiler->codeSlots[1] = (uint8_t*)VirtualAlloc(
-            NULL, RX_TOTAL_CODE_SIZE, MEM_RESERVE | MEM_COMMIT,
-            PAGE_EXECUTE_READWRITE);
+        jit->compiler->codeSlots[1] = (uint8_t*)vmem_alloc(RX_TOTAL_CODE_SIZE, VMEM_EXEC, NULL);
         if (!jit->compiler->codeSlots[1]) {
-            VirtualFree(jit->compiler->codeSlots[0], 0, MEM_RELEASE);
+            vmem_free(jit->compiler->codeSlots[0]);
             delete jit->compiler;
             free(jit);
             return NULL;
@@ -1914,10 +1900,8 @@ rx_jit* rx_jit_create(void) {
 
 void rx_jit_destroy(rx_jit* jit) {
     if (!jit) return;
-    if (jit->compiler->codeSlots[0])
-        VirtualFree(jit->compiler->codeSlots[0], 0, MEM_RELEASE);
-    if (jit->compiler->codeSlots[1])
-        VirtualFree(jit->compiler->codeSlots[1], 0, MEM_RELEASE);
+    vmem_free(jit->compiler->codeSlots[0]);
+    vmem_free(jit->compiler->codeSlots[1]);
     delete jit->compiler;
     free(jit);
 }

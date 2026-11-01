@@ -13,6 +13,51 @@
 #define PLATFORM_64BIT 0
 #endif
 
+/*
+ * Compiler shims so the MSVC-first code base also builds with GCC/Clang
+ * (Linux x86-64). On MSVC every definition below is skipped.
+ */
+#if defined(_MSC_VER)
+#include <intrin.h>
+#define RX_JIT_ABI
+#else
+#include <x86intrin.h>
+#include <cpuid.h>
+#include <strings.h>
+#ifndef __forceinline
+#define __forceinline inline __attribute__((always_inline))
+#endif
+/* JIT-generated code follows the Win64 calling convention on every OS. */
+#define RX_JIT_ABI __attribute__((ms_abi))
+
+static inline unsigned char _BitScanReverse(unsigned long *index, unsigned long mask) {
+    if (!mask) return 0;
+    *index = 31u - (unsigned long)__builtin_clz((unsigned int)mask);
+    return 1;
+}
+static inline unsigned char _BitScanReverse64(unsigned long *index, unsigned long long mask) {
+    if (!mask) return 0;
+    *index = 63u - (unsigned long)__builtin_clzll(mask);
+    return 1;
+}
+static inline int64_t _mul128(int64_t a, int64_t b, int64_t *high) {
+    __int128 r = (__int128)a * (__int128)b;
+    *high = (int64_t)(r >> 64);
+    return (int64_t)r;
+}
+static inline uint64_t _umul128(uint64_t a, uint64_t b, uint64_t *high) {
+    unsigned __int128 r = (unsigned __int128)a * (unsigned __int128)b;
+    *high = (uint64_t)(r >> 64);
+    return (uint64_t)r;
+}
+/* __cpuidex() is provided by <cpuid.h> (GCC >= 11, Clang >= 15). */
+#ifndef _rotl64
+#define _rotl64(x, n) __rolq((x), (n))
+#endif
+#define _stricmp strcasecmp
+#define strtok_s strtok_r
+#endif
+
 #define UNUSED(x) ((void)(x))
 #define ALIGN(x, a) (((x) + ((a) - 1)) & ~((a) - 1))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
