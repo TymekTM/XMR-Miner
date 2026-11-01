@@ -71,21 +71,25 @@ static void pin_self(int cpu) {
 }
 
 /* ---- simple spinning barrier (portable) ---- */
-static volatile int g_barrier_count = 0;
-static volatile int g_barrier_gen = 0;
+#ifdef _MSC_VER
+#include <intrin.h>
+#define BAR_INC(p) _InterlockedIncrement((volatile long *)(p))
+#define BAR_LOAD(p) _InterlockedOr((volatile long *)(p), 0)
+#else
+#define BAR_INC(p) __atomic_add_fetch((p), 1, __ATOMIC_SEQ_CST)
+#define BAR_LOAD(p) __atomic_load_n((p), __ATOMIC_SEQ_CST)
+#endif
+static volatile long g_barrier_count = 0;
+static volatile long g_barrier_gen = 0;
 static int g_barrier_total = 0;
 
 static void barrier_wait(void) {
-    int gen = g_barrier_gen;
-    if (__atomic_add_fetch(&g_barrier_count, 1, __ATOMIC_SEQ_CST) == g_barrier_total) {
+    long gen = BAR_LOAD(&g_barrier_gen);
+    if (BAR_INC(&g_barrier_count) == g_barrier_total) {
         g_barrier_count = 0;
-        __atomic_add_fetch(&g_barrier_gen, 1, __ATOMIC_SEQ_CST);
+        BAR_INC(&g_barrier_gen);
     } else {
-        while (__atomic_load_n(&g_barrier_gen, __ATOMIC_SEQ_CST) == gen) {
-#if defined(__x86_64__) || defined(_M_X64)
-            _mm_pause();
-#endif
-        }
+        while (BAR_LOAD(&g_barrier_gen) == gen) _mm_pause();
     }
 }
 
@@ -125,7 +129,7 @@ static int apply_knobs(const char *spec) {
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", spec);
     char *save = NULL;
-    for (char *t = strtok_r(buf, ",", &save); t; t = strtok_r(NULL, ",", &save)) {
+    for (char *t = strtok_s(buf, ",", &save); t; t = strtok_s(NULL, ",", &save)) {
         char name[64]; int val;
         if (sscanf(t, "%63[^=]=%d", name, &val) != 2) continue;
         if (!strcmp(name, "gran")) g_mjit_granularity = val;
@@ -142,6 +146,7 @@ static int apply_knobs(const char *spec) {
     return 1;
 }
 
+/* lanes=0 selects the original single-VM path (old JIT, hash_first/next) */
 static int knob_lanes(const char *spec) {
     const char *p = strstr(spec, "lanes=");
     return p ? atoi(p + 6) : 1;
@@ -170,8 +175,16 @@ static void *worker_main(void *p)
             blobs[l][0] = 0x10; blobs[l][3] = (uint8_t)w->tid; blobs[l][4] = (uint8_t)l;
             in[l] = blobs[l]; out[l] = outs_[l]; sz[l] = 76;
         }
+        rx_vm *single[2] = { NULL, NULL };   /* lanes=0: original single-VM path */
         for (int c = 0; c < 2; c++) {
             K[c] = g_ab[c].lanes;
+            grp[c] = NULL;
+            if (K[c] == 0) {
+                single[c] = rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset);
+                if (!single[c]) { fprintf(stderr, "VM alloc failed\n"); exit(3); }
+                rx_calculate_hash_first(single[c], in[0], sz[0]);
+                continue;
+            }
             grp[c] = rx_create_vm_group(K[c], RX_FLAG_DEFAULT, w->cache, w->dataset);
             if (!grp[c]) { fprintf(stderr, "group alloc failed\n"); exit(3); }
             rx_group_hash_first(grp[c], in, sz);
@@ -183,21 +196,26 @@ static void *worker_main(void *p)
                 if (w->tid == 0) apply_knobs(g_ab[c].knobs);
                 barrier_wait();
                 /* one warm-up hash per slice (JIT/knob change) */
-                gn++; for (int l = 0; l < K[c]; l++) memcpy(blobs[l] + 39, &gn, 4);
-                rx_group_hash_next(grp[c], in, sz, out);
+                int step = K[c] ? K[c] : 1;
+                gn++; for (int l = 0; l < step; l++) memcpy(blobs[l] + 39, &gn, 4);
+                if (single[c]) rx_calculate_hash_next(single[c], in[0], sz[0], out[0]);
+                else rx_group_hash_next(grp[c], in, sz, out);
                 double t0 = now_sec();
-                for (int i = 0; i < w->hashes; i += K[c]) {
+                for (int i = 0; i < w->hashes; i += step) {
                     gn++;
-                    for (int l = 0; l < K[c]; l++) memcpy(blobs[l] + 39, &gn, 4);
-                    rx_group_hash_next(grp[c], in, sz, out);
+                    for (int l = 0; l < step; l++) memcpy(blobs[l] + 39, &gn, 4);
+                    if (single[c]) rx_calculate_hash_next(single[c], in[0], sz[0], out[0]);
+                    else rx_group_hash_next(grp[c], in, sz, out);
                 }
                 double dt = now_sec() - t0;
-                int done = ((w->hashes + K[c] - 1) / K[c]) * K[c];
+                int done = ((w->hashes + step - 1) / step) * step;
                 g_ab_time[c][r * g_barrier_total + w->tid] = dt / done;
             }
         }
         rx_destroy_vm_group(grp[0]);
         rx_destroy_vm_group(grp[1]);
+        rx_destroy_vm(single[0]);
+        rx_destroy_vm(single[1]);
 #ifdef _WIN32
         return 0;
 #else

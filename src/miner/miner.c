@@ -81,7 +81,18 @@ struct miner_ctx {
     double power_limit;
     uint64_t original_power_limit;
     int power_limit_set;
+    int lanes;
 };
+
+void miner_set_lanes(miner_ctx_t *ctx, int lanes) { if (ctx) ctx->lanes = lanes; }
+void *miner_get_cache(miner_ctx_t *ctx) { return ctx->cache; }
+void *miner_get_dataset(miner_ctx_t *ctx) { return ctx->dataset; }
+
+/* auto: 3 lanes with AVX-512 register banks, 2 lanes otherwise (FP spill) */
+static int resolve_lanes(int lanes) {
+    if (lanes > 0) return lanes > 4 ? 4 : lanes;
+    return rx_cpu_has_avx512_lanes() ? 3 : 2;
+}
 
 miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores,
                           int mode, double power_limit, stratum_ctx_t *stratum) {
@@ -485,9 +496,14 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         ctx->workers[i].loop_count = 0;
         ctx->workers[i].extranonce2_counter = 0;
         ctx->workers[i].current_rx_flags = RX_FLAG_DEFAULT;
+        ctx->workers[i].lanes = resolve_lanes(ctx->lanes);
         strncpy(ctx->workers[i].initial_seed, ctx->current_seed_hex, sizeof(ctx->workers[i].initial_seed) - 1);
     }
 
+    if (ctx->num_threads > 0 && ctx->workers[0].lanes > 1)
+        LOG_INFO("[MINER] Multi-lane JIT: %d hashes per thread (%s FP registers)",
+                 ctx->workers[0].lanes,
+                 (rx_cpu_has_avx512_lanes() && ctx->workers[0].lanes <= 3) ? "AVX-512 banked" : "spilled");
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
     timeBeginPeriod(1);

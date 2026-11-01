@@ -23,6 +23,7 @@ typedef struct {
     int current_rx_flags;
     char current_algo[32];
     int batch_active;
+    int lanes;          /* >1: multi-lane group hashing (rx_vm_group) */
 } worker_t;
 
 void worker_run(worker_t *w);

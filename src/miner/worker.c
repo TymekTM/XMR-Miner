@@ -11,6 +11,34 @@
 #include <stdlib.h>
 #include <windows.h>
 
+/* Submit one share found by the multi-lane path (V1 only, no commitment). */
+static void worker_submit_lane_share(worker_t *w, const char *job_id, int is_monero_proto,
+                                     uint32_t share_nonce, const uint8_t hash[32],
+                                     int en2_size_bytes, const char *ntime,
+                                     uint64_t *total_shares) {
+    char nonce_hex[16];
+    char result_hex[65];
+    format_nonce_hex(share_nonce, is_monero_proto, nonce_hex, sizeof(nonce_hex));
+    hex_encode(hash, 32, result_hex);
+    LOG_INFO("[W%d] SHARE! nonce=%s hash=%s", w->id, nonce_hex, result_hex);
+    (*total_shares)++;
+    if (is_monero_proto) {
+        w->extranonce2_counter++;
+        stratum_submit_share(w->stratum, job_id, nonce_hex, result_hex, NULL, NULL, NULL);
+    } else {
+        char en2_hex[32];
+        int en2_size = en2_size_bytes * 2;
+        if (en2_size > 30) en2_size = 30;
+        for (int i = en2_size - 1; i >= 0; i--) {
+            int nibble = (int)(w->extranonce2_counter >> (i * 4)) & 0xf;
+            en2_hex[en2_size - 1 - i] = "0123456789abcdef"[nibble];
+        }
+        en2_hex[en2_size] = '\0';
+        w->extranonce2_counter++;
+        stratum_submit_share(w->stratum, job_id, nonce_hex, result_hex, en2_hex, ntime, NULL);
+    }
+}
+
 void worker_run(worker_t *w) {
     rx_vm *vm = (rx_vm *)w->vm;
     rx_vm *vm2 = (rx_vm *)w->vm2;
@@ -42,6 +70,13 @@ void worker_run(worker_t *w) {
     stratum_job_t job_copy;
     memset(&job_copy, 0, sizeof(job_copy));
     uint64_t job_generation = 0;
+
+    /* multi-lane state: K hashes per thread through one interleaved JIT */
+    rx_vm_group *grp = NULL;
+    int grp_flags = -1;
+    pool_lane_state lane_state;
+    memset(&lane_state, 0, sizeof(lane_state));
+    if (w->lanes > POOL_MAX_LANES) w->lanes = POOL_MAX_LANES;
 
     while (!w->should_stop) {
         {
@@ -219,6 +254,36 @@ job_ready:
             LOG_DEBUG("[W%d] Starting to mine with blob_len=%d vm=%p", w->id, blob_len, w->vm);
         }
 
+        int use_group = w->lanes > 1 && !(w->current_rx_flags & RX_FLAG_V2);
+        if (use_group && (!grp || grp_flags != w->current_rx_flags)) {
+            rx_destroy_vm_group(grp);
+            grp = rx_create_vm_group(w->lanes, w->current_rx_flags,
+                                     (rx_cache *)miner_get_cache(miner),
+                                     (rx_dataset *)miner_get_dataset(miner));
+            grp_flags = w->current_rx_flags;
+            w->batch_active = 0;
+            if (!grp) {
+                LOG_WARN("[W%d] Multi-lane group unavailable, using single VM", w->id);
+                w->lanes = 1;
+                use_group = 0;
+            }
+        }
+
+        if (use_group) {
+            uint32_t share_nonce[POOL_MAX_LANES];
+            uint8_t lane_hash[POOL_MAX_LANES][32];
+            int K = pool_lanes_hash_next(grp, &lane_state, &w->batch_active, blob,
+                                         (size_t)blob_len, nonce_off, &nonce,
+                                         w->nonce_stride, share_nonce, lane_hash);
+            for (int l = 0; l < K; l++) {
+                if (share_meets_target(lane_hash[l], current_target, is_monero_proto))
+                    worker_submit_lane_share(w, current_job_id, is_monero_proto, share_nonce[l],
+                                             lane_hash[l], saved_en2_size, saved_ntime,
+                                             &total_shares);
+            }
+            if (K == 0) { use_group = 0; w->lanes = 1; w->batch_active = 0; }
+            local_hashes += (uint64_t)K;
+        } else {
         if (!w->batch_active) {
             memcpy(blob + nonce_off, &nonce, 4);
             rx_calculate_hash_first(vm, blob, (size_t)blob_len);
@@ -353,6 +418,7 @@ job_ready:
 
             local_hashes++;
         }
+        } /* !use_group */
 
         local_loop_count++;
 
@@ -382,5 +448,6 @@ job_ready:
         LOG_INFO("[W%d] Stopped: %llu hashes in %llu s (%.1f H/s)",
              w->id, local_hashes, elapsed, (double)local_hashes / elapsed);
     }
+    rx_destroy_vm_group(grp);
     stratum_free_job_copy(&job_copy);
 }

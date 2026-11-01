@@ -15,6 +15,46 @@ uint32_t pool_pipeline_hash_next(rx_vm *vm, uint8_t *blob, size_t blob_len,
     return share_nonce;
 }
 
+int pool_lanes_hash_next(rx_vm_group *g, pool_lane_state *st, int *active,
+                         const uint8_t *blob, size_t blob_len, int nonce_offset,
+                         uint32_t *nonce, uint32_t stride,
+                         uint32_t share_nonce[POOL_MAX_LANES],
+                         uint8_t hash[POOL_MAX_LANES][32]) {
+    int K = rx_vm_group_lanes(g);
+    const void *in[POOL_MAX_LANES];
+    size_t sz[POOL_MAX_LANES];
+    void *out[POOL_MAX_LANES];
+    if (K > POOL_MAX_LANES || blob_len > POOL_LANE_BLOB_MAX) return 0;
+    for (int l = 0; l < K; l++) {
+        in[l] = st->blob[l];
+        sz[l] = blob_len;
+        out[l] = hash[l];
+    }
+    if (!*active) {
+        for (int l = 0; l < K; l++) {
+            st->queued[l] = *nonce + (uint32_t)l * stride;
+            memcpy(st->blob[l], blob, blob_len);
+            memcpy(st->blob[l] + nonce_offset, &st->queued[l], 4);
+        }
+        rx_group_hash_first(g, in, sz);
+        *nonce += (uint32_t)K * stride;
+        *active = 1;
+    }
+    uint32_t next[POOL_MAX_LANES];
+    for (int l = 0; l < K; l++) {
+        next[l] = *nonce + (uint32_t)l * stride;
+        memcpy(st->blob[l], blob, blob_len);
+        memcpy(st->blob[l] + nonce_offset, &next[l], 4);
+    }
+    rx_group_hash_next(g, in, sz, out);
+    for (int l = 0; l < K; l++) {
+        share_nonce[l] = st->queued[l];
+        st->queued[l] = next[l];
+    }
+    *nonce += (uint32_t)K * stride;
+    return K;
+}
+
 void pool_calculate_commitment(const uint8_t *blob, size_t blob_len,
                                int nonce_offset, uint32_t share_nonce,
                                const uint8_t hash[32], uint8_t commitment[32]) {

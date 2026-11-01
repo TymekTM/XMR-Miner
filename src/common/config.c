@@ -34,6 +34,8 @@ static void set_config_value(config_t *cfg, const char *key, const char *val) {
         if (strcmp(val, "auto") == 0) cfg->mode = MINER_MODE_AUTO;
         else if (strcmp(val, "single") == 0) cfg->mode = MINER_MODE_SINGLE;
         else if (strcmp(val, "dual") == 0) cfg->mode = MINER_MODE_DUAL;
+    } else if (strcmp(key, "lanes") == 0) {
+        cfg->lanes = atoi(val);
     } else if (strcmp(key, "huge_pages") == 0) {
         cfg->huge_pages = (atoi(val) != 0);
     } else if (strcmp(key, "tls") == 0) {
@@ -101,6 +103,8 @@ static void print_usage(const char *prog) {
     printf("  -p, --pass <password>    Worker password (default: x)\n");
     printf("  -t, --threads <N>        Number of mining threads (default: auto)\n");
     printf("  --mode <auto|single|dual> Mining mode (default: auto)\n");
+    printf("  --lanes <0-4>            Hashes interleaved per thread (multi-lane JIT;\n");
+    printf("                           0 = auto, 1 = off; default: auto)\n");
     printf("  --power-limit <W>        Set package PL1/PL2 while mining (default: off)\n");
     printf("  --no-huge-pages          Disable huge pages\n");
     printf("  --tls                    Connect to pool over TLS\n");
@@ -150,6 +154,12 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
                 LOG_ERR("Invalid mode: %s (expected auto|single|dual)", argv[i]);
                 return RX_ERROR;
             }
+        } else if (strcmp(argv[i], "--lanes") == 0 && i + 1 < argc) {
+            cfg->lanes = atoi(argv[++i]);
+            if (cfg->lanes < 0 || cfg->lanes > 4) {
+                LOG_ERR("Invalid lanes: %d (expected 0..4)", cfg->lanes);
+                return RX_ERROR;
+            }
         } else if (strcmp(argv[i], "--power-limit") == 0 && i + 1 < argc) {
             cfg->power_limit = atof(argv[++i]);
             if (cfg->power_limit < 0.0) {
@@ -191,6 +201,8 @@ void config_print(const config_t *cfg) {
     else
         LOG_INFO("Threads: %d", cfg->threads);
     LOG_INFO("Mode: %s", mode_to_str(cfg->mode));
+    if (cfg->lanes > 0) LOG_INFO("Lanes: %d", cfg->lanes);
+    else LOG_INFO("Lanes: auto");
     if (cfg->power_limit > 0.0)
         LOG_INFO("Package power limit: %.1f W", cfg->power_limit);
     else
