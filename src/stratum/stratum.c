@@ -705,7 +705,7 @@ void stratum_free_job_copy(stratum_job_t *job) {
 }
 
 uint64_t stratum_get_job_generation(stratum_ctx_t *ctx) {
-    return (uint64_t)InterlockedCompareExchange64(&ctx->job_generation, 0, 0);
+    return (uint64_t)(*(volatile LONGLONG *)&ctx->job_generation);
 }
 
 int stratum_get_protocol(stratum_ctx_t *ctx) {

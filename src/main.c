@@ -3,6 +3,7 @@
 #include "common/cpu.h"
 #include "stratum/stratum.h"
 #include "miner/miner.h"
+#include "miner/affinity.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -53,10 +54,21 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int threads = cfg.threads > 0 ? cfg.threads : (cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores);
-    LOG_INFO("Using %d mining thread(s) (%d physical / %d logical cores)",
-             threads, cpu.physical_cores, cpu.logical_cores);
-    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
+    int threads = cfg.threads;
+    if (threads <= 0) {
+        if (cfg.efficiency) {
+            core_list_t cl;
+            memset(&cl, 0, sizeof(cl));
+            int ec = (affinity_detect_cores(&cl) > 0) ? affinity_count_ecores(&cl) : 0;
+            threads = ec > 0 ? ec : (cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores);
+        } else {
+            threads = cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores;
+        }
+    }
+    LOG_INFO("Using %d mining thread(s) (%d physical / %d logical cores%s)",
+             threads, cpu.physical_cores, cpu.logical_cores,
+             cfg.efficiency ? ", efficiency E-first" : "");
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
 
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
 
@@ -89,7 +101,10 @@ int main(int argc, char **argv) {
 
     miner_ctx_t *miner = miner_create(threads, cfg.huge_pages, cpu.physical_cores,
                                       cfg.mode, cfg.power_limit, stratum);
-    if (miner) miner_set_lanes(miner, cfg.lanes);
+    if (miner) {
+        miner_set_lanes(miner, cfg.lanes);
+        miner_set_efficiency(miner, cfg.efficiency, cfg.eco_qos);
+    }
     if (!miner) {
         LOG_ERR("Failed to create miner");
         stratum_destroy(stratum);

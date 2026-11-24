@@ -42,6 +42,10 @@ static void set_config_value(config_t *cfg, const char *key, const char *val) {
         cfg->use_tls = (atoi(val) != 0);
     } else if (strcmp(key, "tls_allow") == 0) {
         cfg->tls_allow = (atoi(val) != 0);
+    } else if (strcmp(key, "efficiency") == 0) {
+        cfg->efficiency = (atoi(val) != 0);
+    } else if (strcmp(key, "eco") == 0) {
+        cfg->eco_qos = (atoi(val) != 0);
     } else if (strcmp(key, "power_limit") == 0) {
         cfg->power_limit = atof(val);
     } else if (strcmp(key, "verbose") == 0 || strcmp(key, "v") == 0) {
@@ -106,6 +110,8 @@ static void print_usage(const char *prog) {
     printf("  --lanes <0-4>            Hashes interleaved per thread (multi-lane JIT;\n");
     printf("                           0 = auto, 1 = off; default: auto)\n");
     printf("  --power-limit <W>        Set package PL1/PL2 while mining (default: off)\n");
+    printf("  --efficiency             E-core-first placement for max H/s/W (auto = all E-cores)\n");
+    printf("  --eco                    Enable Windows 11 EcoQoS (ThreadPowerThrottling) on workers\n");
     printf("  --no-huge-pages          Disable huge pages\n");
     printf("  --tls                    Connect to pool over TLS\n");
     printf("  --tls-allow              Skip TLS certificate validation\n");
@@ -172,6 +178,10 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
             cfg->use_tls = 1;
         } else if (strcmp(argv[i], "--tls-allow") == 0) {
             cfg->tls_allow = 1;
+        } else if (strcmp(argv[i], "--efficiency") == 0) {
+            cfg->efficiency = 1;
+        } else if (strcmp(argv[i], "--eco") == 0) {
+            cfg->eco_qos = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             cfg->verbose = 1;
             cfg->log_level = LOG_DEBUG;
@@ -208,6 +218,9 @@ void config_print(const config_t *cfg) {
     else
         LOG_INFO("Package power limit: off");
     LOG_INFO("Huge pages: %s", cfg->huge_pages ? "yes" : "no");
+    LOG_INFO("Efficiency: %s", cfg->efficiency ? "E-core-first" : "off");
+    if (cfg->eco_qos)
+        LOG_INFO("EcoQoS: enabled");
     LOG_INFO("TLS: %s", cfg->use_tls ? "yes" : "no");
     if (cfg->use_tls)
         LOG_INFO("TLS verify: %s", cfg->tls_allow ? "disabled" : "enabled");

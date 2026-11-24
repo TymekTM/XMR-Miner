@@ -32,6 +32,12 @@ int affinity_build_order(const core_list_t *cores, int *order, int max_count);
 /* Build detailed worker placement slots (physical-first: P -> E -> P-HT). */
 int affinity_build_slots(const core_list_t *cores, core_slot_t *slots, int max_count);
 
+/* Build efficiency-first worker placement slots (cluster-spread E -> P -> P-HT). */
+int affinity_build_slots_e_first(const core_list_t *cores, core_slot_t *slots, int max_count);
+
+/* Return number of E-cores detected on hybrid CPUs (0 on homogeneous CPUs). */
+int affinity_count_ecores(const core_list_t *cores);
+
 /* Convenience: detect + sort + build in one call. Returns order length. */
 int affinity_detect_and_order(int *order, int max_count);
 

@@ -802,6 +802,13 @@ void rx_calculate_hash_next(rx_vm *vm, const void *next_input, size_t next_input
     rx_blake2b_blob(vm->tempHash, next_input, next_input_size);
     rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
     blake2b(output, RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+    if (g_vm_warm_sp) {
+        const char *sp = (const char *)vm->scratchpad;
+        for (size_t off = RX_SCRATCHPAD_L1; off < RX_SCRATCHPAD_L2; off += 64)
+            _mm_prefetch(sp + off, _MM_HINT_T1);
+        for (size_t off = 0; off < RX_SCRATCHPAD_L1; off += 64)
+            _mm_prefetch(sp + off, _MM_HINT_T0);
+    }
     _mm_setcsr(saved_mxcsr);
 }
 

@@ -244,3 +244,43 @@ Machine: Intel Core i7-14700KF (8 Raptor Cove P-cores w/ 2 MB L2 each + 12 Grace
 | Out-of-the-box Default | 5,317.3 H/s (28T = 56 MB) | **7,521–7,800 H/s** (16T–20T) | **+41.4% to +46.7%** (+ 0% fee vs 1%) |
 
 - **Verification**: `14/14` CTest suites pass (`test_multilane`: **7,650/7,650 checks, 0 failures**, including VAES, `RX_FLAG_CFROUND_GUARD` single/batch/dual vs interpreter, `opt=0..7`); **12/12 real HashVault shares accepted** (0 rejected, 0 stale).
+
+---
+
+# Phase 8 — User-Space RAPL Power Telemetry (Windows EMI v2) & H/s/W Efficiency Frontier
+
+## Breakthrough: User-Space Intel RAPL via Windows EMI v2
+- Windows exposes Intel RAPL (`RAPL_Package0_PKG`, `RAPL_Package0_PP0`) natively through `GUID_DEVICE_ENERGY_METER` (`IOCTL_EMI_GET_MEASUREMENT`, 64-bit picowatt-hours) with **zero Administrator privileges and no WinRing0 driver**.
+- Integrated into `src/crypto/randomx/msr.c` as an automatic fallback in `msr_read_package_energy()`, plus 1s pre-mining baseline sampling in `miner.c` so `[PERF]` reports both **Total H/W** and **Incremental `H/dW`** above desktop background load.
+
+## Measured H/s/W Pareto Frontier (i7-14700KF, Windows High Performance plan, active desktop ~120–138 W background, bracketed BG before/after)
+
+| Configuration | H/s | BG (W) | PKG (W) | Delta dW | Total H/W | Incremental H/dW | Free P-cores |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| XMRig 6.26.0 Auto (28T) | 5,193 | 138.6 W | 177.8 W | +39.3 W | 29.20 H/W | 132.3 H/dW | 0 |
+| XMRig 6.26.0 16T (`8P+8E`) | 7,076 | 122.6 W | 183.9 W | +61.2 W | 38.49 H/W | 115.6 H/dW | 0 |
+| XMR-Miner `16T` (`8P+8E`) | **7,858** | 119.8 W | 181.3 W | +61.5 W | **43.35 H/W** | 127.8 H/dW | 0 |
+| XMR-Miner `--efficiency -t 18` (`12E+6P`) | **7,730** | 128.2 W | 178.4 W | +50.2 W | **43.33 H/W** | **154.0 H/dW** | 2 P-cores |
+| XMR-Miner `--efficiency -t 16` (`12E+4P`) | 6,771–7,015 | 136.9 W | 175.5 W | +38.6 W | 38.6–41.0 H/W | **175.4 H/dW** | 4 P-cores |
+| XMR-Miner `8P(2L)` (`-t 8`) | 6,135 | 136.3 W | 161.6 W | +25.3 W | 37.97 H/W | **242.6 H/dW** | 0 (12E free) |
+| XMR-Miner `--efficiency` Auto (`12E ONLY`) | **4,979** | 133.7 W | **147.1 W** | **+13.3 W** | 33.85 H/W | **373.3 H/dW** | **8 P-cores** |
+
+## Rejected / Neutral Experiments (12-round multi-core ABBA)
+- Classic JIT `j_mulx`, `j_rorx`, `j_torder`, `j_sppf=1` individually on 12E (`-1.2%` to `-1.9%`); reverted `g_jit_tail_order`.
+- Mixed `4P(2L)+12E` (`6,549 H/s`, `34.65 H/W`) and `6P(2L)+8E` (`5,887 H/s`, `33.75 H/W`): any multi-lane P-core running alongside E-cores spills into L3 and hurts both H/s and H/s/W. Keep P-cores at `1L` whenever E-cores are active.
+- `6E x 2L @ G=256` (`1,675 H/s`): Gracemont E-cores still strongly prefer `1L + RX_FLAG_CFROUND_GUARD`.
+- Windows `EcoQoS` (`ThreadPowerThrottling`): mostly ignored under High Performance; added as opt-in `--eco` for Balanced plan users.
+
+## Post-BIOS & Windows Tuning (`Oszczedny (bez turbo)`, ~30-35 W BG) + Windows 11 Thread Director Fix
+- **Key Discovery (`miner.c`)**: `THREAD_PRIORITY_IDLE` (priority 1) caused Windows 11 Intel Thread Director to aggressively throttle P-cores (-10% to -19% on P-cores while E-cores ran full speed). Switching to `BELOW_NORMAL_PRIORITY_CLASS + THREAD_PRIORITY_LOWEST` (priority 4 — still 4 levels below desktop/Discord apps) recovered **+753 H/s on 18T (+12.6%)**, **+853 H/s on 8T (+19.0%)**, and **+799 H/s on 20T (+12.6%)** with zero desktop stutter.
+- Also enabled automatic 1 GB huge-page attempt in `miner.c` (`rx_alloc_dataset(2)` -> 2 MB fallback), added `g_vm_warm_sp` to classic `rx_calculate_hash_next`, lockless `stratum_get_job_generation`, and 16-hash counter flush in `worker.c`.
+
+### Fresh Live Pool Comparison vs XMRig 6.26.0 (`pool.hashvault.pro:3333`, TLS, `Oszczedny (bez turbo)`, ~30-34 W BG)
+
+| Config (i7-14700KF) | XMRig 6.26.0 (1% fee) | XMR-Miner (0% fee) | Gain (H/s / Total H/W) |
+|---|---:|---:|---:|
+| `1T` (1 P-core, `3L`) | 622 H/s @ 34.5 W | **657 H/s** (`bench_rx`: 689 H/s) @ 40.4 W | **+5.5% live / +10.8% bench** |
+| `8T` (8 P-cores, `2L`) | 4,693 H/s @ 59.8 W (`78.5 H/W`) | **5,337 H/s** @ 66.7 W (**80.1 H/W**) | **+13.7% H/s / +2.1% H/W** |
+| `12E` (`--efficiency` Auto) | 4,063 H/s @ 58.0 W (`70.1 H/W`, `165.5 H/dW`) | **4,351 H/s** @ 57.6 W (**75.5 H/W**, **183.0 H/dW**) | **+7.1% H/s / +7.7% H/W / +10.6% H/dW** |
+| `18T` (`--efficiency`: `12E+6P`) | 6,241 H/s @ 72.3 W (`86.3 H/W`) | **6,741 H/s** @ 72.0 W (**93.6 H/W**; `bench_rx`: **109.3 H/W**) | **+8.0% H/s / +8.4% H/W** (2 P-cores free!) |
+| `20T` (Auto: `8P+12E`) vs XMRig Auto `28T` | 5,459 H/s @ 72.6 W (`75.2 H/W`) | **7,144 H/s** @ 75.6 W (**94.5 H/W**) | **+30.9% H/s / +25.7% H/W** |

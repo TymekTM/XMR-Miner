@@ -427,9 +427,11 @@ job_ready:
 
         local_loop_count++;
 
-        if ((local_loop_count & 0xFF) == 0) {
+        if ((local_loop_count & 0x0F) == 0) {
             w->hashes = local_hashes;
             w->loop_count = local_loop_count;
+        }
+        if ((local_loop_count & 0xFF) == 0) {
             uint64_t now = GetTickCount64();
             uint64_t elapsed_ms = now - w->start_time;
             if (now - last_report_time >= 10000) {

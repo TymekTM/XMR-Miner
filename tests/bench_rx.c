@@ -17,6 +17,7 @@
  */
 #include "crypto/randomx/randomx.h"
 #include "crypto/randomx/randomx_internal.h"
+#include "crypto/randomx/msr.h"
 #include "common/vmem.h"
 
 #include <stdio.h>
@@ -109,6 +110,30 @@ typedef struct {
 } worker_t;
 
 static int g_pin = 1;
+static int g_eco_qos = 0; /* 0=off, 1=all threads, 2=P-cores only */
+
+#ifdef _WIN32
+static void apply_thread_eco_qos(int enable) {
+    if (!enable) return;
+    THREAD_POWER_THROTTLING_STATE pts;
+    memset(&pts, 0, sizeof(pts));
+    pts.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+    pts.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    pts.StateMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+    SetThreadInformation(GetCurrentThread(), ThreadPowerThrottling, &pts, sizeof(pts));
+}
+#endif
+
+extern int g_jit_short_branches;
+extern int g_jit_involution_pairs;
+extern int g_jit_branch_align;
+extern int g_jit_loop_nop;
+extern int g_jit_sp_prefetch_hint;
+extern int g_jit_bmi2_mulx;
+extern int g_jit_cfround_elim;
+extern int g_jit_jcc_align;
+extern int g_jit_rorx;
+extern int g_jit_cfround_rorx;
 
 /* ---- A/B experiment support ---- */
 typedef struct { int lanes; char knobs[256]; } ab_config;
@@ -135,9 +160,19 @@ static int apply_knobs(const char *spec) {
     g_mjit_refresh_dspf = 0;
     g_mjit_tail_order = 1;
     g_mjit_mxguard = 0;
-    g_vm_warm_sp = 0;
+    g_vm_warm_sp = 1;
     g_aes_use_vaes = 1;
     g_jit_cfround_guard = 0;
+    g_jit_short_branches = 0;
+    g_jit_involution_pairs = 0;
+    g_jit_branch_align = 0;
+    g_jit_loop_nop = 0;
+    g_jit_sp_prefetch_hint = 0;
+    g_jit_bmi2_mulx = 0;
+    g_jit_cfround_elim = 0;
+    g_jit_jcc_align = 0;
+    g_jit_rorx = 0;
+    g_jit_cfround_rorx = 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", spec);
     char *save = NULL;
@@ -163,6 +198,16 @@ static int apply_knobs(const char *spec) {
         else if (!strcmp(name, "warmsp")) g_vm_warm_sp = val;
         else if (!strcmp(name, "vaes")) g_aes_use_vaes = val;
         else if (!strcmp(name, "cfguard")) g_jit_cfround_guard = val;
+        else if (!strcmp(name, "j_sbr")) g_jit_short_branches = val;
+        else if (!strcmp(name, "j_invo")) g_jit_involution_pairs = val;
+        else if (!strcmp(name, "j_balign")) g_jit_branch_align = val;
+        else if (!strcmp(name, "j_lnop")) g_jit_loop_nop = val;
+        else if (!strcmp(name, "j_sppf")) g_jit_sp_prefetch_hint = val;
+        else if (!strcmp(name, "j_mulx")) g_jit_bmi2_mulx = val;
+        else if (!strcmp(name, "j_cfelim")) g_jit_cfround_elim = val;
+        else if (!strcmp(name, "j_jcc")) g_jit_jcc_align = val;
+        else if (!strcmp(name, "j_rorx")) g_jit_rorx = val;
+        else if (!strcmp(name, "j_cfrorx")) g_jit_cfround_rorx = val;
         else if (!strcmp(name, "lanes")) {}
         else { printf("unknown knob %s\n", name); return 0; }
     }
@@ -183,6 +228,11 @@ static void *worker_main(void *p)
 {
     worker_t *w = (worker_t *)p;
     if (g_pin && w->cpu >= 0) pin_self(w->cpu);
+#ifdef _WIN32
+    if (g_eco_qos == 1 || (g_eco_qos == 2 && w->cpu >= 0 && w->cpu < 16)) {
+        apply_thread_eco_qos(1);
+    }
+#endif
 
     if (g_ab_mode) {
         rx_vm_group *grp[2];
@@ -407,6 +457,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--hetero") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 4; }
         else if (!strcmp(argv[i], "--waterfill") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 5; }
         else if (!strcmp(argv[i], "--gran") && i + 1 < argc) g_mjit_granularity = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--eco") && i + 1 < argc) g_eco_qos = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mxskip")) g_mjit_mxcsr_skip = 1;
         else if (!strcmp(argv[i], "--ab") && i + 2 < argc) {
             g_ab_mode = 1;
