@@ -56,11 +56,18 @@ int main(int argc, char **argv) {
 
     int threads = cfg.threads;
     if (threads <= 0) {
+        core_list_t cl;
+        memset(&cl, 0, sizeof(cl));
+        int phys = affinity_detect_cores(&cl);
+        int ec = (phys > 0) ? affinity_count_ecores(&cl) : 0;
+        int pc = (phys > 0) ? (phys - ec) : 0;
         if (cfg.efficiency) {
-            core_list_t cl;
-            memset(&cl, 0, sizeof(cl));
-            int ec = (affinity_detect_cores(&cl) > 0) ? affinity_count_ecores(&cl) : 0;
             threads = ec > 0 ? ec : (cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores);
+        } else if (pc > 0 && ec >= 8) {
+            /* Hybrid Intel P+E: 3 active E-cores per 4-core L2 cluster (e.g. 8P+9E = 17T on 14700KF)
+               avoids 4-way E-L2 thrashing and leaves spare E-cores for OS/background tasks,
+               beating full physical count in both H/s and H/W. */
+            threads = pc + (ec * 3) / 4;
         } else {
             threads = cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores;
         }

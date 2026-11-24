@@ -416,8 +416,10 @@ __forceinline void vm_initialize(rx_vm *vm) {
     vm->config.eMask[1] = rx_get_float_mask(vm->program.entropyBuffer[15]);
 }
 
+#define RX_PROGRAM_V1_BYTES (16 * sizeof(uint64_t) + RX_PROGRAM_SIZE_V1 * sizeof(rx_instruction))
+
 void rx_vm_run_n(rx_vm *vm, void *seed, uint32_t iterations) {
-    rx_fill_aes4rx4(seed, sizeof(rx_program), &vm->program);
+    rx_fill_aes4rx4(seed, vm->flagV2 ? sizeof(rx_program) : RX_PROGRAM_V1_BYTES, &vm->program);
     vm_initialize(vm);
 
     if (vm->useJit && vm->jit) {
@@ -955,8 +957,8 @@ void rx_destroy_vm(rx_vm *vm) {
 }
 
 void rx_vm_run_dual(rx_vm *vm1, rx_vm *vm2, void *seed1, void *seed2, uint32_t iterations) {
-    rx_fill_aes4rx4(seed1, sizeof(rx_program), &vm1->program);
-    rx_fill_aes4rx4(seed2, sizeof(rx_program), &vm2->program);
+    rx_fill_aes4rx4(seed1, vm1->flagV2 ? sizeof(rx_program) : RX_PROGRAM_V1_BYTES, &vm1->program);
+    rx_fill_aes4rx4(seed2, vm2->flagV2 ? sizeof(rx_program) : RX_PROGRAM_V1_BYTES, &vm2->program);
     
     vm_initialize(vm1);
     vm_initialize(vm2);
@@ -1130,7 +1132,7 @@ static void group_run(rx_vm_group *g) {
     int K = g->lanes;
     for (int l = 0; l < K; l++) {
         rx_vm *vm = g->vm[l];
-        rx_fill_aes4rx4(vm->tempHash, sizeof(rx_program), &vm->program);
+        rx_fill_aes4rx4(vm->tempHash, RX_PROGRAM_V1_BYTES, &vm->program);
         vm_initialize(vm);
         progs[l] = &vm->program;
         cfgs[l] = &vm->config;

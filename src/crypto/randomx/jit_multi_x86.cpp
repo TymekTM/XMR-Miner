@@ -564,7 +564,10 @@ struct MultiJit {
             if (src != dst) {
                 ls.regUsage[dst] = i;
                 ls.regUsage[src] = i;
-                xchg(rd, rs);
+                /* 3x mov-eliminated MOVs via scratch RAX avoid microcoded XCHG */
+                mov(RAX, rd);
+                mov(rd, rs);
+                mov(rs, RAX);
             }
             break;
         case RX_OP_FSWAP_R: {

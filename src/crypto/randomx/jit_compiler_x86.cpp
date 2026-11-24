@@ -1,5 +1,6 @@
 #include "randomx_internal.h"
 #include "common/vmem.h"
+#include "common/cpu.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -21,6 +22,9 @@ extern "C" int g_jit_rorx;
 extern "C" int g_jit_stack_rcp_pool;
 extern "C" int g_jit_cfround_rorx;
 extern "C" int g_jit_cfround_guard;
+extern "C" int g_jit_iswap_mov;
+extern "C" int g_jit_fast_iadd_rs;
+extern "C" int g_jit_ds_prefetch_hint;
 
 #define RX_DATASET_BASE_MASK  (RX_DATASET_BASE_SIZE - 64)
 #define RX_CACHE_MASK         ((RX_ARGON_MEMORY * 16) - 1)
@@ -163,6 +167,7 @@ struct JitCompiler {
     int generatedCodeSize;
     int cfroundGuard;
     int activeCfroundGuard;
+    int hasBmi2;
     uint8_t skipInstruction[RX_PROGRAM_SIZE];
     uint8_t branchTarget[RX_PROGRAM_SIZE];
 
@@ -190,6 +195,15 @@ struct JitCompiler {
     void emitScratchpadPrefetch() {
         uint8_t prefetch[PREFETCH_SP_SIZE];
         memcpy(prefetch, code_prefetch_sp, sizeof(prefetch));
+        if (g_jit_sp_prefetch_hint == 4) {
+            uint8_t* p = code + pos;
+            *p++ = 0x48; *p++ = 0x8b; *p++ = 0xd0;
+            *p++ = 0x25; uint32_t m = 0x1fffc0; memcpy(p, &m, 4); p += 4;
+            *p++ = 0x48; *p++ = 0xc1; *p++ = 0xca; *p++ = 0x20;
+            *p++ = 0x81; *p++ = 0xe2; memcpy(p, &m, 4); p += 4;
+            pos = (int32_t)(p - code);
+            return;
+        }
         int hint = g_jit_sp_prefetch_hint & 3;
         prefetch[10] = (uint8_t)((prefetch[10] & 0xC7) | (hint << 3));
         prefetch[24] = (uint8_t)((prefetch[24] & 0xC7) | (hint << 3));
@@ -230,40 +244,54 @@ struct JitCompiler {
         emitByte((scale << 6) | ((index & 7) << 3) | (base & 7));
     }
 
-    __forceinline void genAddressReg(rx_instruction* instr, bool useRax) {
+    static __forceinline void put8(uint8_t*& p, uint8_t b) { *p++ = b; }
+    static __forceinline void put32(uint8_t*& p, uint32_t v) { memcpy(p, &v, 4); p += 4; }
+    static __forceinline void put64(uint8_t*& p, uint64_t v) { memcpy(p, &v, 8); p += 8; }
+
+    __forceinline void genAddressRegP(uint8_t*& p, rx_instruction* instr, bool useRax) {
         int src = instr->src;
         int dst = useRax ? 0 : 1;
-        emitByte(0x41);
-        emitByte(0x8D);
-        emitByte(0x80 | (src & 7) | ((dst & 7) << 3));
-        if (src == RX_REGISTER_NEEDS_SIB) {
-            emitByte(0x24);
-        }
-        emit32((uint32_t)getImm32(instr));
+        *p++ = 0x41;
+        *p++ = 0x8D;
+        *p++ = (uint8_t)(0x80 | (src & 7) | ((dst & 7) << 3));
+        if (src == RX_REGISTER_NEEDS_SIB) *p++ = 0x24;
+        uint32_t imm = (uint32_t)getImm32(instr);
+        memcpy(p, &imm, 4); p += 4;
         if (useRax) {
-            emitByte(0x25);
+            *p++ = 0x25;
         } else {
-            emitByte(0x81);
-            emitByte(0xE1);
+            *p++ = 0x81;
+            *p++ = 0xE1;
         }
-        emit32(getModMem(instr) ? RX_SPL1_MASK : RX_SPL2_MASK);
+        uint32_t mask = getModMem(instr) ? RX_SPL1_MASK : RX_SPL2_MASK;
+        memcpy(p, &mask, 4); p += 4;
+    }
+
+    __forceinline void genAddressRegDstP(uint8_t*& p, rx_instruction* instr) {
+        int dst = instr->dst;
+        *p++ = 0x41;
+        *p++ = 0x8D;
+        *p++ = (uint8_t)(0x80 | (dst & 7));
+        if (dst == RX_REGISTER_NEEDS_SIB) *p++ = 0x24;
+        uint32_t imm = (uint32_t)getImm32(instr);
+        memcpy(p, &imm, 4); p += 4;
+        *p++ = 0x25;
+        uint32_t mask = (getModCond(instr) < RX_STORE_L3_CONDITION)
+            ? (getModMem(instr) ? RX_SPL1_MASK : RX_SPL2_MASK)
+            : RX_SPL3_MASK;
+        memcpy(p, &mask, 4); p += 4;
+    }
+
+    __forceinline void genAddressReg(rx_instruction* instr, bool useRax) {
+        uint8_t* p = code + pos;
+        genAddressRegP(p, instr, useRax);
+        pos = (int32_t)(p - code);
     }
 
     __forceinline void genAddressRegDst(rx_instruction* instr) {
-        int dst = instr->dst;
-        emitByte(0x41);
-        emitByte(0x8D);
-        emitByte(0x80 | (dst & 7));
-        if (dst == RX_REGISTER_NEEDS_SIB) {
-            emitByte(0x24);
-        }
-        emit32((uint32_t)getImm32(instr));
-        emitByte(0x25);
-        if (getModCond(instr) < RX_STORE_L3_CONDITION) {
-            emit32(getModMem(instr) ? RX_SPL1_MASK : RX_SPL2_MASK);
-        } else {
-            emit32(RX_SPL3_MASK);
-        }
+        uint8_t* p = code + pos;
+        genAddressRegDstP(p, instr);
+        pos = (int32_t)(p - code);
     }
 
     __forceinline void genAddressImm(rx_instruction* instr) {
@@ -463,31 +491,36 @@ struct JitCompiler {
             generateCode(instr, i);
         }
 
-        emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg2);
-        emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg3);
+        /* 32-bit mov/xor zero-extends eax to rax, letting epilogue xor rbp, rax directly without mov ecx, eax */
+        uint8_t* p = code + pos;
+        *p++ = 0x41; *p++ = 0x8B; *p++ = (uint8_t)(0xC0 + pcfg->readReg2);
+        *p++ = 0x41; *p++ = 0x33; *p++ = (uint8_t)(0xC0 + pcfg->readReg3);
+        pos = (int32_t)(p - code);
     }
 
     void generateProgramEpilogue(rx_program* prog, rx_program_config* pcfg, int loopBeginPos) {
+        uint8_t* p = code + pos;
+        *p++ = 0x89; *p++ = 0xE9;
+        *p++ = 0x81; *p++ = 0xE1; put32(p, 0x7FFFFFC0);
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x04; *p++ = 0x0F;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x4C; *p++ = 0x0F; *p++ = 0x08;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x54; *p++ = 0x0F; *p++ = 0x10;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x5C; *p++ = 0x0F; *p++ = 0x18;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x64; *p++ = 0x0F; *p++ = 0x20;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x6C; *p++ = 0x0F; *p++ = 0x28;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x74; *p++ = 0x0F; *p++ = 0x30;
+        *p++ = 0x4C; *p++ = 0x33; *p++ = 0x7C; *p++ = 0x0F; *p++ = 0x38;
 
-        emitByte(0x89); emitByte(0xE9);
-        emitByte(0x81); emitByte(0xE1);
-        emit32(0x7FFFFFC0);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x04); emitByte(0x0F);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x4C); emitByte(0x0F); emitByte(0x08);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x54); emitByte(0x0F); emitByte(0x10);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x5C); emitByte(0x0F); emitByte(0x18);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x64); emitByte(0x0F); emitByte(0x20);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
+        *p++ = 0x48; *p++ = 0xC1; *p++ = 0xCD; *p++ = 0x20; /* ror rbp, 32 */
+        *p++ = 0x48; *p++ = 0x33; *p++ = 0xE8;              /* xor rbp, rax */
 
-        emitByte(0x89); emitByte(0xC1);
-        emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
-        emitByte(0x48); emitByte(0x33); emitByte(0xE9);
-
-        emitByte(0x89); emitByte(0xE8);
-        emitByte(0x25); emit32(0x7FFFFFC0);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
+        *p++ = 0x89; *p++ = 0xE8;
+        *p++ = 0x25; put32(p, 0x7FFFFFC0);
+        if (g_jit_ds_prefetch_hint != 4) {
+            uint8_t ds_modrm = (uint8_t)(0x44 | ((g_jit_ds_prefetch_hint & 3) << 3));
+            *p++ = 0x0F; *p++ = 0x18; *p++ = ds_modrm; *p++ = 0x38; *p++ = 0x00;
+        }
+        pos = (int32_t)(p - code);
 
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
@@ -775,6 +808,8 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
+        activeRcpPoolOffset = 0;
+        activeStackRcpPool = 0;
         activeCfroundGuard = 0;
         prevFPOperation = -1;
         prevCFROUND = -1;
@@ -826,6 +861,8 @@ struct JitCompiler {
         emitByte(0xC3);
     }
     void generateProgramSingleIter(rx_program* prog, rx_program_config* pcfg) {
+        activeRcpPoolOffset = 0;
+        activeStackRcpPool = 0;
         activeCfroundGuard = 0;
         prevFPOperation = -1;
         prevCFROUND = -1;
@@ -909,7 +946,10 @@ struct JitCompiler {
 
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
+        if (g_jit_ds_prefetch_hint != 4) {
+            uint8_t ds_modrm = (uint8_t)(0x44 | ((g_jit_ds_prefetch_hint & 3) << 3));
+            emitByte(0x0F); emitByte(0x18); emitByte(ds_modrm); emitByte(0x38); emitByte(0x00);
+        }
 
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg->readReg1);
@@ -1081,6 +1121,8 @@ struct JitCompiler {
 
     void generateProgramDualInterleaved(rx_program* prog1, rx_program_config* pcfg1,
                                          rx_program* prog2, rx_program_config* pcfg2) {
+        activeRcpPoolOffset = 0;
+        activeStackRcpPool = 0;
         activeCfroundGuard = 0;
         prevFPOperation = -1;
         prevCFROUND = -1;
@@ -1242,8 +1284,8 @@ struct JitCompiler {
             instr->dst %= RX_REGISTERS_COUNT;
             generateCode(instr, i);
         }
-        emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg2);
-        emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg3);
+        emitByte(0x41); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg2);
+        emitByte(0x41); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg3);
 
         emitByte(0x89); emitByte(0xE9);
         emitByte(0x81); emitByte(0xE1); emit32(0x7FFFFFC0);
@@ -1255,12 +1297,14 @@ struct JitCompiler {
         emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
         emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
         emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
-        emitByte(0x89); emitByte(0xC1);
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
-        emitByte(0x48); emitByte(0x33); emitByte(0xE9);
+        emitByte(0x48); emitByte(0x33); emitByte(0xE8);
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
+        if (g_jit_ds_prefetch_hint != 4) {
+            uint8_t ds_modrm = (uint8_t)(0x44 | ((g_jit_ds_prefetch_hint & 3) << 3));
+            emitByte(0x0F); emitByte(0x18); emitByte(ds_modrm); emitByte(0x38); emitByte(0x00);
+        }
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg1->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg1->readReg1);
         emitScratchpadPrefetch();
@@ -1295,8 +1339,8 @@ struct JitCompiler {
             instr->dst %= RX_REGISTERS_COUNT;
             generateCode(instr, i);
         }
-        emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg2);
-        emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg3);
+        emitByte(0x41); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg2);
+        emitByte(0x41); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg3);
 
         emitByte(0x89); emitByte(0xE9);
         emitByte(0x81); emitByte(0xE1); emit32(0x7FFFFFC0);
@@ -1308,12 +1352,14 @@ struct JitCompiler {
         emitByte(0x4C); emitByte(0x33); emitByte(0x6C); emitByte(0x0F); emitByte(0x28);
         emitByte(0x4C); emitByte(0x33); emitByte(0x74); emitByte(0x0F); emitByte(0x30);
         emitByte(0x4C); emitByte(0x33); emitByte(0x7C); emitByte(0x0F); emitByte(0x38);
-        emitByte(0x89); emitByte(0xC1);
         emitByte(0x48); emitByte(0xC1); emitByte(0xCD); emitByte(0x20);
-        emitByte(0x48); emitByte(0x33); emitByte(0xE9);
+        emitByte(0x48); emitByte(0x33); emitByte(0xE8);
         emitByte(0x89); emitByte(0xE8);
         emitByte(0x25); emit32(0x7FFFFFC0);
-        emitByte(0x0F); emitByte(0x18); emitByte(0x44); emitByte(0x38); emitByte(0x00);
+        if (g_jit_ds_prefetch_hint != 4) {
+            uint8_t ds_modrm = (uint8_t)(0x44 | ((g_jit_ds_prefetch_hint & 3) << 3));
+            emitByte(0x0F); emitByte(0x18); emitByte(ds_modrm); emitByte(0x38); emitByte(0x00);
+        }
         emitByte(0x49); emitByte(0x8B); emitByte(0xC0 + pcfg2->readReg0);
         emitByte(0x49); emitByte(0x33); emitByte(0xC0 + pcfg2->readReg1);
         emitScratchpadPrefetch();
@@ -1467,135 +1513,171 @@ static void init_engine() {
 
 void JitCompiler::h_IADD_RS(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    emitByte(0x4F); emitByte(0x8D);
+    uint8_t* p = code + pos;
+    int shift = getModShift(instr);
+    if ((g_jit_fast_iadd_rs || activeCfroundGuard) && shift == 0) {
+        /* Gracemont E-cores: 3-byte ADD r(dst), r(src) uses all 4 ALU ports
+           and avoids slow 3-component LEA on r13. */
+        *p++ = 0x4D; *p++ = 0x03; *p++ = (uint8_t)(0xC0 | (8 * instr->dst + instr->src));
+        if (instr->dst == RX_REGISTER_NEEDS_DISP) {
+            *p++ = 0x49; *p++ = 0x81; *p++ = (uint8_t)(0xC0 | instr->dst);
+            put32(p, (uint32_t)getImm32(instr));
+        }
+        pos = (int32_t)(p - code);
+        return;
+    }
+    *p++ = 0x4F; *p++ = 0x8D;
+    *p++ = (uint8_t)(instr->dst == RX_REGISTER_NEEDS_DISP ? 0xAC : (0x04 | (8 * instr->dst)));
+    *p++ = (uint8_t)((shift << 6) | ((instr->src & 7) << 3) | (instr->dst & 7));
     if (instr->dst == RX_REGISTER_NEEDS_DISP)
-        emitByte(0xAC);
-    else
-        emitByte(0x04 | (8 * instr->dst));
-    genSIB(getModShift(instr), instr->src, instr->dst);
-    if (instr->dst == RX_REGISTER_NEEDS_DISP)
-        emit32((uint32_t)getImm32(instr));
+        put32(p, (uint32_t)getImm32(instr));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IADD_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x03); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        genAddressRegP(p, instr, true);
+        *p++ = 0x4C; *p++ = 0x03; *p++ = (uint8_t)(0x04 | (8 * instr->dst)); *p++ = 0x06;
     } else {
-        emitByte(0x4C); emitByte(0x03); emitByte(0x86 | (8 * instr->dst));
-        genAddressImm(instr);
+        *p++ = 0x4C; *p++ = 0x03; *p++ = (uint8_t)(0x86 | (8 * instr->dst));
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_ISUB_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        emitByte(0x4D); emitByte(0x2B); emitByte(0xC0 | (8 * instr->dst + instr->src));
+        *p++ = 0x4D; *p++ = 0x2B; *p++ = (uint8_t)(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x49); emitByte(0x81); emitByte(0xE8 | instr->dst);
-        emit32((uint32_t)getImm32(instr));
+        *p++ = 0x49; *p++ = 0x81; *p++ = (uint8_t)(0xE8 | instr->dst);
+        put32(p, (uint32_t)getImm32(instr));
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_ISUB_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x2B); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        genAddressRegP(p, instr, true);
+        *p++ = 0x4C; *p++ = 0x2B; *p++ = (uint8_t)(0x04 | (8 * instr->dst)); *p++ = 0x06;
     } else {
-        emitByte(0x4C); emitByte(0x2B); emitByte(0x86 | (8 * instr->dst));
-        genAddressImm(instr);
+        *p++ = 0x4C; *p++ = 0x2B; *p++ = (uint8_t)(0x86 | (8 * instr->dst));
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IMUL_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        emitByte(0x4D); emitByte(0x0F); emitByte(0xAF); emitByte(0xC0 | (8 * instr->dst + instr->src));
+        *p++ = 0x4D; *p++ = 0x0F; *p++ = 0xAF; *p++ = (uint8_t)(0xC0 | (8 * instr->dst + instr->src));
     } else {
-        emitByte(0x4D); emitByte(0x69); emitByte(0xC0 | (9 * instr->dst));
-        emit32((uint32_t)getImm32(instr));
+        *p++ = 0x4D; *p++ = 0x69; *p++ = (uint8_t)(0xC0 | (9 * instr->dst));
+        put32(p, (uint32_t)getImm32(instr));
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IMUL_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        genAddressRegP(p, instr, true);
+        *p++ = 0x4C; *p++ = 0x0F; *p++ = 0xAF; *p++ = (uint8_t)(0x04 | (8 * instr->dst)); *p++ = 0x06;
     } else {
-        emitByte(0x4C); emitByte(0x0F); emitByte(0xAF); emitByte(0x86 | (8 * instr->dst));
-        genAddressImm(instr);
+        *p++ = 0x4C; *p++ = 0x0F; *p++ = 0xAF; *p++ = (uint8_t)(0x86 | (8 * instr->dst));
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    if (g_jit_bmi2_mulx) {
-        *(uint32_t*)(code + pos) = 0xC4D08B49 + (instr->dst << 16);
-        *(uint32_t*)(code + pos + 4) =
-            0xC0F6FB42 + (instr->dst << 27) + (instr->src << 24);
+    uint8_t* p = code + pos;
+    if (g_jit_bmi2_mulx && hasBmi2) {
+        uint32_t w0 = 0xC4D08B49u + ((uint32_t)instr->dst << 16);
+        uint32_t w1 = 0xC0F6FB42u + ((uint32_t)instr->dst << 27) + ((uint32_t)instr->src << 24);
+        memcpy(p, &w0, 4);
+        memcpy(p + 4, &w1, 4);
         pos += 8;
         return;
     }
-    *(uint32_t*)(code + pos) = 0xC08B49 + (instr->dst << 16);
-    *(uint32_t*)(code + pos + 3) = 0xE0F749 + (instr->src << 16);
-    *(uint32_t*)(code + pos + 6) = 0xC28B4C + ((instr->dst & 7) << 19);
+    uint32_t w0 = 0xC08B49u + ((uint32_t)instr->dst << 16);
+    uint32_t w1 = 0xE0F749u + ((uint32_t)instr->src << 16);
+    uint32_t w2 = 0xC28B4Cu + ((uint32_t)(instr->dst & 7) << 19);
+    memcpy(p, &w0, 4);
+    memcpy(p + 3, &w1, 4);
+    memcpy(p + 6, &w2, 4);
     pos += 9;
 }
 
 void JitCompiler::h_IMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    if (g_jit_bmi2_mulx) {
+    uint8_t* p = code + pos;
+    if (g_jit_bmi2_mulx && hasBmi2) {
         if (instr->src != instr->dst) {
-            genAddressReg(instr, false);
-            *(uint32_t*)(code + pos) = 0xC4D08B49 + (instr->dst << 16);
-            *(uint64_t*)(code + pos + 4) =
-                0x0E04F6FB62ULL + ((uint64_t)instr->dst << 27);
-            pos += 9;
+            genAddressRegP(p, instr, false);
+            uint32_t w0 = 0xC4D08B49u + ((uint32_t)instr->dst << 16);
+            uint64_t q1 = 0x0E04F6FB62ULL + ((uint64_t)instr->dst << 27);
+            memcpy(p, &w0, 4);
+            memcpy(p + 4, &q1, 8);
+            p += 9;
         } else {
-            *(uint64_t*)(code + pos) =
-                0x86F6FB62C4D08B49ULL +
-                ((uint64_t)instr->dst << 16) +
-                ((uint64_t)instr->dst << 59);
-            *(uint32_t*)(code + pos + 8) =
-                (uint32_t)getImm32(instr) & RX_SPL3_MASK;
-            pos += 12;
+            uint64_t q0 = 0x86F6FB62C4D08B49ULL + ((uint64_t)instr->dst << 16) + ((uint64_t)instr->dst << 59);
+            uint32_t imm = (uint32_t)getImm32(instr) & RX_SPL3_MASK;
+            memcpy(p, &q0, 8);
+            memcpy(p + 8, &imm, 4);
+            p += 12;
         }
+        pos = (int32_t)(p - code);
         return;
     }
     if (instr->src != instr->dst) {
-        genAddressReg(instr, false);
-        *(uint64_t*)(code + pos) = 0x0E24F748C08B49ULL + ((uint64_t)instr->dst << 16);
-        pos += 7;
+        genAddressRegP(p, instr, false);
+        uint64_t q0 = 0x0E24F748C08B49ULL + ((uint64_t)instr->dst << 16);
+        memcpy(p, &q0, 8);
+        p += 7;
     } else {
-        *(uint64_t*)(code + pos) = 0xA6F748C08B49ULL + ((uint64_t)instr->dst << 16);
-        pos += 6;
-        genAddressImm(instr);
+        uint64_t q0 = 0xA6F748C08B49ULL + ((uint64_t)instr->dst << 16);
+        memcpy(p, &q0, 8);
+        p += 6;
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
-    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+    *p++ = 0x4C; *p++ = 0x8B; *p++ = (uint8_t)(0xC2 | (8 * instr->dst));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_ISMULH_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    *(uint64_t*)(code + pos) = 0x8B4CE8F749C08B49ULL + ((uint64_t)instr->dst << 16) + ((uint64_t)instr->src << 40);
-    pos += 8;
-    emitByte(0xC2 | (8 * instr->dst));
+    uint8_t* p = code + pos;
+    uint64_t q0 = 0x8B4CE8F749C08B49ULL + ((uint64_t)instr->dst << 16) + ((uint64_t)instr->src << 40);
+    memcpy(p, &q0, 8);
+    p[8] = (uint8_t)(0xC2 | (8 * instr->dst));
+    pos += 9;
 }
 
 void JitCompiler::h_ISMULH_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        genAddressReg(instr, false);
-        *(uint64_t*)(code + pos) = 0x0E2CF748C08B49ULL + ((uint64_t)instr->dst << 16);
-        pos += 7;
+        genAddressRegP(p, instr, false);
+        uint64_t q0 = 0x0E2CF748C08B49ULL + ((uint64_t)instr->dst << 16);
+        memcpy(p, &q0, 8);
+        p += 7;
     } else {
-        *(uint64_t*)(code + pos) = 0xAEF748C08B49ULL + ((uint64_t)instr->dst << 16);
-        pos += 6;
-        genAddressImm(instr);
+        uint64_t q0 = 0xAEF748C08B49ULL + ((uint64_t)instr->dst << 16);
+        memcpy(p, &q0, 8);
+        p += 6;
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
-    emitByte(0x4C); emitByte(0x8B); emitByte(0xC2 | (8 * instr->dst));
+    *p++ = 0x4C; *p++ = 0x8B; *p++ = (uint8_t)(0xC2 | (8 * instr->dst));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
@@ -1603,160 +1685,190 @@ void JitCompiler::h_IMUL_RCP(rx_instruction* instr, int i) {
     if (!is_zero_or_power_of_2(divisor)) {
         registerUsage[instr->dst] = i;
         uint64_t rcp = rx_reciprocal(divisor);
+        uint8_t* p = code + pos;
         if (imul_rcp_pool_count < IMUL_RCP_POOL_SIZE) {
             imul_rcp_pool[imul_rcp_pool_count] = rcp;
-            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
+            *p++ = 0x4C; *p++ = 0x0F; *p++ = 0xAF;
             if (activeStackRcpPool) {
                 int offset = 0x20 + imul_rcp_pool_count * 8;
                 if (offset <= 0x7F) {
-                    emitByte(0x44 | ((instr->dst & 7) << 3));
-                    emitByte(0x24);
-                    emitByte((uint8_t)offset);
+                    *p++ = (uint8_t)(0x44 | ((instr->dst & 7) << 3));
+                    *p++ = 0x24;
+                    *p++ = (uint8_t)offset;
                 } else {
-                    emitByte(0x84 | ((instr->dst & 7) << 3));
-                    emitByte(0x24);
-                    emit32(offset);
+                    *p++ = (uint8_t)(0x84 | ((instr->dst & 7) << 3));
+                    *p++ = 0x24;
+                    put32(p, (uint32_t)offset);
                 }
             } else {
-                emitByte(0x05 | ((instr->dst & 7) << 3));
-                int32_t disp =
-                    (imulRcpPoolOffset() + imul_rcp_pool_count * 8) -
-                    (pos + 4);
-                emit32(disp);
+                *p++ = (uint8_t)(0x05 | ((instr->dst & 7) << 3));
+                int32_t disp = (imulRcpPoolOffset() + imul_rcp_pool_count * 8) - ((int32_t)(p - code) + 4);
+                put32(p, (uint32_t)disp);
             }
             imul_rcp_pool_count++;
         } else {
-            emitByte(0x48); emitByte(0xB8); emit64(rcp);
-            emitByte(0x4C); emitByte(0x0F); emitByte(0xAF);
-            emitByte(0xC0 | (8 * instr->dst));
+            *p++ = 0x48; *p++ = 0xB8; put64(p, rcp);
+            *p++ = 0x4C; *p++ = 0x0F; *p++ = 0xAF;
+            *p++ = (uint8_t)(0xC0 | (8 * instr->dst));
         }
+        pos = (int32_t)(p - code);
     }
 }
 
 void JitCompiler::h_INEG_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
-    *(uint32_t*)(code + pos) = 0xD8F749 + (instr->dst << 16);
+    uint32_t w0 = 0xD8F749u + ((uint32_t)instr->dst << 16);
+    memcpy(code + pos, &w0, 4);
     pos += 3;
 }
 
 void JitCompiler::h_IXOR_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        emitByte(0x4D); emitByte(0x33); emitByte(0xC0 | (8 * instr->dst + instr->src));
+        *p++ = 0x4D; *p++ = 0x33; *p++ = (uint8_t)(0xC0 | (8 * instr->dst + instr->src));
+        pos += 3;
     } else {
         uint64_t imm = (uint64_t)(uint32_t)getImm32(instr);
-        *(uint64_t*)(code + pos) = (imm << 24) + 0xF08149ULL + (instr->dst << 16);
+        uint64_t q0 = (imm << 24) + 0xF08149ULL + ((uint64_t)instr->dst << 16);
+        memcpy(p, &q0, 8);
         pos += 7;
     }
 }
 
 void JitCompiler::h_IXOR_M(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        genAddressReg(instr, true);
-        emitByte(0x4C); emitByte(0x33); emitByte(0x04 | (8 * instr->dst)); emitByte(0x06);
+        genAddressRegP(p, instr, true);
+        *p++ = 0x4C; *p++ = 0x33; *p++ = (uint8_t)(0x04 | (8 * instr->dst)); *p++ = 0x06;
     } else {
-        emitByte(0x4C); emitByte(0x33); emitByte(0x86 | (8 * instr->dst));
-        genAddressImm(instr);
+        *p++ = 0x4C; *p++ = 0x33; *p++ = (uint8_t)(0x86 | (8 * instr->dst));
+        put32(p, (uint32_t)getImm32(instr) & RX_SPL3_MASK);
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IROR_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
-        emitByte(0x49); emitByte(0xD3); emitByte(0xC8 | instr->dst);
+        *p++ = 0x41; *p++ = 0x8B; *p++ = (uint8_t)(0xC8 | instr->src);
+        *p++ = 0x49; *p++ = 0xD3; *p++ = (uint8_t)(0xC8 | instr->dst);
     } else {
         int rotate = getImm32(instr) & 63;
         if (rotate != 0) {
             if (g_jit_rorx) {
-                emitByte(0xC4); emitByte(0x43); emitByte(0xFB);
-                emitByte(0xF0);
-                emitByte(0xC0 | instr->dst | (instr->dst << 3));
-                emitByte(rotate);
+                *p++ = 0xC4; *p++ = 0x43; *p++ = 0xFB;
+                *p++ = 0xF0;
+                *p++ = (uint8_t)(0xC0 | instr->dst | (instr->dst << 3));
+                *p++ = (uint8_t)rotate;
             } else {
-                emitByte(0x49); emitByte(0xC1);
-                emitByte(0xC8 | instr->dst); emitByte(rotate);
+                *p++ = 0x49; *p++ = 0xC1;
+                *p++ = (uint8_t)(0xC8 | instr->dst); *p++ = (uint8_t)rotate;
             }
         }
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_IROL_R(rx_instruction* instr, int i) {
     registerUsage[instr->dst] = i;
+    uint8_t* p = code + pos;
     if (instr->src != instr->dst) {
-        emitByte(0x41); emitByte(0x8B); emitByte(0xC8 | instr->src);
-        emitByte(0x49); emitByte(0xD3); emitByte(0xC0 | instr->dst);
+        *p++ = 0x41; *p++ = 0x8B; *p++ = (uint8_t)(0xC8 | instr->src);
+        *p++ = 0x49; *p++ = 0xD3; *p++ = (uint8_t)(0xC0 | instr->dst);
     } else {
         int rotate = getImm32(instr) & 63;
         if (rotate != 0) {
             if (g_jit_rorx) {
-                emitByte(0xC4); emitByte(0x43); emitByte(0xFB);
-                emitByte(0xF0);
-                emitByte(0xC0 | instr->dst | (instr->dst << 3));
-                emitByte((64 - rotate) & 63);
+                *p++ = 0xC4; *p++ = 0x43; *p++ = 0xFB;
+                *p++ = 0xF0;
+                *p++ = (uint8_t)(0xC0 | instr->dst | (instr->dst << 3));
+                *p++ = (uint8_t)((64 - rotate) & 63);
             } else {
-                emitByte(0x49); emitByte(0xC1);
-                emitByte(0xC0 | instr->dst); emitByte(rotate);
+                *p++ = 0x49; *p++ = 0xC1;
+                *p++ = (uint8_t)(0xC0 | instr->dst); *p++ = (uint8_t)rotate;
             }
         }
     }
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_ISWAP_R(rx_instruction* instr, int i) {
     if (instr->src != instr->dst) {
         registerUsage[instr->dst] = i;
         registerUsage[instr->src] = i;
-        emitByte(0x4D); emitByte(0x87); emitByte(0xC0 | instr->src | (8 * instr->dst));
+        uint8_t* p = code + pos;
+        if (g_jit_iswap_mov) {
+            /* Gracemont: XCHG r64,r64 is microcoded (5-cyc throughput, >=4-cyc decode stall).
+               3x MOV via scratch RAX are 0-cycle mov-eliminated single-uop instructions! */
+            *p++ = 0x49; *p++ = 0x8B; *p++ = (uint8_t)(0xC0 | instr->dst);
+            *p++ = 0x4D; *p++ = 0x8B; *p++ = (uint8_t)(0xC0 | (8 * instr->dst) | instr->src);
+            *p++ = 0x49; *p++ = 0x89; *p++ = (uint8_t)(0xC0 | instr->src);
+        } else {
+            *p++ = 0x4D; *p++ = 0x87; *p++ = (uint8_t)(0xC0 | instr->src | (8 * instr->dst));
+        }
+        pos = (int32_t)(p - code);
     }
 }
 
 void JitCompiler::h_FSWAP_R(rx_instruction* instr, int i) {
-    emitByte(0x66); emitByte(0x0F); emitByte(0xC6);
-    emitByte(0xC0 | (9 * instr->dst));
-    emitByte(1);
+    uint8_t* p = code + pos;
+    *p++ = 0x66; *p++ = 0x0F; *p++ = 0xC6;
+    *p++ = (uint8_t)(0xC0 | (9 * instr->dst));
+    *p++ = 1;
+    pos += 5;
 }
 
 void JitCompiler::h_FADD_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    *(uint32_t*)(code + pos) = 0x580F4166;
-    pos += 4;
-    code[pos++] = 0xC0 | (instr->dst << 3) | instr->src;
+    uint8_t* p = code + pos;
+    uint32_t w0 = 0x580F4166u;
+    memcpy(p, &w0, 4);
+    p[4] = (uint8_t)(0xC0 | (instr->dst << 3) | instr->src);
+    pos += 5;
 }
 
 void JitCompiler::h_FADD_M(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x58);
-    emitByte(0xC4 | (instr->dst << 3));
+    uint8_t* p = code + pos;
+    genAddressRegP(p, instr, true);
+    *p++ = 0xF3; *p++ = 0x44; *p++ = 0x0F; *p++ = 0xE6; *p++ = 0x24; *p++ = 0x06;
+    *p++ = 0x66; *p++ = 0x41; *p++ = 0x0F; *p++ = 0x58;
+    *p++ = (uint8_t)(0xC4 | (instr->dst << 3));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_FSUB_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    *(uint32_t*)(code + pos) = 0x5C0F4166;
-    pos += 4;
-    code[pos++] = 0xC0 | (instr->dst << 3) | instr->src;
+    uint8_t* p = code + pos;
+    uint32_t w0 = 0x5C0F4166u;
+    memcpy(p, &w0, 4);
+    p[4] = (uint8_t)(0xC0 | (instr->dst << 3) | instr->src);
+    pos += 5;
 }
 
 void JitCompiler::h_FSUB_M(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5C);
-    emitByte(0xC4 | (instr->dst << 3));
+    uint8_t* p = code + pos;
+    genAddressRegP(p, instr, true);
+    *p++ = 0xF3; *p++ = 0x44; *p++ = 0x0F; *p++ = 0xE6; *p++ = 0x24; *p++ = 0x06;
+    *p++ = 0x66; *p++ = 0x41; *p++ = 0x0F; *p++ = 0x5C;
+    *p++ = (uint8_t)(0xC4 | (instr->dst << 3));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_FSCAL_R(rx_instruction* instr, int i) {
     instr->dst %= RX_REG_FLT_COUNT;
-    uint8_t modrm = 0xC7 | (instr->dst << 3);
-    *(uint32_t*)(code + pos) = 0x00570F41 | ((uint32_t)modrm << 24);
+    uint32_t w0 = 0x00570F41u | ((uint32_t)(0xC7 | (instr->dst << 3)) << 24);
+    memcpy(code + pos, &w0, 4);
     pos += 4;
 }
 
@@ -1764,27 +1876,31 @@ void JitCompiler::h_FMUL_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
     instr->src %= RX_REG_FLT_COUNT;
-    *(uint32_t*)(code + pos) = 0x590F4166;
-    pos += 4;
-    code[pos++] = 0xE0 | (instr->dst << 3) | instr->src;
+    uint8_t* p = code + pos;
+    uint32_t w0 = 0x590F4166u;
+    memcpy(p, &w0, 4);
+    p[4] = (uint8_t)(0xE0 | (instr->dst << 3) | instr->src);
+    pos += 5;
 }
 
 void JitCompiler::h_FDIV_M(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    genAddressReg(instr, true);
-    emitByte(0xF3); emitByte(0x44); emitByte(0x0F); emitByte(0xE6); emitByte(0x24); emitByte(0x06);
-    emitByte(0x45); emitByte(0x0F); emitByte(0x54); emitByte(0xE5);
-    emitByte(0x45); emitByte(0x0F); emitByte(0x56); emitByte(0xE6);
-    emitByte(0x66); emitByte(0x41); emitByte(0x0F); emitByte(0x5E);
-    emitByte(0xE4 | (instr->dst << 3));
+    uint8_t* p = code + pos;
+    genAddressRegP(p, instr, true);
+    *p++ = 0xF3; *p++ = 0x44; *p++ = 0x0F; *p++ = 0xE6; *p++ = 0x24; *p++ = 0x06;
+    *p++ = 0x45; *p++ = 0x0F; *p++ = 0x54; *p++ = 0xE5;
+    *p++ = 0x45; *p++ = 0x0F; *p++ = 0x56; *p++ = 0xE6;
+    *p++ = 0x66; *p++ = 0x41; *p++ = 0x0F; *p++ = 0x5E;
+    *p++ = (uint8_t)(0xE4 | (instr->dst << 3));
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
     prevFPOperation = pos;
     instr->dst %= RX_REG_FLT_COUNT;
-    uint8_t modrm = 0xE4 | (9 * instr->dst);
-    *(uint32_t*)(code + pos) = 0x00510F66 | ((uint32_t)modrm << 24);
+    uint32_t w0 = 0x00510F66u | ((uint32_t)(0xE4 | (9 * instr->dst)) << 24);
+    memcpy(code + pos, &w0, 4);
     pos += 4;
 }
 
@@ -1794,31 +1910,32 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
         memset(code + prevCFROUND, 0x90, (size_t)prevCFROUNDLength);
     }
     int start = pos;
+    uint8_t* p = code + pos;
     int rotate = (13 - (getImm32(instr) & 63)) & 63;
     if (g_jit_cfround_rorx) {
-        emitByte(0xC4); emitByte(0xC3); emitByte(0xFB);
-        emitByte(0xF0); emitByte(0xC0 | instr->src);
-        emitByte((64 - rotate) & 63);
+        *p++ = 0xC4; *p++ = 0xC3; *p++ = 0xFB;
+        *p++ = 0xF0; *p++ = (uint8_t)(0xC0 | instr->src);
+        *p++ = (uint8_t)((64 - rotate) & 63);
     } else {
-        emitMov64RM(0, instr->src);
+        *p++ = 0x49; *p++ = 0x8B; *p++ = (uint8_t)(0xC0 | (instr->src & 7));
         if (rotate != 0) {
-            emitByte(0x48); emitByte(0xC1); emitByte(0xC0); emitByte(rotate);
+            *p++ = 0x48; *p++ = 0xC1; *p++ = 0xC0; *p++ = (uint8_t)rotate;
         }
     }
-    if (prevFPOperation >= 0 && (pos - prevFPOperation) < 12) {
-        emitByte(0x66); emitByte(0x90);
+    if (prevFPOperation >= 0 && ((int32_t)(p - code) - prevFPOperation) < 12) {
+        *p++ = 0x66; *p++ = 0x90;
     }
-    *(uint64_t*)(code + pos) = 0x9FC00D0000600025ULL;
-    pos += 8;
-    *(uint16_t*)(code + pos) = 0x0000;
-    pos += 2;
+    uint64_t q0 = 0x9FC00D0000600025ULL;
+    memcpy(p, &q0, 8); p += 8;
+    *p++ = 0x00; *p++ = 0x00;
     if (activeGuard) {
         /* cmp eax, [rsp]; je +7 (skip mov [rsp], eax + ldmxcsr [rsp]) */
-        code[pos++] = 0x3B; code[pos++] = 0x04; code[pos++] = 0x24;
-        code[pos++] = 0x74; code[pos++] = 0x07;
+        *p++ = 0x3B; *p++ = 0x04; *p++ = 0x24;
+        *p++ = 0x74; *p++ = 0x07;
     }
-    *(uint64_t*)(code + pos) = 0x002414AE0F240489ULL;
-    pos += 7;
+    uint64_t q1 = 0x002414AE0F240489ULL;
+    memcpy(p, &q1, 8); p += 7;
+    pos = (int32_t)(p - code);
     prevCFROUND = start;
     prevCFROUNDLength = pos - start;
 }
@@ -1834,33 +1951,38 @@ void JitCompiler::h_CBRANCH(rx_instruction* instr, int i) {
     int target = registerUsage[reg] + 1;
     if (instructionOffsets[target] <= prevFPOperation)
         prevFPOperation = pos;
-    emitByte(0x49); emitByte(0x81); emitByte(0xC0 | reg);
+    uint8_t* p = code + pos;
+    *p++ = 0x49; *p++ = 0x81; *p++ = (uint8_t)(0xC0 | reg);
     int shift = getModCond(instr) + RX_CONDITION_OFFSET;
     uint32_t imm = (uint32_t)getImm32(instr) | (1UL << shift);
     if (RX_CONDITION_OFFSET > 0 || shift > 0)
         imm &= ~(1UL << (shift - 1));
-    emit32(imm);
-    emitByte(0x49); emitByte(0xF7); emitByte(0xC0 | reg);
-    emit32(RX_CONDITION_MASK << shift);
+    put32(p, imm);
+    *p++ = 0x49; *p++ = 0xF7; *p++ = (uint8_t)(0xC0 | reg);
+    put32(p, (uint32_t)(RX_CONDITION_MASK << shift));
 
-    int32_t shortOffset = instructionOffsets[target] - (pos + 2);
+    int curPos = (int)(p - code);
+    int32_t shortOffset = instructionOffsets[target] - (curPos + 2);
     if (g_jit_short_branches && shortOffset >= -128 && shortOffset <= 127) {
-        emitByte(0x74);
-        emitByte((uint8_t)(int8_t)shortOffset);
+        *p++ = 0x74;
+        *p++ = (uint8_t)(int8_t)shortOffset;
         shortBranchCount++;
     } else {
-        emitByte(0x0F);
-        emitByte(0x84);
-        emit32(instructionOffsets[target] - (pos + 4));
+        *p++ = 0x0F;
+        *p++ = 0x84;
+        put32(p, (uint32_t)(instructionOffsets[target] - (curPos + 6)));
     }
+    pos = (int32_t)(p - code);
 
     for (unsigned j = 0; j < RX_REGISTERS_COUNT; j++)
         registerUsage[j] = i;
 }
 
 void JitCompiler::h_ISTORE(rx_instruction* instr, int i) {
-    genAddressRegDst(instr);
-    emitByte(0x4C); emitByte(0x89); emitByte(0x04 | (8 * instr->src)); emitByte(0x06);
+    uint8_t* p = code + pos;
+    genAddressRegDstP(p, instr);
+    *p++ = 0x4C; *p++ = 0x89; *p++ = (uint8_t)(0x04 | (8 * instr->src)); *p++ = 0x06;
+    pos = (int32_t)(p - code);
 }
 
 void JitCompiler::h_NOP(rx_instruction* instr, int i) {
@@ -1882,19 +2004,22 @@ int g_jit_epilogue_skip_mask = 0;
 int g_jit_short_branches = 0;
 int g_jit_involution_pairs = 0;
 int g_jit_branch_align = 0;
-int g_jit_loop_nop = 1;
+int g_jit_loop_nop = 0;
 int g_jit_sp_prefetch_hint = 0;
-int g_jit_bmi2_mulx = 0;
+int g_jit_bmi2_mulx = 1;
 int g_jit_cfround_elim = 0;
 int g_jit_large_pages = 0;
 int g_jit_jcc_align = 0;
 int g_jit_near_rcp_pool = 1;
 int g_jit_double_buffer = 0;
-int g_jit_inline_rcp_pool = 0;
+int g_jit_inline_rcp_pool = 1;
 int g_jit_rorx = 0;
 int g_jit_stack_rcp_pool = 0;
 int g_jit_cfround_rorx = 0;
 int g_jit_cfround_guard = 0;
+int g_jit_iswap_mov = 1;
+int g_jit_fast_iadd_rs = 0;
+int g_jit_ds_prefetch_hint = 1;
 
 struct rx_jit {
     JitCompiler* compiler;
@@ -1912,6 +2037,7 @@ rx_jit* rx_jit_create(void) {
     jit->compiler->activeCodeSlot = 0;
     jit->compiler->cfroundGuard = 0;
     jit->compiler->activeCfroundGuard = 0;
+    jit->compiler->hasBmi2 = cpu_has_bmi2();
 
     jit->compiler->code = (uint8_t*)vmem_alloc(RX_TOTAL_CODE_SIZE,
         VMEM_EXEC | (g_jit_large_pages ? VMEM_LARGE_PAGES : 0), NULL);
