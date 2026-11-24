@@ -410,6 +410,8 @@ int stratum_connect(stratum_ctx_t *ctx) {
 
     DWORD keepalive = 1;
     setsockopt(ctx->sock, SOL_SOCKET, SO_KEEPALIVE, (char *)&keepalive, sizeof(keepalive));
+    DWORD nodelay = 1;
+    setsockopt(ctx->sock, IPPROTO_TCP, TCP_NODELAY, (char *)&nodelay, sizeof(nodelay));
 
     if (ctx->cfg.use_tls) {
         ctx->tls = tls_connect(ctx->sock, ctx->cfg.pool_url, ctx->cfg.tls_allow);
@@ -614,23 +616,30 @@ int stratum_submit_share(stratum_ctx_t *ctx, const char *job_id,
     int id = InterlockedIncrement(&ctx->id_counter) - 1;
 
     if (ctx->protocol == STRATUM_PROTO_MONERO) {
+        char algo_copy[64] = {0};
+        EnterCriticalSection(&ctx->lock);
+        if (ctx->job.algo && ctx->job.algo[0]) {
+            strncpy(algo_copy, ctx->job.algo, sizeof(algo_copy) - 1);
+        }
+        LeaveCriticalSection(&ctx->lock);
+
         if (commitment_hex && commitment_hex[0]) {
-            if (ctx->job.algo && ctx->job.algo[0]) {
+            if (algo_copy[0]) {
                 snprintf(msg, sizeof(msg),
                     "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                     "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\",\"commitment\":\"%s\"}}",
-                    id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo, commitment_hex);
+                    id, ctx->session_id, job_id, nonce_hex, result_hex, algo_copy, commitment_hex);
             } else {
                 snprintf(msg, sizeof(msg),
                     "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                     "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"commitment\":\"%s\"}}",
                     id, ctx->session_id, job_id, nonce_hex, result_hex, commitment_hex);
             }
-        } else if (ctx->job.algo && ctx->job.algo[0]) {
+        } else if (algo_copy[0]) {
             snprintf(msg, sizeof(msg),
                 "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"
                 "{\"id\":\"%s\",\"job_id\":\"%s\",\"nonce\":\"%s\",\"result\":\"%s\",\"algo\":\"%s\"}}",
-                id, ctx->session_id, job_id, nonce_hex, result_hex, ctx->job.algo);
+                id, ctx->session_id, job_id, nonce_hex, result_hex, algo_copy);
         } else {
             snprintf(msg, sizeof(msg),
                 "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"submit\",\"params\":"

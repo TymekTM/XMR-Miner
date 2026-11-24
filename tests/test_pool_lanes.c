@@ -20,7 +20,7 @@ int main(void) {
     rx_vm *ref = rx_create_vm(RX_FLAG_JIT, cache, ds);
     int checks = 0, failures = 0;
 
-    for (int lanes = 2; lanes <= 3; lanes++) {
+    for (int lanes = 2; lanes <= 4; lanes++) {
         rx_vm_group *g = rx_create_vm_group(lanes, RX_FLAG_DEFAULT, cache, ds);
         if (!g) { printf("[FAIL] group alloc lanes=%d\n", lanes); return 1; }
         pool_lane_state st;
@@ -62,6 +62,39 @@ int main(void) {
             }
         }
         rx_destroy_vm_group(g);
+    }
+    /* T5: heterogeneous multi-worker nonce uniqueness (P=2L, P=3L, E=1L sharing stride=3) */
+    {
+        const int stride = 3;
+        uint32_t seen[64];
+        int nseen = 0;
+        uint32_t n0 = 100 + 0, n1 = 100 + 1, n2 = 100 + 2;
+        rx_vm_group *g2 = rx_create_vm_group(2, RX_FLAG_DEFAULT, cache, ds);
+        rx_vm_group *g3 = rx_create_vm_group(3, RX_FLAG_DEFAULT, cache, ds);
+        pool_lane_state s2, s3;
+        memset(&s2, 0, sizeof(s2)); memset(&s3, 0, sizeof(s3));
+        int a2 = 0, a3 = 0;
+        uint8_t blob[76];
+        memset(blob, 0x22, sizeof(blob));
+        uint8_t h[POOL_MAX_LANES][32];
+        uint32_t sn[POOL_MAX_LANES];
+        for (int c = 0; c < 3; c++) {
+            int k2 = pool_lanes_hash_next(g2, &s2, &a2, blob, sizeof(blob), 39, &n0, stride, sn, h);
+            for (int l = 0; l < k2; l++) seen[nseen++] = sn[l];
+            int k3 = pool_lanes_hash_next(g3, &s3, &a3, blob, sizeof(blob), 39, &n1, stride, sn, h);
+            for (int l = 0; l < k3; l++) seen[nseen++] = sn[l];
+            /* Worker 2 (1-lane) advances by stride */
+            seen[nseen++] = n2;
+            n2 += stride;
+        }
+        int dup = 0;
+        for (int i = 0; i < nseen; i++)
+            for (int j = i + 1; j < nseen; j++)
+                if (seen[i] == seen[j]) dup++;
+        checks++;
+        if (dup) { failures++; printf("[FAIL] heterogeneous workers had %d nonce collisions\n", dup); }
+        rx_destroy_vm_group(g2);
+        rx_destroy_vm_group(g3);
     }
     rx_destroy_vm(ref);
     rx_free_dataset(ds);

@@ -9,8 +9,9 @@
 
 #define RX_FLAG_DEFAULT     0
 #define RX_FLAG_JIT         1
-#define RX_FLAG_V2          16
-#define RX_FLAG_SECURE      32
+#define RX_FLAG_V2            16
+#define RX_FLAG_SECURE        32
+#define RX_FLAG_CFROUND_GUARD 64
 
 #define RX_DATASET_BASE_SIZE  2147483648ULL
 #define RX_DATASET_EXTRA_SIZE 33554368ULL

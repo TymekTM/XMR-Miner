@@ -14,10 +14,19 @@ typedef struct {
     char brand_string[49];
 } cpu_info_t;
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void cpu_detect(cpu_info_t *info);
 void cpu_print_info(const cpu_info_t *info);
 int cpu_has_aes_ni(void);
 int cpu_has_avx2(void);
 int cpu_has_sse2(void);
 int cpu_has_bmi2(void);
+int cpu_has_vaes(void);
 int cpu_count_logical(void);
+
+#ifdef __cplusplus
+}
+#endif

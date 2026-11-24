@@ -20,6 +20,7 @@ extern "C" int g_jit_inline_rcp_pool;
 extern "C" int g_jit_rorx;
 extern "C" int g_jit_stack_rcp_pool;
 extern "C" int g_jit_cfround_rorx;
+extern "C" int g_jit_cfround_guard;
 
 #define RX_DATASET_BASE_MASK  (RX_DATASET_BASE_SIZE - 64)
 #define RX_CACHE_MASK         ((RX_ARGON_MEMORY * 16) - 1)
@@ -160,6 +161,8 @@ struct JitCompiler {
     int32_t prevCFROUNDLength;
     int shortBranchCount;
     int generatedCodeSize;
+    int cfroundGuard;
+    int activeCfroundGuard;
     uint8_t skipInstruction[RX_PROGRAM_SIZE];
     uint8_t branchTarget[RX_PROGRAM_SIZE];
 
@@ -512,6 +515,7 @@ struct JitCompiler {
         int pos = 0;
         activeRcpPoolOffset = 0;
         activeStackRcpPool = g_jit_stack_rcp_pool;
+        activeCfroundGuard = (cfroundGuard || g_jit_cfround_guard) ? 1 : 0;
 
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
         pos += PROLOGUE_SIZE;
@@ -525,6 +529,12 @@ struct JitCompiler {
         int firstLoadStart = pos;
         if (activeStackRcpPool)
             code[pos + 21] = 0xA8;
+        if (activeCfroundGuard) {
+            /* Replace `mov dword [rsp], 0x9FC0` (7 bytes at +25) with `stmxcsr [rsp]; nop; nop; nop`
+               so [rsp] always matches actual hardware MXCSR across chains 0..7. */
+            code[pos + 25] = 0x0F; code[pos + 26] = 0xAE; code[pos + 27] = 0x1C; code[pos + 28] = 0x24;
+            code[pos + 29] = 0x90; code[pos + 30] = 0x90; code[pos + 31] = 0x90;
+        }
         pos += FIRST_LOAD_SIZE;
 
         pos = ((pos + 15) & ~15);
@@ -765,6 +775,10 @@ struct JitCompiler {
     }
 
     void generateProgramLight(rx_program* prog, rx_program_config* pcfg, uint32_t datasetOffset) {
+        activeCfroundGuard = 0;
+        prevFPOperation = -1;
+        prevCFROUND = -1;
+        prevCFROUNDLength = 0;
         pos = 0;
 
         // Prologue: set up registers for light mode
@@ -812,6 +826,10 @@ struct JitCompiler {
         emitByte(0xC3);
     }
     void generateProgramSingleIter(rx_program* prog, rx_program_config* pcfg) {
+        activeCfroundGuard = 0;
+        prevFPOperation = -1;
+        prevCFROUND = -1;
+        prevCFROUNDLength = 0;
         int pos = 0;
 
         memcpy(code + pos, code_prologue, PROLOGUE_SIZE);
@@ -1063,6 +1081,10 @@ struct JitCompiler {
 
     void generateProgramDualInterleaved(rx_program* prog1, rx_program_config* pcfg1,
                                          rx_program* prog2, rx_program_config* pcfg2) {
+        activeCfroundGuard = 0;
+        prevFPOperation = -1;
+        prevCFROUND = -1;
+        prevCFROUNDLength = 0;
         pos = 0;
 
         static const int VM_STATE_SIZE = 0x110;
@@ -1767,7 +1789,8 @@ void JitCompiler::h_FSQRT_R(rx_instruction* instr, int i) {
 }
 
 void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
-    if (g_jit_cfround_elim && prevCFROUND > prevFPOperation) {
+    int activeGuard = activeCfroundGuard;
+    if ((g_jit_cfround_elim || activeGuard) && prevCFROUND >= 0 && prevCFROUND > prevFPOperation) {
         memset(code + prevCFROUND, 0x90, (size_t)prevCFROUNDLength);
     }
     int start = pos;
@@ -1789,6 +1812,11 @@ void JitCompiler::h_CFROUND(rx_instruction* instr, int i) {
     pos += 8;
     *(uint16_t*)(code + pos) = 0x0000;
     pos += 2;
+    if (activeGuard) {
+        /* cmp eax, [rsp]; je +7 (skip mov [rsp], eax + ldmxcsr [rsp]) */
+        code[pos++] = 0x3B; code[pos++] = 0x04; code[pos++] = 0x24;
+        code[pos++] = 0x74; code[pos++] = 0x07;
+    }
     *(uint64_t*)(code + pos) = 0x002414AE0F240489ULL;
     pos += 7;
     prevCFROUND = start;
@@ -1866,6 +1894,7 @@ int g_jit_inline_rcp_pool = 0;
 int g_jit_rorx = 0;
 int g_jit_stack_rcp_pool = 0;
 int g_jit_cfround_rorx = 0;
+int g_jit_cfround_guard = 0;
 
 struct rx_jit {
     JitCompiler* compiler;
@@ -1881,6 +1910,8 @@ rx_jit* rx_jit_create(void) {
     jit->compiler->codeSlots[0] = NULL;
     jit->compiler->codeSlots[1] = NULL;
     jit->compiler->activeCodeSlot = 0;
+    jit->compiler->cfroundGuard = 0;
+    jit->compiler->activeCfroundGuard = 0;
 
     jit->compiler->code = (uint8_t*)vmem_alloc(RX_TOTAL_CODE_SIZE,
         VMEM_EXEC | (g_jit_large_pages ? VMEM_LARGE_PAGES : 0), NULL);
@@ -1896,6 +1927,10 @@ rx_jit* rx_jit_create(void) {
         }
     }
     return jit;
+}
+
+void rx_jit_set_cfround_guard(rx_jit* jit, int enable) {
+    if (jit && jit->compiler) jit->compiler->cfroundGuard = enable ? 1 : 0;
 }
 
 void rx_jit_destroy(rx_jit* jit) {

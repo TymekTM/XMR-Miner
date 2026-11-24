@@ -53,8 +53,10 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    int threads = cfg.threads > 0 ? cfg.threads : cpu.logical_cores;
-    LOG_INFO("Using %d mining thread(s)", threads);
+    int threads = cfg.threads > 0 ? cfg.threads : (cpu.physical_cores > 0 ? cpu.physical_cores : cpu.logical_cores);
+    LOG_INFO("Using %d mining thread(s) (%d physical / %d logical cores)",
+             threads, cpu.physical_cores, cpu.logical_cores);
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_ABOVE_NORMAL);
 
     SetConsoleCtrlHandler(ctrl_handler, TRUE);
 

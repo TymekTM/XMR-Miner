@@ -928,7 +928,11 @@ rx_vm *rx_create_vm(int flags, rx_cache *cache, rx_dataset *dataset) {
     vm->mxcsrState = RX_MXCSR_DEFAULT;
     if (use_jit) {
         extern rx_jit *rx_jit_create(void);
+        extern void rx_jit_set_cfround_guard(rx_jit *jit, int enable);
         vm->jit = rx_jit_create();
+        if (vm->jit && (flags & RX_FLAG_CFROUND_GUARD)) {
+            rx_jit_set_cfround_guard(vm->jit, 1);
+        }
     }
     return vm;
 }
@@ -1090,7 +1094,7 @@ rx_vm_group *rx_create_vm_group(int lanes, int flags, rx_cache *cache, rx_datase
     if (!g) return NULL;
     g->lanes = lanes;
     for (int l = 0; l < lanes; l++) {
-        g->vm[l] = rx_create_vm(flags | RX_FLAG_JIT, cache, dataset);
+        g->vm[l] = rx_create_vm(flags & ~RX_FLAG_JIT, cache, dataset);
         if (!g->vm[l]) { rx_destroy_vm_group(g); return NULL; }
     }
     g->mjit = rx_mjit_create();
@@ -1109,9 +1113,12 @@ int rx_vm_group_lanes(rx_vm_group *g) { return g->lanes; }
 rx_mjit *rx_vm_group_mjit(rx_vm_group *g) { return g->mjit; }
 rx_vm *rx_vm_group_vm(rx_vm_group *g, int lane) { return g->vm[lane]; }
 
+int g_vm_warm_sp = 1;
+
 static void group_run(rx_vm_group *g) {
     rx_program *progs[RX_MULTI_MAX_LANES];
     rx_program_config *cfgs[RX_MULTI_MAX_LANES];
+    uint32_t initMxcsr[RX_MULTI_MAX_LANES];
     rx_multi_params *p = &g->params;
     int K = g->lanes;
     for (int l = 0; l < K; l++) {
@@ -1120,8 +1127,9 @@ static void group_run(rx_vm_group *g) {
         vm_initialize(vm);
         progs[l] = &vm->program;
         cfgs[l] = &vm->config;
+        initMxcsr[l] = vm->mxcsrState;
     }
-    rx_mjit_generate(g->mjit, K, progs, cfgs);
+    rx_mjit_generate_ex(g->mjit, K, progs, cfgs, initMxcsr);
     p->iterations = RX_PROGRAM_ITERATIONS;
     p->lanes = (uint32_t)K;
     p->mantMask[0] = p->mantMask[1] = RX_DYN_MANTISSA_MASK;
@@ -1169,6 +1177,15 @@ void rx_group_hash_next(rx_vm_group *g, const void *const *next_inputs, const si
         rx_blake2b_blob(vm->tempHash, next_inputs[l], sizes[l]);
         rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
         blake2b(outputs[l], RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+    }
+    if (g_vm_warm_sp) {
+        for (int l = 0; l < g->lanes; l++) {
+            const char *sp = (const char *)g->vm[l]->scratchpad;
+            for (size_t off = RX_SCRATCHPAD_L1; off < RX_SCRATCHPAD_L2; off += 64)
+                _mm_prefetch(sp + off, _MM_HINT_T1);
+            for (size_t off = 0; off < RX_SCRATCHPAD_L1; off += 64)
+                _mm_prefetch(sp + off, _MM_HINT_T0);
+        }
     }
 }
 

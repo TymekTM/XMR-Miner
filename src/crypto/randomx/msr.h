@@ -5,6 +5,7 @@
 int msr_init(void);
 void msr_destroy(void);
 int msr_read_package_energy(double *joules);
+double msr_get_energy_wrap_joules(void);
 int msr_set_package_power_limit(double watts, uint64_t *original);
 int msr_restore_package_power_limit(uint64_t original);
 int msr_set_prefetch_control(uint64_t value, uint64_t *original);

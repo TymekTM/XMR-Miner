@@ -98,8 +98,9 @@ typedef struct {
     int cpu;
     int hashes;
     int repeats;
-    int full_mode; /* 0 batch, 1 full, 2 dual, 3 group (multi-lane batch) */
+    int full_mode; /* 0 batch, 1 full, 2 dual, 3 group (multi-lane batch), 4 hetero (per-worker lanes/guard) */
     int lanes;
+    int cfround_guard;
     rx_cache *cache;
     rx_dataset *dataset;
     double *seconds; /* [repeats] */
@@ -126,6 +127,17 @@ static int apply_knobs(const char *spec) {
     g_mjit_diag = 0;
     g_mjit_ds_prefetch = 0;
     g_mjit_fp_spill = 0;
+    g_mjit_fp_bank2 = 1;
+    g_mjit_stagger = 0;
+    g_mjit_smart_cuts = 1;
+    g_mjit_smart_mxcsr = 1;
+    g_mjit_bmi2 = 1;
+    g_mjit_refresh_dspf = 0;
+    g_mjit_tail_order = 1;
+    g_mjit_mxguard = 0;
+    g_vm_warm_sp = 0;
+    g_aes_use_vaes = 1;
+    g_jit_cfround_guard = 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", spec);
     char *save = NULL;
@@ -140,6 +152,17 @@ static int apply_knobs(const char *spec) {
         else if (!strcmp(name, "diag")) g_mjit_diag = val;
         else if (!strcmp(name, "dspf")) g_mjit_ds_prefetch = val;
         else if (!strcmp(name, "spill")) g_mjit_fp_spill = val;
+        else if (!strcmp(name, "bank2")) g_mjit_fp_bank2 = val;
+        else if (!strcmp(name, "stagger")) g_mjit_stagger = val;
+        else if (!strcmp(name, "scuts")) g_mjit_smart_cuts = val;
+        else if (!strcmp(name, "smxcsr")) g_mjit_smart_mxcsr = val;
+        else if (!strcmp(name, "bmi2")) g_mjit_bmi2 = val;
+        else if (!strcmp(name, "rdspf")) g_mjit_refresh_dspf = val;
+        else if (!strcmp(name, "torder")) g_mjit_tail_order = val;
+        else if (!strcmp(name, "mxguard")) g_mjit_mxguard = val;
+        else if (!strcmp(name, "warmsp")) g_vm_warm_sp = val;
+        else if (!strcmp(name, "vaes")) g_aes_use_vaes = val;
+        else if (!strcmp(name, "cfguard")) g_jit_cfround_guard = val;
         else if (!strcmp(name, "lanes")) {}
         else { printf("unknown knob %s\n", name); return 0; }
     }
@@ -222,7 +245,7 @@ static void *worker_main(void *p)
         return NULL;
 #endif
     }
-    if (w->full_mode == 3) {
+    if (w->full_mode == 3 || ((w->full_mode == 4 || w->full_mode == 5) && w->lanes > 1)) {
         rx_vm_group *g = rx_create_vm_group(w->lanes, RX_FLAG_DEFAULT, w->cache, w->dataset);
         if (!g) { fprintf(stderr, "group alloc failed (lanes=%d)\n", w->lanes); exit(3); }
         w->sp_kind = rx_vm_group_vm(g, 0)->sp_page_kind;
@@ -263,8 +286,9 @@ static void *worker_main(void *p)
         return NULL;
 #endif
     }
-    rx_vm *vm = rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset);
-    rx_vm *vm2 = w->full_mode == 2 ? rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset) : NULL;
+    int vm_flags = RX_FLAG_JIT | (w->cfround_guard ? RX_FLAG_CFROUND_GUARD : 0);
+    rx_vm *vm = rx_create_vm(vm_flags, w->cache, w->dataset);
+    rx_vm *vm2 = w->full_mode == 2 ? rx_create_vm(vm_flags, w->cache, w->dataset) : NULL;
     if (!vm || (w->full_mode == 2 && !vm2)) { fprintf(stderr, "VM alloc failed\n"); exit(3); }
     w->sp_kind = vm->sp_page_kind;
 
@@ -293,7 +317,7 @@ static void *worker_main(void *p)
                 nonce++; memcpy(blob + 39, &nonce, 4); memcpy(blob2 + 39, &nonce, 4);
                 rx_calculate_hash_dual(vm, vm2, blob, sizeof(blob), blob2, sizeof(blob2), hash, hash2);
             }
-        } else if (w->full_mode) {
+        } else if (w->full_mode == 1) {
             for (int i = 0; i < w->hashes; i++) {
                 nonce++; memcpy(blob + 39, &nonce, 4);
                 rx_calculate_hash(vm, blob, sizeof(blob), hash);
@@ -380,6 +404,8 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--full")) full_mode = 1;
         else if (!strcmp(argv[i], "--dual")) full_mode = 2;
         else if (!strcmp(argv[i], "--lanes") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 3; }
+        else if (!strcmp(argv[i], "--hetero") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 4; }
+        else if (!strcmp(argv[i], "--waterfill") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 5; }
         else if (!strcmp(argv[i], "--gran") && i + 1 < argc) g_mjit_granularity = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mxskip")) g_mjit_mxcsr_skip = 1;
         else if (!strcmp(argv[i], "--ab") && i + 2 < argc) {
@@ -449,7 +475,14 @@ int main(int argc, char **argv) {
         w[i].hashes = hashes;
         w[i].repeats = repeats;
         w[i].full_mode = full_mode;
-        w[i].lanes = lanes;
+        if (full_mode == 5) {
+            /* waterfill: first `lanes` P-cores get 2 lanes, remaining P-cores 1 lane, E-cores 1 lane + cfguard */
+            w[i].lanes = (w[i].cpu < 16 && i < lanes) ? 2 : 1;
+            w[i].cfround_guard = (w[i].cpu >= 16) ? 1 : 0;
+        } else {
+            w[i].lanes = (full_mode == 4) ? ((w[i].cpu < 16) ? lanes : 1) : lanes;
+            w[i].cfround_guard = (full_mode == 4 && w[i].cpu >= 16) ? 1 : 0;
+        }
         w[i].cache = cache;
         w[i].dataset = dataset;
         w[i].seconds = (double *)calloc(repeats, sizeof(double));

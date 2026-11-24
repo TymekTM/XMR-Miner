@@ -187,6 +187,29 @@ int cpu_has_bmi2(void) {
     return (ebx >> 8) & 1;
 }
 
+int cpu_has_vaes(void) {
+    static volatile int cached = -1;
+    int v = cached;
+    if (v >= 0) return v;
+    u32 eax, ebx, ecx, edx;
+    cpuid(0, 0, &eax, &ebx, &ecx, &edx);
+    if (eax < 7) { cached = 0; return 0; }
+    cpuid(1, 0, &eax, &ebx, &ecx, &edx);
+    if (!((ecx >> 27) & 1)) { cached = 0; return 0; } /* OSXSAVE */
+#ifdef _MSC_VER
+    unsigned long long xcr0 = _xgetbv(0);
+#else
+    unsigned int lo, hi;
+    __asm__ volatile("xgetbv" : "=a"(lo), "=d"(hi) : "c"(0));
+    unsigned long long xcr0 = ((unsigned long long)hi << 32) | lo;
+#endif
+    if ((xcr0 & 0x6) != 0x6) { cached = 0; return 0; } /* SSE + AVX */
+    cpuid(7, 0, &eax, &ebx, &ecx, &edx);
+    v = (((ebx >> 5) & 1) && ((ecx >> 9) & 1)) ? 1 : 0; /* AVX2 + VAES */
+    cached = v;
+    return v;
+}
+
 int cpu_count_logical(void) {
     return get_logical_cores();
 }
