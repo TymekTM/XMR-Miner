@@ -284,3 +284,70 @@ Machine: Intel Core i7-14700KF (8 Raptor Cove P-cores w/ 2 MB L2 each + 12 Grace
 | `12E` (`--efficiency` Auto) | 4,063 H/s @ 58.0 W (`70.1 H/W`, `165.5 H/dW`) | **4,351 H/s** @ 57.6 W (**75.5 H/W**, **183.0 H/dW**) | **+7.1% H/s / +7.7% H/W / +10.6% H/dW** |
 | `18T` (`--efficiency`: `12E+6P`) | 6,241 H/s @ 72.3 W (`86.3 H/W`) | **6,741 H/s** @ 72.0 W (**93.6 H/W**; `bench_rx`: **109.3 H/W**) | **+8.0% H/s / +8.4% H/W** (2 P-cores free!) |
 | `20T` (Auto: `8P+12E`) vs XMRig Auto `28T` | 5,459 H/s @ 72.6 W (`75.2 H/W`) | **7,144 H/s** @ 75.6 W (**94.5 H/W**) | **+30.9% H/s / +25.7% H/W** |
+
+---
+
+# Phase 9 — Gracemont E-Core Microarchitecture & Hybrid 20T Efficiency Push (`101.55 H/W` Live, `160+ H/dW`)
+
+## Key Discoveries & Implemented Optimizations
+1. **128-bit AES-NI (`g_aes_use_vaes = 0`) + Zero-Spill Fused Hash+Fill (`g_aes_hash_fill_upstream = 1`) (`src/crypto/randomx/aes_hash.c`):**
+   - 256-bit VAES (`vaesenc ymm` + 4× `vperm2i128` per 64 B) forced all 20 cores into AVX2 256-bit power/license state, bottlenecked Port 5 on `VPERM2I128`, and cracked every 256-bit op into 2×128-bit uops on all 12 Gracemont E-cores — costing **-10.3% on E-cores during 20T mining** and **+1.3 W extra PKG power**.
+   - Switching default to 128-bit AES-NI (`g_aes_use_vaes = 0`) delivered **`+5.51%` median on `20T` (16-round ABBA: `7,323 -> 7,847 H/s`, IQR `[+4.75%, +10.03%]`), `+3.78%` on `8P 1L`, `+2.72%` on `12E`**, and `-0.03%` neutral on `8P 2L`.
+   - Enabling `g_aes_hash_fill_upstream = 1` (12 live XMM regs vs 20 spilling to stack in the 128 B loop + 4 KB software prefetch) added **`+1.02%` on `8P`** and **`+0.71%` on `20T`**.
+2. **Gracemont & Hybrid JIT Microarchitecture Wins (`src/crypto/randomx/jit_compiler_x86.cpp`, `src/common/cpu.c`):**
+   - **`g_jit_iswap_mov = 1`**: Replaces microcoded `XCHG r64, r64` (5-cycle throughput + ≥4-cycle decode stall on Gracemont) with 3× zero-latency mov-eliminated `MOV` via scratch `RAX` -> **`+1.62%` on `8P`**, **`+1.01%` on `12E`**.
+   - **`g_jit_bmi2_mulx = 1` (runtime-gated by cached `cpu_has_bmi2()`)**: Replaces 1-operand `MUL` with flag-free BMI2 `MULX` in `h_IMULH_R`/`h_IMULH_M` -> **`+1.88%` on `12E`**, **`+0.21%` on `8P`**.
+   - **`g_jit_inline_rcp_pool = 1`**: Places the 128-byte `IMUL_RCP` constant pool inline inside the first 4 KB JIT code page (and resets `activeRcpPoolOffset`/`activeStackRcpPool` in secondary generators `Light`/`SingleIter`/`DualInterleaved`) -> **`+1.61%` on `12E`**, neutral on `8P`.
+   - **Per-VM E-core `h_IADD_RS` (`shift == 0`)**: Emits 3-byte `ADD` (all 4 ALU ports, avoids 3-cycle slow 3-component `LEA` on `r13`) when `activeCfroundGuard` is set (E-cores only) -> **`+0.80%` on `12E`** without touching P-cores.
+   - **Combined 16-round ABBA (`20T`, `MAIN` vs Phase 9)**: **`+6.63%` median (`IQR [+4.42%, +8.24%]`)**.
+3. **Evaluated & Rejected:**
+   - **CFROUND-Aware Cross-Core P/E Chain Routing (`--pe-route`)**: Bit-exact (`32/32` vs interpreter) and achieved predicted routing (`E-cores: 66.8% cf=0, 0.2% cf>=2`; `P-cores: 0.2% cf=0, 58.2% cf>=2`), but migrating 2 MB scratchpads across non-inclusive L3/P-L2/E-L2 cost `-23%` H/s (`7,419 -> 5,654 H/s`).
+   - **Full VEX-128 FP loop (`j_vex=2`)**: `-20.08%` on `20T` (reverted/removed).
+   - **Global `j_sppf=2/3` (`PREFETCHT1/T2`)**: Hurt `8P` by `-2.78%` (`j_sppf=3`: `-7.47%` on `20T`).
+   - **`j_cfrorx=1` (`RORX` in `h_CFROUND`)**: `-2.08%` on `12E`.
+
+## Live Real-Pool Verification (`pool.hashvault.pro:3333`, TLS, No Admin, `Oszczedny (bez turbo)`, ~25–27 W BG)
+
+| Config (i7-14700KF) | XMRig 6.26.0 (live) | XMR-Miner PR #3 | XMR-Miner Phase 9 | Gain vs XMRig / PR #3 |
+|---|---:|---:|---:|---:|
+| `12E` (`--efficiency -t 0`, 8 P-cores free) | 4,316–4,367 H/s | 4,351 H/s @ 57.6 W (`75.5 H/W`) | **4,566.9 H/s @ 54.5 W (`83.83 H/W`, `155.4 H/dW`)** | **+4.6–5.8% vs XMRig / +11.0% H/W vs PR #3** |
+| `20T` (Auto `-t 0`: `8P+12E`) | 7,155–7,170 H/s (tuned) / 5,459 (auto) | 7,144 H/s @ 75.6 W (`94.5 H/W`) | **7,508.7 H/s @ 73.9 W (`101.55 H/W`, `160.4 H/dW`)** | **+4.7% tuned / +37.5% auto / +7.5% H/W vs PR #3** |
+
+- **Verification**: **14/14 CTest suites passed (100%)**, live HashVault TLS shares accepted with 0 rejected.
+
+---
+
+# Phase 9.5 — `PREFETCHT0` Dataset, `17T` Hybrid Auto (`8P+9E`), Pointer-Cursor JIT, `g_jit_loop_nop=0` (`105.41 H/W` Live)
+
+## Key Discoveries & Implemented Optimizations
+1. **`g_jit_ds_prefetch_hint = 1` (`PREFETCHT0` on RandomX Dataset instead of `PREFETCHNTA`, `src/crypto/randomx/jit_compiler_x86.cpp`):**
+   - `PREFETCHNTA` drops dataset cache lines from L2 upon eviction from Gracemont's small 32 KB L1D. Switching to `PREFETCHT0` keeps dataset lines resident across L1/L2 without hurting P-cores.
+   - Measured **`+3.02%` median on `20T` (IQR `[+0.95%, +4.68%]`)** and **`+7.0%` H/W** in paired steady-state RAPL benchmarks.
+2. **Hybrid Auto Thread Selection (`-t 0` → `17T = 8P + 9E [3/3/3]` on 8P+12E, `src/main.c`):**
+   - Both our paired steady-state sweep (`14T..20T`) and GLM-5.4's Gracemont cluster-bandwidth audit proved that running 4 E-cores per 4 MB L2 cluster (`12E` alongside `8P`) overflows the cluster L2 on AES scratchpad passes (`4.45 -> 18.6 -> 26.0` cyc/64B at 2/3/4 threads/cluster) AND saturates DDR4-3600 + starves OS threads.
+   - On hybrid CPUs with `pc > 0 && ec >= 8`, auto `-t 0` now selects `pc + (ec * 3) / 4` (`17T = 8P + 9E`, 3 per E-cluster, leaving 3 E-cores completely free for Windows/apps).
+   - Paired steady-state sweep (`j_dspf=1`): **`17T: 7,204.6 H/s @ 73.7 W = 97.77 H/W (191.5 H/dW)`** vs `20T: 7,001.7 H/s @ 74.8 W = 93.87 H/W (143.1 H/dW)` (**+2.9% H/s, -1.1 W, +4.15% Total H/W**); `bench_rx` peak on quiet system: **`8,001.9 H/s`**.
+3. **Production Default `g_jit_loop_nop = 0` (`src/crypto/randomx/jit_compiler_x86.cpp`):**
+   - Caught by GLM-5.4's microarchitecture audit: `jit_compiler_x86.cpp` still defaulted to `g_jit_loop_nop = 1` (inserting a dead `NOP` at loop entry), whereas `bench_rx` had been setting `0`.
+   - Paired ABBA verification: **`+1.75%` median on `12E` (`4,549.6 -> 4,629.4 H/s`, IQR `[+0.67%, +2.77%]`)** and **`+0.98%` median on `8P 1L`**.
+4. **JIT & VM Efficiency Improvements (from Opus 5.5 audit):**
+   - **Fast pointer-cursor JIT emitter (`src/crypto/randomx/jit_compiler_x86.cpp`)**: Replaced byte-by-byte `emitByte()` / `this->pos` aliasing store-forwarding chain with register-cached `uint8_t* p = code + pos` + `put32`/`put64`/`genAddressRegP`/`genAddressRegDstP` + single `pos` writeback across prologue, epilogue, and all instruction handlers (100% byte-identical machine code).
+   - **32-bit `rr2/rr3` epilogue (`src/crypto/randomx/jit_compiler_x86.cpp`)**: Emits `41 8B C0+r2; 41 33 C0+r3` (32-bit zero-extending into `rax`) + `xor rbp, rax`, dropping `mov ecx, eax` (saves 1 uop + 2 bytes per iteration on 100% of iterations across `generateProgram`, `generateProgramSingleIter`, and both VMs in `generateProgramDualInterleaved`).
+   - **Trimmed V1 `rx_fill_aes4rx4` (`src/crypto/randomx/vm.c`)**: Trims `rx_fill_aes4rx4` from `sizeof(rx_program)` (3,200 B, V2) to `RX_PROGRAM_V1_BYTES` (2,176 B) for V1 chains in `rx_vm_run_n`, `rx_vm_run_dual`, and `group_run` (-32% AES4R program-fill work per chain).
+   - **Multi-lane 3×`MOV` `ISWAP_R` (`src/crypto/randomx/jit_multi_x86.cpp`)**: Ported `mov(RAX, rd); mov(rd, rs); mov(rs, RAX)` replacing microcoded `xchg(rd, rs)` (`8P 2L` now `5,231 H/s` in `bench_rx`).
+5. **Evaluated & Rejected:**
+   - `xorpd xmm12, xmm12` before / `cvtdq2pd xmm12, xmm12` after `ldmxcsr` (`j_cffence=1/2/3`): single-core alignment gain did not survive multi-thread load (`-3.01%` on `12E`, `-0.48%` on `9E`; reverted).
+   - Early dataset prefetch inside program body (`-1.74%`), E-core-only `PREFETCHT1` (`-3.95%`), disabling `g_vm_warm_sp` (`-3.47%` on `17T`), `PREFETCHT0` in multi-lane `8P 2L` (higher variance, lower mean).
+
+## Live Real-Pool Verification (`pool.hashvault.pro:3333`, TLS, No Admin, `Oszczedny (bez turbo)`, 55 s back-to-back)
+
+| Config (i7-14700KF) | Steady-State H/s | PKG Power | Total H/W | Delta H/dW | vs XMRig 17T / 20T / Auto |
+|---|---:|---:|---:|---:|---:|
+| **XMR-Miner Phase 9.5 Auto (`-t 0` → `17T: 8P+9E [3/3/3]`)** | **7,688.4 H/s** | **72.9 W** | **105.41 H/W** | **170.5 H/dW** | **+5.2% / +9.3% / +40.8%** |
+| XMRig 6.26.0 `17T` Tuned (`0x7775555`) | 7,307.6 H/s | ~73 W | ~100 H/W | — | baseline 17T |
+| XMR-Miner Phase 9.5 `20T` (`-t 20: 8P+12E`) | 7,113.4 H/s | 75.9 W | 93.7 H/W | 173.7 H/dW | -2.7% / +1.1% / +30.3% |
+| XMRig 6.26.0 `20T` Tuned (`0xFFF5555`) | 7,036.3 H/s | ~75.5 W | ~93 H/W | — | baseline 20T |
+| **XMR-Miner Phase 9.5 Eco (`--efficiency -t 0` → `12E`)** | **4,617.5 H/s** | **55.4 W** | **83.60 H/W** | **134.7 H/dW** | **+6.9% vs XMRig 12E (`4,316`)** |
+| XMRig 6.26.0 Auto (`28T` default) | 5,459.0 H/s | ~78 W | ~70 H/W | — | baseline Auto |
+
+- **Verification**: **14/14 CTest suites passed (100%)**, live HashVault TLS shares accepted across `17T Auto`, `20T`, and `12E` with **0 rejected**.

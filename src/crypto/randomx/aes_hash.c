@@ -2,8 +2,8 @@
 #include "common/cpu.h"
 
 int g_aes_hash_fill_prefetch = 0;
-int g_aes_hash_fill_upstream = 0;
-int g_aes_use_vaes = 1;
+int g_aes_hash_fill_upstream = 1;
+int g_aes_use_vaes = 0;
 
 #define AES_HASH_1R_STATE0 0xd7983aad, 0xcc82db47, 0x9fa856de, 0x92b52c0d
 #define AES_HASH_1R_STATE1 0xace78057, 0xf59e125a, 0x15c7b798, 0x338d996e

@@ -180,11 +180,16 @@ int cpu_has_sse2(void) {
 }
 
 int cpu_has_bmi2(void) {
+    static volatile int cached = -1;
+    int v = cached;
+    if (v >= 0) return v;
     u32 eax, ebx, ecx, edx;
     cpuid(0, 0, &eax, &ebx, &ecx, &edx);
-    if (eax < 7) return 0;
+    if (eax < 7) { cached = 0; return 0; }
     cpuid(7, 0, &eax, &ebx, &ecx, &edx);
-    return (ebx >> 8) & 1;
+    v = (ebx >> 8) & 1;
+    cached = v;
+    return v;
 }
 
 int cpu_has_vaes(void) {

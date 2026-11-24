@@ -134,6 +134,254 @@ extern int g_jit_cfround_elim;
 extern int g_jit_jcc_align;
 extern int g_jit_rorx;
 extern int g_jit_cfround_rorx;
+extern int g_jit_near_rcp_pool;
+extern int g_jit_inline_rcp_pool;
+extern int g_jit_stack_rcp_pool;
+extern int g_jit_iswap_mov;
+extern int g_jit_fast_iadd_rs;
+extern int g_jit_ds_prefetch_hint;
+extern int g_aes_hash_fill_prefetch;
+
+extern rx_jit *rx_jit_create(void);
+extern void rx_jit_destroy(rx_jit *jit);
+extern void rx_jit_set_cfround_guard(rx_jit *jit, int enable);
+extern void rx_jit_generate_program(rx_jit *jit, rx_program *prog, rx_program_config *cfg, rx_cache *cache);
+extern void *rx_jit_get_program_func(rx_jit *jit);
+
+/* ---- CFROUND-Aware Heterogeneous P/E Chain Router (--pe-route) ---- */
+#define PE_MAX_VMS (MAX_THREADS + 64)
+
+typedef struct {
+    rx_vm *vm;
+    uint8_t blob[76];
+    uint32_t nonce;
+    int chain;       /* 0..7: chain currently prepared in vm->program */
+    int cf_count;    /* number of CFROUND ops in vm->program */
+    int last_cpu;
+} pe_slot_t;
+
+typedef struct {
+    pe_slot_t *items[PE_MAX_VMS];
+    int count;
+} pe_queue_t;
+
+static volatile long g_pe_lock = 0;
+static pe_queue_t g_pe_q[3]; /* 0: cf==0, 1: cf==1, 2: cf>=2 */
+static pe_slot_t g_pe_slots[PE_MAX_VMS];
+static int g_pe_extra_vms = 4;
+static int g_pe_mode_flag = 0; /* 0 = normal strict-improve, 1 = pcore-strict-cf>=1 */
+static volatile long g_pe_hashes_done = 0;
+static volatile long g_pe_nonce_gen = 0;
+static long g_pe_hashes_target = 0;
+
+/* Telemetry counters (per-repeat) */
+typedef struct {
+    uint64_t chains_cf[3];
+    uint64_t swaps;
+    uint64_t keeps;
+    uint64_t hashes;
+} pe_stats_t;
+static pe_stats_t g_pe_stats[MAX_THREADS];
+
+/* Verification buffer for --pe-route correctness check */
+#define PE_VERIFY_COUNT 32
+static volatile long g_pe_verify_active = 0;
+static volatile long g_pe_verify_idx = 0;
+static uint8_t g_pe_verify_blobs[PE_VERIFY_COUNT][76];
+static uint8_t g_pe_verify_hashes[PE_VERIFY_COUNT][32];
+
+static __forceinline void pe_lock(void) {
+#ifdef _MSC_VER
+    while (_InterlockedExchange(&g_pe_lock, 1) != 0) {
+        while (g_pe_lock) _mm_pause();
+    }
+#else
+    while (__atomic_exchange_n(&g_pe_lock, 1, __ATOMIC_ACQUIRE) != 0) {
+        while (__atomic_load_n(&g_pe_lock, __ATOMIC_RELAXED)) _mm_pause();
+    }
+#endif
+}
+
+static __forceinline void pe_unlock(void) {
+#ifdef _MSC_VER
+    _InterlockedExchange(&g_pe_lock, 0);
+#else
+    __atomic_store_n(&g_pe_lock, 0, __ATOMIC_RELEASE);
+#endif
+}
+
+static __forceinline int pe_count_cfrounds(const rx_program *prog) {
+    int c = 0;
+    for (int i = 0; i < RX_PROGRAM_SIZE; i++) {
+        uint8_t op = prog->programBuffer[i].opcode;
+        if (op >= RX_CEIL_RX_CBRANCH && op < RX_CEIL_RX_CFROUND) c++;
+    }
+    return c;
+}
+
+static __forceinline void pe_vm_init_cfg(rx_vm *vm) {
+    for (int i = 0; i < RX_REG_FLT_COUNT; i++) {
+        uint64_t ent0 = vm->program.entropyBuffer[2 * i];
+        uint64_t ent1 = vm->program.entropyBuffer[2 * i + 1];
+        uint64_t bits0 = rx_get_small_positive_float_bits(ent0);
+        uint64_t bits1 = rx_get_small_positive_float_bits(ent1);
+        vm->reg.a[i][0] = *(double *)&bits0;
+        vm->reg.a[i][1] = *(double *)&bits1;
+    }
+    uint32_t mem_ma = (uint32_t)(vm->program.entropyBuffer[8] & RX_CACHE_LINE_ALIGN_MASK);
+    uint32_t mem_mx = (uint32_t)vm->program.entropyBuffer[10];
+    vm->mem.mx_ma = ((uint64_t)mem_ma << 32) | mem_mx;
+    uint64_t addrRegs = vm->program.entropyBuffer[12];
+    vm->config.readReg0 = 0 + (int)(addrRegs & 1); addrRegs >>= 1;
+    vm->config.readReg1 = 2 + (int)(addrRegs & 1); addrRegs >>= 1;
+    vm->config.readReg2 = 4 + (int)(addrRegs & 1); addrRegs >>= 1;
+    vm->config.readReg3 = 6 + (int)(addrRegs & 1);
+    vm->datasetOffset = (uint32_t)(vm->program.entropyBuffer[13] % (RX_DATASET_EXTRA_ITEMS + 1)) * RX_CACHE_LINE_SIZE;
+    vm->config.eMask[0] = rx_get_float_mask(vm->program.entropyBuffer[14]);
+    vm->config.eMask[1] = rx_get_float_mask(vm->program.entropyBuffer[15]);
+}
+
+static __forceinline void pe_prepare_chain(pe_slot_t *s) {
+    rx_fill_aes4rx4(s->vm->tempHash, sizeof(rx_program), &s->vm->program);
+    pe_vm_init_cfg(s->vm);
+    s->cf_count = pe_count_cfrounds(&s->vm->program);
+}
+
+static void pe_init_slot(pe_slot_t *s, uint32_t nonce) {
+    memset(s->blob, 0, sizeof(s->blob));
+    s->blob[0] = 0x10; s->blob[1] = 0x03; s->blob[2] = 0xe3;
+    s->blob[3] = 0x42;
+    s->nonce = nonce;
+    memcpy(s->blob + 39, &nonce, 4);
+    blake2b(s->vm->tempHash, sizeof(s->vm->tempHash), s->blob, sizeof(s->blob), NULL, 0);
+    rx_fill_aes1rx4(s->vm->tempHash, RX_SCRATCHPAD_L3, s->vm->scratchpad);
+    s->vm->mxcsrState = RX_MXCSR_DEFAULT;
+    s->chain = 0;
+    s->last_cpu = -1;
+    pe_prepare_chain(s);
+}
+
+static __forceinline int pe_bucket(int cf) {
+    return cf >= 2 ? 2 : cf;
+}
+
+static __forceinline pe_slot_t *pe_pop_best(pe_queue_t *q, int my_cpu) {
+    /* Prefer same core, then same 4-core E-cluster, else LIFO (hottest in L3) */
+    int best = q->count - 1;
+    for (int i = q->count - 1; i >= 0; i--) {
+        int lc = q->items[i]->last_cpu;
+        if (lc == my_cpu) { best = i; break; }
+        if (my_cpu >= 16 && lc >= 16 && (lc / 4) == (my_cpu / 4)) {
+            best = i;
+        }
+    }
+    pe_slot_t *res = q->items[best];
+    q->items[best] = q->items[--q->count];
+    return res;
+}
+
+static __forceinline pe_slot_t *pe_route_slot(pe_slot_t *cur, int is_pcore, int my_cpu, pe_stats_t *st) {
+    int b = pe_bucket(cur->cf_count);
+    if (!is_pcore) {
+        /* E-core: keep cf==0 immediately without touching lock */
+        if (b == 0) { st->keeps++; return cur; }
+        pe_lock();
+        int take_b = -1;
+        if (g_pe_q[0].count > 0) take_b = 0;
+        else if (b == 2 && g_pe_q[1].count > 0) take_b = 1;
+        if (take_b >= 0) {
+            pe_slot_t *next = pe_pop_best(&g_pe_q[take_b], my_cpu);
+            g_pe_q[b].items[g_pe_q[b].count++] = cur;
+            pe_unlock();
+            st->swaps++;
+            return next;
+        }
+        pe_unlock();
+        st->keeps++;
+        return cur;
+    } else {
+        /* P-core: keep cf>=2 immediately without touching lock */
+        if (b == 2) { st->keeps++; return cur; }
+        pe_lock();
+        int take_b = -1;
+        if (g_pe_q[2].count > 0) take_b = 2;
+        else if (b == 0 && g_pe_q[1].count > 0) take_b = 1;
+        if (take_b >= 0) {
+            pe_slot_t *next = pe_pop_best(&g_pe_q[take_b], my_cpu);
+            g_pe_q[b].items[g_pe_q[b].count++] = cur;
+            pe_unlock();
+            st->swaps++;
+            return next;
+        }
+        pe_unlock();
+        st->keeps++;
+        return cur;
+    }
+}
+
+static void pe_exec_one_chain(pe_slot_t *s, rx_jit *jit, uint32_t *cur_rm, int is_pcore, int my_cpu, pe_stats_t *st) {
+    typedef void (RX_JIT_ABI *ProgramFunc)(rx_register_file *, rx_memory_regs *, uint8_t *, uint32_t);
+    rx_vm *vm = s->vm;
+    int b = pe_bucket(s->cf_count);
+    st->chains_cf[b]++;
+
+    rx_jit_generate_program(jit, &vm->program, &vm->config, vm->cachePtr);
+    ProgramFunc func = (ProgramFunc)rx_jit_get_program_func(jit);
+
+    uint32_t want_rm = (vm->mxcsrState >> 13) & 3;
+    if (*cur_rm != want_rm) {
+        _mm_setcsr(vm->mxcsrState);
+        *cur_rm = want_rm;
+    }
+
+    rx_memory_regs memRegs;
+    memRegs.mx_ma = vm->mem.mx_ma;
+    memRegs.memory = vm->mem.memory + vm->datasetOffset;
+    func(&vm->reg, &memRegs, vm->scratchpad, RX_PROGRAM_ITERATIONS);
+    vm->mem.mx_ma = memRegs.mx_ma;
+
+    if (s->cf_count > 0) {
+        uint32_t after = _mm_getcsr();
+        *cur_rm = (after >> 13) & 3;
+        vm->mxcsrState = RX_MXCSR_DEFAULT | (after & 0x6000);
+    }
+    s->last_cpu = my_cpu;
+
+    if (s->chain < RX_PROGRAM_COUNT - 1) {
+        rx_blake2b_regfile(vm->tempHash, &vm->reg);
+        s->chain++;
+        pe_prepare_chain(s);
+    } else {
+        /* Completed a full 8-chain hash! */
+        uint8_t prev_blob[76];
+        int verifying = (int)BAR_LOAD(&g_pe_verify_active);
+        if (verifying) memcpy(prev_blob, s->blob, 76);
+
+        uint32_t next_nonce = (uint32_t)BAR_INC(&g_pe_nonce_gen);
+        s->nonce = next_nonce;
+        memcpy(s->blob + 39, &next_nonce, 4);
+
+        uint8_t out_hash[32];
+        rx_blake2b_blob(vm->tempHash, s->blob, sizeof(s->blob));
+        rx_hash_and_fill_aes1rx4(vm->scratchpad, RX_SCRATCHPAD_L3, &vm->reg.a, vm->tempHash);
+        blake2b(out_hash, RX_HASH_SIZE, &vm->reg, sizeof(rx_register_file), NULL, 0);
+
+        if (verifying) {
+            long vi = BAR_INC(&g_pe_verify_idx) - 1;
+            if (vi >= 0 && vi < PE_VERIFY_COUNT) {
+                memcpy(g_pe_verify_blobs[vi], prev_blob, 76);
+                memcpy(g_pe_verify_hashes[vi], out_hash, 32);
+            }
+        }
+
+        vm->mxcsrState = RX_MXCSR_DEFAULT;
+        s->chain = 0;
+        pe_prepare_chain(s);
+        st->hashes++;
+        BAR_INC(&g_pe_hashes_done);
+        (void)is_pcore;
+    }
+}
 
 /* ---- A/B experiment support ---- */
 typedef struct { int lanes; char knobs[256]; } ab_config;
@@ -161,18 +409,26 @@ static int apply_knobs(const char *spec) {
     g_mjit_tail_order = 1;
     g_mjit_mxguard = 0;
     g_vm_warm_sp = 1;
-    g_aes_use_vaes = 1;
+    g_aes_use_vaes = 0;
     g_jit_cfround_guard = 0;
     g_jit_short_branches = 0;
     g_jit_involution_pairs = 0;
     g_jit_branch_align = 0;
     g_jit_loop_nop = 0;
     g_jit_sp_prefetch_hint = 0;
-    g_jit_bmi2_mulx = 0;
+    g_jit_bmi2_mulx = 1;
     g_jit_cfround_elim = 0;
     g_jit_jcc_align = 0;
     g_jit_rorx = 0;
     g_jit_cfround_rorx = 0;
+    g_jit_near_rcp_pool = 1;
+    g_jit_inline_rcp_pool = 1;
+    g_jit_stack_rcp_pool = 0;
+    g_jit_iswap_mov = 1;
+    g_jit_fast_iadd_rs = 0;
+    g_jit_ds_prefetch_hint = 1;
+    g_aes_hash_fill_upstream = 1;
+    g_aes_hash_fill_prefetch = 0;
     char buf[256];
     snprintf(buf, sizeof(buf), "%s", spec);
     char *save = NULL;
@@ -208,6 +464,14 @@ static int apply_knobs(const char *spec) {
         else if (!strcmp(name, "j_jcc")) g_jit_jcc_align = val;
         else if (!strcmp(name, "j_rorx")) g_jit_rorx = val;
         else if (!strcmp(name, "j_cfrorx")) g_jit_cfround_rorx = val;
+        else if (!strcmp(name, "j_nrcp")) g_jit_near_rcp_pool = val;
+        else if (!strcmp(name, "j_ircp")) g_jit_inline_rcp_pool = val;
+        else if (!strcmp(name, "j_srcp")) g_jit_stack_rcp_pool = val;
+        else if (!strcmp(name, "j_iswap")) g_jit_iswap_mov = val;
+        else if (!strcmp(name, "j_fadd")) g_jit_fast_iadd_rs = val;
+        else if (!strcmp(name, "j_dspf")) g_jit_ds_prefetch_hint = val;
+        else if (!strcmp(name, "aes_up")) g_aes_hash_fill_upstream = val;
+        else if (!strcmp(name, "aes_pf")) g_aes_hash_fill_prefetch = val;
         else if (!strcmp(name, "lanes")) {}
         else { printf("unknown knob %s\n", name); return 0; }
     }
@@ -218,6 +482,26 @@ static int apply_knobs(const char *spec) {
 static int knob_lanes(const char *spec) {
     const char *p = strstr(spec, "lanes=");
     return p ? atoi(p + 6) : 1;
+}
+
+static int g_rapl_ok = 0;
+static double g_run_e0[64], g_run_e1[64], g_run_dt[64];
+static long g_run_hashes[64];
+static double g_idle_watts = 0.0;
+
+static void rapl_sample_start(int r) {
+    if (r < 64) {
+        g_run_dt[r] = now_sec();
+        if (g_rapl_ok) msr_read_package_energy(&g_run_e0[r]);
+    }
+}
+
+static void rapl_sample_end(int r, long total_hashes) {
+    if (r < 64) {
+        g_run_dt[r] = now_sec() - g_run_dt[r];
+        g_run_hashes[r] = total_hashes;
+        if (g_rapl_ok) msr_read_package_energy(&g_run_e1[r]);
+    }
 }
 
 #ifdef _WIN32
@@ -253,7 +537,8 @@ static void *worker_main(void *p)
             K[c] = g_ab[c].lanes;
             grp[c] = NULL;
             if (K[c] == 0) {
-                single[c] = rx_create_vm(RX_FLAG_JIT, w->cache, w->dataset);
+                int ab_flags = RX_FLAG_JIT | (w->cpu >= 16 ? RX_FLAG_CFROUND_GUARD : 0);
+                single[c] = rx_create_vm(ab_flags, w->cache, w->dataset);
                 if (!single[c]) { fprintf(stderr, "VM alloc failed\n"); exit(3); }
                 rx_calculate_hash_first(single[c], in[0], sz[0]);
                 continue;
@@ -295,6 +580,68 @@ static void *worker_main(void *p)
         return NULL;
 #endif
     }
+    if (w->full_mode == 6) {
+        int is_pcore = (w->cpu < 16) ? 1 : 0;
+        rx_jit *jit = rx_jit_create();
+        if (!jit) { fprintf(stderr, "JIT alloc failed\n"); exit(3); }
+        if (!is_pcore) rx_jit_set_cfround_guard(jit, 1);
+
+        pe_slot_t *cur = &g_pe_slots[w->tid];
+        w->sp_kind = cur->vm->sp_page_kind;
+
+        uint32_t saved_mxcsr = _mm_getcsr();
+        _mm_setcsr(RX_MXCSR_DEFAULT);
+        uint32_t cur_rm = 0;
+        pe_stats_t *st = &g_pe_stats[w->tid];
+
+        /* Multi-threaded bit-exact verification phase (if enabled) */
+        barrier_wait();
+        if (BAR_LOAD(&g_pe_verify_active)) {
+            while (BAR_LOAD(&g_pe_verify_idx) < PE_VERIFY_COUNT) {
+                cur = pe_route_slot(cur, is_pcore, w->cpu, st);
+                pe_exec_one_chain(cur, jit, &cur_rm, is_pcore, w->cpu, st);
+            }
+            barrier_wait();
+            if (w->tid == 0) g_pe_verify_active = 0;
+            barrier_wait();
+        }
+
+        /* Warm-up 16 chains */
+        for (int i = 0; i < 16; i++) {
+            cur = pe_route_slot(cur, is_pcore, w->cpu, st);
+            pe_exec_one_chain(cur, jit, &cur_rm, is_pcore, w->cpu, st);
+        }
+
+        for (int r = 0; r < w->repeats; r++) {
+            barrier_wait();
+            if (w->tid == 0) {
+                g_pe_hashes_done = 0;
+                memset(g_pe_stats, 0, sizeof(g_pe_stats));
+                rapl_sample_start(r);
+            }
+            barrier_wait();
+            double t0 = now_sec();
+            while (BAR_LOAD(&g_pe_hashes_done) < g_pe_hashes_target) {
+                cur = pe_route_slot(cur, is_pcore, w->cpu, st);
+                pe_exec_one_chain(cur, jit, &cur_rm, is_pcore, w->cpu, st);
+            }
+            w->seconds[r] = now_sec() - t0;
+            barrier_wait();
+            if (w->tid == 0) {
+                rapl_sample_end(r, BAR_LOAD(&g_pe_hashes_done));
+            }
+            barrier_wait();
+        }
+
+        _mm_setcsr(saved_mxcsr);
+        rx_jit_destroy(jit);
+#ifdef _WIN32
+        return 0;
+#else
+        return NULL;
+#endif
+    }
+
     if (w->full_mode == 3 || ((w->full_mode == 4 || w->full_mode == 5) && w->lanes > 1)) {
         rx_vm_group *g = rx_create_vm_group(w->lanes, RX_FLAG_DEFAULT, w->cache, w->dataset);
         if (!g) { fprintf(stderr, "group alloc failed (lanes=%d)\n", w->lanes); exit(3); }
@@ -456,6 +803,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(argv[i], "--lanes") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 3; }
         else if (!strcmp(argv[i], "--hetero") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 4; }
         else if (!strcmp(argv[i], "--waterfill") && i + 1 < argc) { lanes = atoi(argv[++i]); full_mode = 5; }
+        else if (!strcmp(argv[i], "--pe-route") && i + 1 < argc) { g_pe_extra_vms = atoi(argv[++i]); full_mode = 6; }
         else if (!strcmp(argv[i], "--gran") && i + 1 < argc) g_mjit_granularity = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--eco") && i + 1 < argc) g_eco_qos = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--mxskip")) g_mjit_mxcsr_skip = 1;
@@ -472,6 +820,18 @@ int main(int argc, char **argv) {
             if (sscanf(argv[++i], "%63[^=]=%d", name, &val) == 2) {
                 if (!strcmp(name, "rcp_pool")) g_mjit_rcp_pool = val;
                 else if (!strcmp(name, "prefetch")) g_mjit_prefetch_mode = val;
+                else if (!strcmp(name, "vaes")) g_aes_use_vaes = val;
+                else if (!strcmp(name, "aes_up")) g_aes_hash_fill_upstream = val;
+                else if (!strcmp(name, "aes_pf")) g_aes_hash_fill_prefetch = val;
+                else if (!strcmp(name, "warmsp")) g_vm_warm_sp = val;
+                else if (!strcmp(name, "j_nrcp")) g_jit_near_rcp_pool = val;
+                else if (!strcmp(name, "j_ircp")) g_jit_inline_rcp_pool = val;
+                else if (!strcmp(name, "j_srcp")) g_jit_stack_rcp_pool = val;
+                else if (!strcmp(name, "j_sppf")) g_jit_sp_prefetch_hint = val;
+                else if (!strcmp(name, "j_iswap")) g_jit_iswap_mov = val;
+                else if (!strcmp(name, "j_fadd")) g_jit_fast_iadd_rs = val;
+                else if (!strcmp(name, "j_mulx")) g_jit_bmi2_mulx = val;
+                else if (!strcmp(name, "j_dspf")) g_jit_ds_prefetch_hint = val;
                 else { printf("unknown knob %s\n", name); return 2; }
             }
         }
@@ -493,7 +853,25 @@ int main(int argc, char **argv) {
     if (repeats < 1) repeats = 1;
 
     printf("bench_rx: threads=%d hashes/thread=%d repeats=%d pages=%d lanes=%d gran=%d mode=%s pin=%d\n",
-           threads, hashes, repeats, pages, lanes, g_mjit_granularity, full_mode == 3 ? "group" : full_mode == 2 ? "dual" : full_mode ? "full" : "batch", g_pin);
+           threads, hashes, repeats, pages, lanes, g_mjit_granularity,
+           full_mode == 6 ? "pe-route" : full_mode == 5 ? "waterfill" : full_mode == 4 ? "hetero" :
+           full_mode == 3 ? "group" : full_mode == 2 ? "dual" : full_mode ? "full" : "batch", g_pin);
+
+    g_rapl_ok = (msr_init() == 0);
+    if (g_rapl_ok) {
+        double e0 = 0, e1 = 0;
+        double ts = now_sec();
+        msr_read_package_energy(&e0);
+#ifdef _WIN32
+        Sleep(500);
+#else
+        usleep(500000);
+#endif
+        msr_read_package_energy(&e1);
+        double dt = now_sec() - ts;
+        if (dt > 0.1 && e1 >= e0) g_idle_watts = (e1 - e0) / dt;
+        printf("  power: RAPL/EMI active (pre-load baseline %.1f W)\n", g_idle_watts);
+    }
 
     const char key[] = "test key 000";
     double t0 = now_sec();
@@ -508,6 +886,29 @@ int main(int argc, char **argv) {
     if (check && !verify(cache, dataset)) {
         printf("CORRECTNESS FAILURE - aborting\n");
         return 1;
+    }
+
+    if (full_mode == 6) {
+        if (g_pe_extra_vms < 0) g_pe_extra_vms = 0;
+        if (threads + g_pe_extra_vms > PE_MAX_VMS) g_pe_extra_vms = PE_MAX_VMS - threads;
+        int total_vms = threads + g_pe_extra_vms;
+        memset(g_pe_q, 0, sizeof(g_pe_q));
+        g_pe_lock = 0;
+        g_pe_nonce_gen = total_vms;
+        g_pe_hashes_target = (long)threads * (long)hashes;
+        g_pe_verify_idx = 0;
+        g_pe_verify_active = check ? 1 : 0;
+        for (int i = 0; i < total_vms; i++) {
+            g_pe_slots[i].vm = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+            if (!g_pe_slots[i].vm) { printf("pe-route VM alloc failed (%d)\n", i); return 1; }
+            pe_init_slot(&g_pe_slots[i], (uint32_t)(i + 1));
+            if (i >= threads) {
+                int b = pe_bucket(g_pe_slots[i].cf_count);
+                g_pe_q[b].items[g_pe_q[b].count++] = &g_pe_slots[i];
+            }
+        }
+        printf("  pe-route: total_vms=%d (threads=%d + extra=%d, %.0f MB scratchpads)\n",
+               total_vms, threads, g_pe_extra_vms, total_vms * 2.0);
     }
 
     if (g_ab_mode) {
@@ -570,6 +971,79 @@ int main(int argc, char **argv) {
                (ratio[q1] - 1) * 100, (ratio[q3] - 1) * 100);
         return 0;
     }
+    if (full_mode == 6) {
+        if (check) {
+            rx_vm *interp = rx_create_vm(RX_FLAG_DEFAULT, cache, dataset);
+            int pass = 0, fail = 0;
+            uint8_t ref[32];
+            for (int i = 0; i < PE_VERIFY_COUNT; i++) {
+                rx_calculate_hash(interp, g_pe_verify_blobs[i], 76, ref);
+                if (memcmp(ref, g_pe_verify_hashes[i], 32) == 0) pass++;
+                else fail++;
+            }
+            rx_destroy_vm(interp);
+            printf("  [%s] pe-route multi-thread vs interpreter (%d/%d)\n",
+                   fail == 0 ? "PASS" : "FAIL", pass, PE_VERIFY_COUNT);
+            if (fail > 0) { printf("PE-ROUTE CORRECTNESS FAILURE - aborting\n"); return 1; }
+        }
+        printf("  scratchpad pages: %s\n", vmem_kind_name(w[0].sp_kind));
+        double *rates = (double *)calloc(repeats, sizeof(double));
+        double *watts_arr = (double *)calloc(repeats, sizeof(double));
+        double *hw_arr = (double *)calloc(repeats, sizeof(double));
+        for (int r = 0; r < repeats; r++) {
+            double total = (g_run_dt[r] > 0) ? ((double)g_run_hashes[r] / g_run_dt[r]) : 0.0;
+            double watts = (g_rapl_ok && g_run_dt[r] > 0) ? ((g_run_e1[r] - g_run_e0[r]) / g_run_dt[r]) : 0.0;
+            double hw = (watts > 0.1) ? (total / watts) : 0.0;
+            double dw = watts - g_idle_watts;
+            double hdw = (dw > 0.5) ? (total / dw) : 0.0;
+            rates[r] = total;
+            watts_arr[r] = watts;
+            hw_arr[r] = hw;
+            if (g_rapl_ok) {
+                printf("  run %d: %9.1f H/s | %5.1f W | %6.2f H/W (dW=%4.1f W, %6.1f H/dW) [%ld H in %.2fs]\n",
+                       r + 1, total, watts, hw, dw, hdw, g_run_hashes[r], g_run_dt[r]);
+            } else {
+                printf("  run %d: %9.1f H/s [%ld H in %.2fs]\n", r + 1, total, g_run_hashes[r], g_run_dt[r]);
+            }
+        }
+        /* Print P/E chain CFROUND routing distribution from last repeat */
+        uint64_t p_cf[3] = {0}, e_cf[3] = {0}, p_sw = 0, p_kp = 0, e_sw = 0, e_kp = 0;
+        for (int i = 0; i < threads; i++) {
+            int is_p = (w[i].cpu < 16);
+            for (int b = 0; b < 3; b++) {
+                if (is_p) p_cf[b] += g_pe_stats[i].chains_cf[b];
+                else e_cf[b] += g_pe_stats[i].chains_cf[b];
+            }
+            if (is_p) { p_sw += g_pe_stats[i].swaps; p_kp += g_pe_stats[i].keeps; }
+            else { e_sw += g_pe_stats[i].swaps; e_kp += g_pe_stats[i].keeps; }
+        }
+        uint64_t pt = p_cf[0] + p_cf[1] + p_cf[2];
+        uint64_t et = e_cf[0] + e_cf[1] + e_cf[2];
+        if (pt > 0) printf("  P-cores chains: %llu (cf=0: %.1f%%, cf=1: %.1f%%, cf>=2: %.1f%%) swaps=%.1f%%\n",
+                           (unsigned long long)pt, 100.0*p_cf[0]/pt, 100.0*p_cf[1]/pt, 100.0*p_cf[2]/pt,
+                           100.0*p_sw/(p_sw+p_kp+1));
+        if (et > 0) printf("  E-cores chains: %llu (cf=0: %.1f%%, cf=1: %.1f%%, cf>=2: %.1f%%) swaps=%.1f%%\n",
+                           (unsigned long long)et, 100.0*e_cf[0]/et, 100.0*e_cf[1]/et, 100.0*e_cf[2]/et,
+                           100.0*e_sw/(e_sw+e_kp+1));
+
+        qsort(rates, repeats, sizeof(double), cmp_double);
+        qsort(watts_arr, repeats, sizeof(double), cmp_double);
+        qsort(hw_arr, repeats, sizeof(double), cmp_double);
+        double median = rates[repeats / 2];
+        double best = rates[repeats - 1];
+        double med_w = watts_arr[repeats / 2];
+        double med_hw = hw_arr[repeats / 2];
+        if (g_rapl_ok) {
+            printf("RESULT threads=%d extra=%d median=%.1f H/s best=%.1f H/s med_W=%.1f W med_H/W=%.2f H/W\n",
+                   threads, g_pe_extra_vms, median, best, med_w, med_hw);
+        } else {
+            printf("RESULT threads=%d extra=%d median=%.1f H/s best=%.1f H/s per_thread=%.1f H/s\n",
+                   threads, g_pe_extra_vms, median, best, median / threads);
+        }
+        for (int i = 0; i < threads + g_pe_extra_vms; i++) rx_destroy_vm(g_pe_slots[i].vm);
+        if (g_rapl_ok) msr_destroy();
+        return 0;
+    }
     printf("  scratchpad pages: %s\n", vmem_kind_name(w[0].sp_kind));
     double *rates = (double *)calloc(repeats, sizeof(double));
     for (int r = 0; r < repeats; r++) {
@@ -583,5 +1057,6 @@ int main(int argc, char **argv) {
     double best = rates[repeats - 1];
     printf("RESULT threads=%d median=%.1f H/s best=%.1f H/s per_thread=%.1f H/s\n",
            threads, median, best, median / threads);
+    if (g_rapl_ok) msr_destroy();
     return 0;
 }
