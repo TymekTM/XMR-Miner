@@ -14,7 +14,7 @@ typedef struct {
     miner_ctx_t *miner;
     u64 hashes;
     u64 start_time;
-    int should_stop;
+    volatile int should_stop;
     uint32_t nonce_offset;
     uint32_t nonce_stride;
     uint32_t loop_count;
@@ -24,6 +24,9 @@ typedef struct {
     char current_algo[32];
     int batch_active;
     int lanes;          /* >1: multi-lane group hashing (rx_vm_group) */
+    int is_pcore;       /* 1 = P-core, 0 = E-core (enables E-core cfround_guard) */
+    int is_ht_sibling;
+    int os_cpu;
 } worker_t;
 
 void worker_run(worker_t *w);

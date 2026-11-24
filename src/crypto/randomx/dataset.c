@@ -139,12 +139,6 @@ void rx_init_dataset_item(rx_cache *cache, uint8_t *out, uint64_t item_number) {
     for (int i = 0; i < RX_CACHE_ACCESSES; i++) {
         uint8_t *mix_block = cache->memory + ((reg_val & DS_CACHE_MASK) << 6);
 
-        if (i < RX_CACHE_ACCESSES - 1) {
-            uint64_t next_reg = rl[cache->programs[i].addrReg];
-            uint8_t *next_block = cache->memory + ((next_reg & DS_CACHE_MASK) << 6);
-            _mm_prefetch((const char *)next_block, _MM_HINT_T0);
-        }
-
         if (cache->programs[i].fn && cache->programs[i].fn != NULL)
             cache->programs[i].fn(rl);
         else
@@ -294,7 +288,7 @@ void rx_init_dataset_internal(rx_dataset *ds, rx_cache *cache, uint32_t start_it
             args[t].thread_id = t;
             offset += args[t].count;
             threads[t] = CreateThread(NULL, 0, ds_init_thread, &args[t], 0, NULL);
-            SetThreadPriority(threads[t], THREAD_PRIORITY_ABOVE_NORMAL);
+            SetThreadPriority(threads[t], THREAD_PRIORITY_IDLE);
             if (t < pin_count && num_cores > 0) {
                 int os_idx = cores.os_index[t];
                 GROUP_AFFINITY ga = {0};

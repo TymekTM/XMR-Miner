@@ -449,6 +449,7 @@ extern "C" {
 rx_mjit *rx_mjit_create(void);
 void rx_mjit_destroy(rx_mjit *m);
 int rx_mjit_generate(rx_mjit *m, int K, rx_program **progs, rx_program_config **cfgs);
+int rx_mjit_generate_ex(rx_mjit *m, int K, rx_program **progs, rx_program_config **cfgs, const uint32_t *initMxcsr);
 void *rx_mjit_code(rx_mjit *m);
 extern int g_mjit_granularity;
 extern int g_mjit_mxcsr_skip;
@@ -458,6 +459,17 @@ extern int g_mjit_pinned_regs;
 extern int g_mjit_diag;
 extern int g_mjit_ds_prefetch;
 extern int g_mjit_fp_spill;
+extern int g_mjit_fp_bank2;
+extern int g_mjit_stagger;
+extern int g_mjit_smart_cuts;
+extern int g_mjit_smart_mxcsr;
+extern int g_mjit_bmi2;
+extern int g_mjit_refresh_dspf;
+extern int g_mjit_tail_order;
+extern int g_mjit_mxguard;
+extern int g_vm_warm_sp;
+extern int g_aes_use_vaes;
+extern int g_jit_cfround_guard;
 
 uint64_t rx_reciprocal(uint32_t divisor);
 

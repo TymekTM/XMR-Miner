@@ -200,3 +200,47 @@ instruction stream.
   embedded rounding (<= 5%, but 512-bit uops and code size make it risky).
 - Validate lane count / granularity on the 14700K (no AVX-512: spill mode;
   E-cores have 1 MB L2 per core, so they may prefer 2 lanes).
+
+---
+
+# Phase 7 — Intel Core i7-14700KF (Hybrid 8P+12E, AVX2 + VAES) & Real-Pool Optimization
+
+Machine: Intel Core i7-14700KF (8 Raptor Cove P-cores w/ 2 MB L2 each + 12 Gracemont E-cores in 3x4-core clusters w/ 4 MB L2 per cluster + 33 MB shared non-inclusive L3, 20C/28T, `AVX2/BMI2/VAES/GFNI`, no AVX-512), 32 GB DDR4-3600, Windows 11 x64, MSVC 19.44, 2 MB huge pages (user-space, no Admin / no MSR mod).
+
+## Microarchitectural Discoveries & Implemented Optimizations
+
+1. **Gracemont (E-core) `LDMXCSR` Microcode Assist (~200 cycles) & Per-VM `RX_FLAG_CFROUND_GUARD`:**
+   - Diagnostic runs (`diag=4`, no `LDMXCSR`) proved any MXCSR write (`LDMXCSR` or `VLDMXCSR`) triggers a ~200-cycle serializing assist on Gracemont E-cores, collapsing 2-lane E-core throughput by -50% (243 vs 501 H/s).
+   - Added `RX_FLAG_CFROUND_GUARD` (`jit_compiler_x86.cpp`): patches `stmxcsr [rsp]` in `code_first_load` and emits `cmp eax, [rsp]; je +7` in `h_CFROUND` (plus `cfround_elim`), skipping ~25% of redundant `LDMXCSR` writes.
+   - Result: **+7.74% median on E-cores** (509.6 -> 540.9 H/s on 1 E-core), -0.84% on P-cores -> enabled automatically **per-VM on E-cores only**.
+2. **AVX2 Multi-Lane JIT (`jit_multi_x86.cpp`) for Raptor Cove P-Cores:**
+   - **2-Lane AVX2 FP Register Banking (`fpBank2`)**: Lane 0 in `xmm0..7`, Lane 1 in `xmm8..14`, only `e[3]` swapped through stack (2 vector ops instead of 16) -> **+0.97%**.
+   - **Static/Lazy `LDMXCSR` Elimination (`smart_mxcsr`)**: constant-mode zero-`LDMXCSR` loop, FP-less segment skip, CFROUND-start skip, dead CFROUND load deferral, cyclic owner tracking, `FR_HWMXCSR`-tracked guard -> **+1.53%**.
+   - **BMI2 `MULX` & `RORX` (`bmi2`)**: eliminates `RAX`/`RDX` clobbers in `IMULH`/`CFROUND`/`IROR`/`IROL` -> **+1.29%**.
+   - **Early Dataset & Scratchpad Prefetch Ordering (`tail_order`)** -> **+0.85%**.
+   - **256-Entry Opcode LUT (`g_op_lut[256]`)** + `MJ_CODE_SIZE` bumped 128 KB -> 512 KB.
+   - **Granularity `G=256`** beats `G=64` by **+8.8%** and beats phase-staggered `stagger=1, G=128` by **+8.0%** on Raptor Cove AVX2 (512-entry ROB already overlaps `Tail(0)->Head(1)` while minimizing `LDMXCSR` switches).
+3. **256-bit VAES YMM (`aes_hash.c`) & L1/L2 Scratchpad Warming (`vm.c`):**
+   - Full 256-bit VAES implementations of `rx_hash_aes1rx4`, `rx_fill_aes1rx4`, `rx_fill_aes4rx4`, and `rx_hash_and_fill_aes1rx4` (runtime-gated by `cpu_has_vaes()`) -> **+1.59% median**.
+   - L1 (16 KB `T0`) + L2 (256 KB `T1`) scratchpad warming after `hash_and_fill` (`g_vm_warm_sp=1`) -> **+1.62%**.
+4. **L2+L3 Cache-Budget Hybrid Planner & Cluster-Spread Affinity (`affinity.c`, `miner.c`):**
+   - Orders CPUs **Physical-First (`P-cores -> E-cores round-robin across 4-core L2 clusters -> P-HT`)** via `EfficiencyClass`.
+   - `1..4T`: `3L` multi-lane on P-cores; `5..8T`: `2L` multi-lane on P-cores (32 MB fits P-L2 + L3); `>8T` hybrid: `1L` on P-cores (16 MB stays inside private 2 MB P-L2, 0 MB L3 pressure) + `1L + RX_FLAG_CFROUND_GUARD` on cluster-spread E-cores.
+5. **Real-Pool Reliability, Responsiveness & Opus 5.5 Correctness Audit Fixes:**
+   - Fixed `h_CFROUND` guard leakage into `generateProgramDualInterleaved` / `Light` / `SingleIter` (C1/M2).
+   - Fixed `stagger=1` + `smart_mxcsr=0` switch-in MXCSR skip bug caught by expanded `test_multilane` (`opt=7`).
+   - Added safe pause gate (`pause_req`/`paused_count`) in `miner_reinit_cache` and `miner_recreate_vms` (H1/M1), lock-safe `job.algo` copy, `TCP_NODELAY=1`, every-iteration job polling, and Intel-only `0x1A4` all-CPU MSR save/restore.
+   - Switched both mining workers and dataset-init threads (`logical - 2`) to `THREAD_PRIORITY_IDLE` (fixing desktop/Discord freezes previously caused by `THREAD_PRIORITY_ABOVE_NORMAL` during dataset init).
+   - Added Windows `VirtualAlloc2` 1 GB huge-page attempt with clean 2 MB -> 4 KB fallback.
+
+## Live Real-Pool Comparison vs XMRig 6.26.0 (`pool.hashvault.pro:3333`, TLS, 2 MB Huge Pages, No Admin, IDLE Priority)
+
+| Config (i7-14700KF) | XMRig 6.26.0 (live) | XMR-Miner (live) | Gain vs XMRig |
+|---|---:|---:|---:|
+| 1 P-core (`1T`, CPU 0) | 793.6 H/s (max 798.5) | **1,061.5 H/s** (`3L`, max 1,066.7) | **+33.8%** |
+| 8 P-cores (`8T`, no HT) | 5,752.3 H/s (max 5,788.8) | **6,438.0 H/s** (`2L`, max 6,479.0) | **+11.9%** (+21.1% vs XMRig Auto on 8 cores) |
+| 16 physical (`16T`, `8P+8E` cluster-spread) | 6,746.3 H/s | **7,800.3 H/s** (max 7,892.8) | **+15.6%** (+46.7% vs XMRig Auto) |
+| 20 physical (`20T`, `8P+12E` auto) | 6,744.2 H/s (max 6,973.5) | **7,520.7 H/s** live / **8,189 H/s** `bench_rx` | **+11.5% live / +21.4% peak** |
+| Out-of-the-box Default | 5,317.3 H/s (28T = 56 MB) | **7,521–7,800 H/s** (16T–20T) | **+41.4% to +46.7%** (+ 0% fee vs 1%) |
+
+- **Verification**: `14/14` CTest suites pass (`test_multilane`: **7,650/7,650 checks, 0 failures**, including VAES, `RX_FLAG_CFROUND_GUARD` single/batch/dual vs interpreter, `opt=0..7`); **12/12 real HashVault shares accepted** (0 rejected, 0 stale).

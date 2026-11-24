@@ -18,3 +18,4 @@ void miner_report_performance(miner_ctx_t *ctx);
 void miner_set_lanes(miner_ctx_t *ctx, int lanes);
 void *miner_get_cache(miner_ctx_t *ctx);
 void *miner_get_dataset(miner_ctx_t *ctx);
+void miner_check_pause(miner_ctx_t *ctx);

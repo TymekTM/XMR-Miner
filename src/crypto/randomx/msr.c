@@ -195,23 +195,29 @@ static int read_msr(uint32_t reg, uint64_t *value) {
     return 0;
 }
 
+static double g_energy_unit = 0.0;
+
 int msr_read_package_energy(double *joules) {
-    static double energy_unit = 0.0;
     uint64_t units = 0;
     uint64_t energy = 0;
 
     if (!joules) return 0;
     if (g_hDriver == INVALID_HANDLE_VALUE && open_driver() < 0) return 0;
 
-    if (energy_unit == 0.0) {
+    if (g_energy_unit == 0.0) {
         if (read_msr(0x606, &units) < 0) return 0;
         unsigned shift = (unsigned)((units >> 8) & 0x1F);
-        energy_unit = 1.0 / (double)(1ULL << shift);
+        g_energy_unit = 1.0 / (double)(1ULL << shift);
     }
 
     if (read_msr(0x611, &energy) < 0) return 0;
-    *joules = (double)(uint32_t)energy * energy_unit;
+    *joules = (double)(uint32_t)energy * g_energy_unit;
     return 1;
+}
+
+double msr_get_energy_wrap_joules(void) {
+    if (g_energy_unit > 0.0) return 4294967296.0 * g_energy_unit;
+    return 4294967296.0 / 16384.0;
 }
 
 int msr_set_package_power_limit(double watts, uint64_t *original) {
@@ -270,29 +276,65 @@ int msr_restore_prefetch_control(uint64_t original) {
     return write_msr(0x1A4, original) == 0;
 }
 
+#define MSR_MAX_CPUS 256
+static uint64_t g_saved_0x1a4[MSR_MAX_CPUS];
+static uint8_t g_saved_0x1a4_ok[MSR_MAX_CPUS];
+static int g_saved_cpu_count = 0;
+
+static int cpu_is_intel(void) {
+    int info[4] = {0};
+    __cpuidex(info, 0, 0);
+    return info[1] == 0x756e6547 && info[3] == 0x49656e69 && info[2] == 0x6c65746e; /* GenuineIntel */
+}
+
 int msr_init(void) {
     if (g_msr_supported >= 0) return g_msr_supported;
 
     g_msr_supported = 0;
+    if (!cpu_is_intel()) {
+        printf("[MSR] Non-Intel CPU detected, skipping Intel prefetcher MSR\n");
+        return 0;
+    }
     if (open_driver() < 0) {
         printf("[MSR] Failed to open WinRing0 driver\n");
         g_msr_supported = 0;
         return 0;
     }
 
-    int success = 0;
-    for (int i = 0; i < intel_msrs_count; i++) {
-        if (write_msr(intel_msrs[i].reg, intel_msrs[i].value) < 0) {
-            printf("[MSR] Write failed for MSR 0x%08X (error=%lu)\n", intel_msrs[i].reg, g_last_msr_error);
-            success = -1;
-        }
-    }
+    DWORD total_cpus = GetActiveProcessorCount(ALL_PROCESSOR_GROUPS);
+    if (total_cpus == 0) total_cpus = 1;
+    if (total_cpus > MSR_MAX_CPUS) total_cpus = MSR_MAX_CPUS;
 
-    if (success == 0) {
-        printf("[MSR] Applied %d Intel MSR registers successfully\n", intel_msrs_count);
+    GROUP_AFFINITY orig_ga;
+    int have_orig = GetThreadGroupAffinity(GetCurrentThread(), &orig_ga) ? 1 : 0;
+
+    int applied = 0;
+    g_saved_cpu_count = (int)total_cpus;
+    for (DWORD cpu = 0; cpu < total_cpus; cpu++) {
+        g_saved_0x1a4_ok[cpu] = 0;
+        GROUP_AFFINITY ga = {0};
+        ga.Group = (WORD)(cpu / 64);
+        ga.Mask = (KAFFINITY)(1ULL << (cpu % 64));
+        if (!SetThreadGroupAffinity(GetCurrentThread(), &ga, NULL)) continue;
+        uint64_t orig = 0;
+        if (read_msr(0x1A4, &orig) == 0) {
+            g_saved_0x1a4[cpu] = orig;
+            g_saved_0x1a4_ok[cpu] = 1;
+        }
+        int cpu_ok = 1;
+        for (int i = 0; i < intel_msrs_count; i++) {
+            if (write_msr(intel_msrs[i].reg, intel_msrs[i].value) < 0) cpu_ok = 0;
+        }
+        if (cpu_ok) applied++;
+    }
+    if (have_orig) SetThreadGroupAffinity(GetCurrentThread(), &orig_ga, NULL);
+
+    if (applied > 0) {
+        printf("[MSR] Applied Intel prefetcher MSR (0x1A4=0xF) on %d/%lu logical CPUs\n",
+               applied, (unsigned long)total_cpus);
         g_msr_supported = 1;
     } else {
-        printf("[MSR] Partial failure in MSR configuration\n");
+        printf("[MSR] Failed to apply MSR configuration\n");
         g_msr_supported = 0;
         close_driver();
     }
@@ -300,6 +342,22 @@ int msr_init(void) {
 }
 
 void msr_destroy(void) {
+    if (g_hDriver != INVALID_HANDLE_VALUE && g_saved_cpu_count > 0) {
+        GROUP_AFFINITY orig_ga;
+        int have_orig = GetThreadGroupAffinity(GetCurrentThread(), &orig_ga) ? 1 : 0;
+        for (int cpu = 0; cpu < g_saved_cpu_count; cpu++) {
+            if (!g_saved_0x1a4_ok[cpu]) continue;
+            GROUP_AFFINITY ga = {0};
+            ga.Group = (WORD)(cpu / 64);
+            ga.Mask = (KAFFINITY)(1ULL << (cpu % 64));
+            if (SetThreadGroupAffinity(GetCurrentThread(), &ga, NULL)) {
+                write_msr(0x1A4, g_saved_0x1a4[cpu]);
+            }
+            g_saved_0x1a4_ok[cpu] = 0;
+        }
+        if (have_orig) SetThreadGroupAffinity(GetCurrentThread(), &orig_ga, NULL);
+        g_saved_cpu_count = 0;
+    }
     close_driver();
 }
 #else
@@ -307,6 +365,7 @@ void msr_destroy(void) {
 int msr_init(void) { return 0; }
 void msr_destroy(void) {}
 int msr_read_package_energy(double *joules) { (void)joules; return 0; }
+double msr_get_energy_wrap_joules(void) { return 4294967296.0 / 16384.0; }
 int msr_set_package_power_limit(double watts, uint64_t *original) { (void)watts; (void)original; return 0; }
 int msr_restore_package_power_limit(uint64_t original) { (void)original; return 0; }
 int msr_set_prefetch_control(uint64_t value, uint64_t *original) { (void)value; (void)original; return 0; }

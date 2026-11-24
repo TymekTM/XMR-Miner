@@ -79,6 +79,7 @@ void worker_run(worker_t *w) {
     if (w->lanes > POOL_MAX_LANES) w->lanes = POOL_MAX_LANES;
 
     while (!w->should_stop) {
+        miner_check_pause(miner);
         {
             rx_vm *refreshed = (rx_vm *)w->vm;
             if (refreshed != vm) {
@@ -89,11 +90,9 @@ void worker_run(worker_t *w) {
                 vm2 = refreshed2;
             }
         }
-        if (!vm) { Sleep(10); continue; }
+        if (!vm && w->lanes <= 1) { Sleep(10); continue; }
 
-        uint64_t latest_generation = job_generation;
-        if (job_generation == 0 || (local_loop_count & 0x0F) == 0)
-            latest_generation = stratum_get_job_generation(stratum);
+        uint64_t latest_generation = stratum_get_job_generation(stratum);
         int job_changed = 0;
         if (latest_generation != job_generation) {
             stratum_free_job_copy(&job_copy);
@@ -136,7 +135,7 @@ void worker_run(worker_t *w) {
                 miner_reinit_cache(miner, seed_bytes, 32);
                 vm = (rx_vm *)miner_get_vm(miner, w->id);
                 w->vm = vm;
-                if (!vm) {
+                if (!vm && w->lanes <= 1) {
                     LOG_ERR("[W%d] No VM after reinit", w->id);
                     Sleep(1000);
                     continue;
@@ -284,6 +283,12 @@ job_ready:
             if (K == 0) { use_group = 0; w->lanes = 1; w->batch_active = 0; }
             local_hashes += (uint64_t)K;
         } else {
+        if (!vm) {
+            int f = RX_FLAG_JIT | w->current_rx_flags | (!w->is_pcore ? RX_FLAG_CFROUND_GUARD : 0);
+            vm = rx_create_vm(f, (rx_cache *)miner_get_cache(miner), (rx_dataset *)miner_get_dataset(miner));
+            w->vm = vm;
+            if (!vm) { Sleep(50); continue; }
+        }
         if (!w->batch_active) {
             memcpy(blob + nonce_off, &nonce, 4);
             rx_calculate_hash_first(vm, blob, (size_t)blob_len);

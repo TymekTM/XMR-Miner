@@ -1,7 +1,9 @@
 #include "randomx_internal.h"
+#include "common/cpu.h"
 
 int g_aes_hash_fill_prefetch = 0;
 int g_aes_hash_fill_upstream = 0;
+int g_aes_use_vaes = 1;
 
 #define AES_HASH_1R_STATE0 0xd7983aad, 0xcc82db47, 0x9fa856de, 0x92b52c0d
 #define AES_HASH_1R_STATE1 0xace78057, 0xf59e125a, 0x15c7b798, 0x338d996e
@@ -24,9 +26,43 @@ int g_aes_hash_fill_upstream = 0;
 #define AES_GEN_4R_KEY6 0xf63befa7, 0x2ba9660a, 0xf765a38b, 0xf273c9e7
 #define AES_GEN_4R_KEY7 0xc0b0762d, 0x0c06d1fd, 0x915839de, 0x7a7cd609
 
+#if defined(_MSC_VER) || defined(__VAES__)
+#define RX_HAVE_VAES_CODE 1
+#else
+#define RX_HAVE_VAES_CODE 0
+#endif
+
 void rx_hash_aes1rx4(const void *input, size_t inputSize, void *hash) {
     const uint8_t *inptr = (const uint8_t *)input;
     const uint8_t *inputEnd = inptr + inputSize;
+
+#if RX_HAVE_VAES_CODE
+    if (g_aes_use_vaes && cpu_has_vaes()) {
+        __m256i s02 = _mm256_set_m128i(rx_set_i128(AES_HASH_1R_STATE2), rx_set_i128(AES_HASH_1R_STATE0));
+        __m256i s13 = _mm256_set_m128i(rx_set_i128(AES_HASH_1R_STATE3), rx_set_i128(AES_HASH_1R_STATE1));
+        while (inptr < inputEnd) {
+            __m256i a0 = _mm256_loadu_si256((const __m256i *)inptr + 0);
+            __m256i a1 = _mm256_loadu_si256((const __m256i *)inptr + 1);
+            __m256i l02 = _mm256_permute2x128_si256(a0, a1, 0x20);
+            __m256i l13 = _mm256_permute2x128_si256(a0, a1, 0x31);
+            s02 = _mm256_aesenc_epi128(s02, l02);
+            s13 = _mm256_aesdec_epi128(s13, l13);
+            inptr += 64;
+        }
+        __m128i xk0_128 = rx_set_i128(AES_HASH_1R_XKEY0);
+        __m128i xk1_128 = rx_set_i128(AES_HASH_1R_XKEY1);
+        __m256i xk0 = _mm256_set_m128i(xk0_128, xk0_128);
+        __m256i xk1 = _mm256_set_m128i(xk1_128, xk1_128);
+        s02 = _mm256_aesenc_epi128(s02, xk0);
+        s13 = _mm256_aesdec_epi128(s13, xk0);
+        s02 = _mm256_aesenc_epi128(s02, xk1);
+        s13 = _mm256_aesdec_epi128(s13, xk1);
+        _mm256_storeu_si256((__m256i *)hash + 0, _mm256_permute2x128_si256(s02, s13, 0x20));
+        _mm256_storeu_si256((__m256i *)hash + 1, _mm256_permute2x128_si256(s02, s13, 0x31));
+        _mm256_zeroupper();
+        return;
+    }
+#endif
 
     rx_vec_i128 s0 = rx_set_i128(AES_HASH_1R_STATE0);
     rx_vec_i128 s1 = rx_set_i128(AES_HASH_1R_STATE1);
@@ -62,6 +98,28 @@ void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer) {
     uint8_t *outptr = (uint8_t *)buffer;
     const uint8_t *outputEnd = outptr + outputSize;
 
+#if RX_HAVE_VAES_CODE
+    if (g_aes_use_vaes && cpu_has_vaes()) {
+        __m256i k02 = _mm256_set_m128i(rx_set_i128(AES_GEN_1R_KEY2), rx_set_i128(AES_GEN_1R_KEY0));
+        __m256i k13 = _mm256_set_m128i(rx_set_i128(AES_GEN_1R_KEY3), rx_set_i128(AES_GEN_1R_KEY1));
+        __m256i s02 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)state + 2),
+                                       _mm_loadu_si128((const __m128i *)state + 0));
+        __m256i s13 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)state + 3),
+                                       _mm_loadu_si128((const __m128i *)state + 1));
+        while (outptr < outputEnd) {
+            s02 = _mm256_aesdec_epi128(s02, k02);
+            s13 = _mm256_aesenc_epi128(s13, k13);
+            _mm256_storeu_si256((__m256i *)outptr + 0, _mm256_permute2x128_si256(s02, s13, 0x20));
+            _mm256_storeu_si256((__m256i *)outptr + 1, _mm256_permute2x128_si256(s02, s13, 0x31));
+            outptr += 64;
+        }
+        _mm256_storeu_si256((__m256i *)state + 0, _mm256_permute2x128_si256(s02, s13, 0x20));
+        _mm256_storeu_si256((__m256i *)state + 1, _mm256_permute2x128_si256(s02, s13, 0x31));
+        _mm256_zeroupper();
+        return;
+    }
+#endif
+
     rx_vec_i128 k0 = rx_set_i128(AES_GEN_1R_KEY0);
     rx_vec_i128 k1 = rx_set_i128(AES_GEN_1R_KEY1);
     rx_vec_i128 k2 = rx_set_i128(AES_GEN_1R_KEY2);
@@ -93,6 +151,30 @@ void rx_fill_aes1rx4(void *state, size_t outputSize, void *buffer) {
 void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
     uint8_t *outptr = (uint8_t *)buffer;
     const uint8_t *outputEnd = outptr + outputSize;
+
+#if RX_HAVE_VAES_CODE
+    if (g_aes_use_vaes && cpu_has_vaes()) {
+        __m256i k04 = _mm256_set_m128i(rx_set_i128(AES_GEN_4R_KEY4), rx_set_i128(AES_GEN_4R_KEY0));
+        __m256i k15 = _mm256_set_m128i(rx_set_i128(AES_GEN_4R_KEY5), rx_set_i128(AES_GEN_4R_KEY1));
+        __m256i k26 = _mm256_set_m128i(rx_set_i128(AES_GEN_4R_KEY6), rx_set_i128(AES_GEN_4R_KEY2));
+        __m256i k37 = _mm256_set_m128i(rx_set_i128(AES_GEN_4R_KEY7), rx_set_i128(AES_GEN_4R_KEY3));
+        __m256i s02 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)state + 2),
+                                       _mm_loadu_si128((const __m128i *)state + 0));
+        __m256i s13 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)state + 3),
+                                       _mm_loadu_si128((const __m128i *)state + 1));
+        while (outptr < outputEnd) {
+            s02 = _mm256_aesdec_epi128(s02, k04); s13 = _mm256_aesenc_epi128(s13, k04);
+            s02 = _mm256_aesdec_epi128(s02, k15); s13 = _mm256_aesenc_epi128(s13, k15);
+            s02 = _mm256_aesdec_epi128(s02, k26); s13 = _mm256_aesenc_epi128(s13, k26);
+            s02 = _mm256_aesdec_epi128(s02, k37); s13 = _mm256_aesenc_epi128(s13, k37);
+            _mm256_storeu_si256((__m256i *)outptr + 0, _mm256_permute2x128_si256(s02, s13, 0x20));
+            _mm256_storeu_si256((__m256i *)outptr + 1, _mm256_permute2x128_si256(s02, s13, 0x31));
+            outptr += 64;
+        }
+        _mm256_zeroupper();
+        return;
+    }
+#endif
 
     rx_vec_i128 k0 = rx_set_i128(AES_GEN_4R_KEY0);
     rx_vec_i128 k1 = rx_set_i128(AES_GEN_4R_KEY1);
@@ -128,6 +210,77 @@ void rx_fill_aes4rx4(void *state, size_t outputSize, void *buffer) {
 void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *hash, void *fill_state) {
     uint8_t *sp = (uint8_t *)scratchpad;
     const uint8_t *spEnd = sp + scratchpadSize;
+
+#if RX_HAVE_VAES_CODE
+    if (g_aes_use_vaes && cpu_has_vaes()) {
+        __m256i hs02 = _mm256_set_m128i(rx_set_i128(AES_HASH_1R_STATE2), rx_set_i128(AES_HASH_1R_STATE0));
+        __m256i hs13 = _mm256_set_m128i(rx_set_i128(AES_HASH_1R_STATE3), rx_set_i128(AES_HASH_1R_STATE1));
+        const __m256i fk02 = _mm256_set_m128i(rx_set_i128(AES_GEN_1R_KEY2), rx_set_i128(AES_GEN_1R_KEY0));
+        const __m256i fk13 = _mm256_set_m128i(rx_set_i128(AES_GEN_1R_KEY3), rx_set_i128(AES_GEN_1R_KEY1));
+        __m256i fs02 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)fill_state + 2),
+                                        _mm_loadu_si128((const __m128i *)fill_state + 0));
+        __m256i fs13 = _mm256_set_m128i(_mm_loadu_si128((const __m128i *)fill_state + 3),
+                                        _mm_loadu_si128((const __m128i *)fill_state + 1));
+
+        if (scratchpadSize >= 128) {
+            const uint8_t *spEnd2 = spEnd - 128;
+            while (sp <= spEnd2) {
+                __m256i a0 = _mm256_loadu_si256((const __m256i *)sp + 0);
+                __m256i a1 = _mm256_loadu_si256((const __m256i *)sp + 1);
+                __m256i b0 = _mm256_loadu_si256((const __m256i *)sp + 2);
+                __m256i b1 = _mm256_loadu_si256((const __m256i *)sp + 3);
+
+                __m256i l02 = _mm256_permute2x128_si256(a0, a1, 0x20);
+                __m256i l13 = _mm256_permute2x128_si256(a0, a1, 0x31);
+                hs02 = _mm256_aesenc_epi128(hs02, l02);
+                hs13 = _mm256_aesdec_epi128(hs13, l13);
+                fs02 = _mm256_aesdec_epi128(fs02, fk02);
+                fs13 = _mm256_aesenc_epi128(fs13, fk13);
+                _mm256_storeu_si256((__m256i *)sp + 0, _mm256_permute2x128_si256(fs02, fs13, 0x20));
+                _mm256_storeu_si256((__m256i *)sp + 1, _mm256_permute2x128_si256(fs02, fs13, 0x31));
+
+                __m256i r02 = _mm256_permute2x128_si256(b0, b1, 0x20);
+                __m256i r13 = _mm256_permute2x128_si256(b0, b1, 0x31);
+                hs02 = _mm256_aesenc_epi128(hs02, r02);
+                hs13 = _mm256_aesdec_epi128(hs13, r13);
+                fs02 = _mm256_aesdec_epi128(fs02, fk02);
+                fs13 = _mm256_aesenc_epi128(fs13, fk13);
+                _mm256_storeu_si256((__m256i *)sp + 2, _mm256_permute2x128_si256(fs02, fs13, 0x20));
+                _mm256_storeu_si256((__m256i *)sp + 3, _mm256_permute2x128_si256(fs02, fs13, 0x31));
+
+                sp += 128;
+            }
+        }
+        while (sp < spEnd) {
+            __m256i a0 = _mm256_loadu_si256((const __m256i *)sp + 0);
+            __m256i a1 = _mm256_loadu_si256((const __m256i *)sp + 1);
+            hs02 = _mm256_aesenc_epi128(hs02, _mm256_permute2x128_si256(a0, a1, 0x20));
+            hs13 = _mm256_aesdec_epi128(hs13, _mm256_permute2x128_si256(a0, a1, 0x31));
+            fs02 = _mm256_aesdec_epi128(fs02, fk02);
+            fs13 = _mm256_aesenc_epi128(fs13, fk13);
+            _mm256_storeu_si256((__m256i *)sp + 0, _mm256_permute2x128_si256(fs02, fs13, 0x20));
+            _mm256_storeu_si256((__m256i *)sp + 1, _mm256_permute2x128_si256(fs02, fs13, 0x31));
+            sp += 64;
+        }
+
+        _mm256_storeu_si256((__m256i *)fill_state + 0, _mm256_permute2x128_si256(fs02, fs13, 0x20));
+        _mm256_storeu_si256((__m256i *)fill_state + 1, _mm256_permute2x128_si256(fs02, fs13, 0x31));
+
+        __m128i xk0_128 = rx_set_i128(AES_HASH_1R_XKEY0);
+        __m128i xk1_128 = rx_set_i128(AES_HASH_1R_XKEY1);
+        __m256i xk0 = _mm256_set_m128i(xk0_128, xk0_128);
+        __m256i xk1 = _mm256_set_m128i(xk1_128, xk1_128);
+        hs02 = _mm256_aesenc_epi128(hs02, xk0);
+        hs13 = _mm256_aesdec_epi128(hs13, xk0);
+        hs02 = _mm256_aesenc_epi128(hs02, xk1);
+        hs13 = _mm256_aesdec_epi128(hs13, xk1);
+
+        _mm256_storeu_si256((__m256i *)hash + 0, _mm256_permute2x128_si256(hs02, hs13, 0x20));
+        _mm256_storeu_si256((__m256i *)hash + 1, _mm256_permute2x128_si256(hs02, hs13, 0x31));
+        _mm256_zeroupper();
+        return;
+    }
+#endif
 
     rx_vec_i128 hs0 = rx_set_i128(AES_HASH_1R_STATE0);
     rx_vec_i128 hs1 = rx_set_i128(AES_HASH_1R_STATE1);
@@ -171,65 +324,65 @@ void rx_hash_and_fill_aes1rx4(void *scratchpad, size_t scratchpadSize, void *has
             mainEnd += prefetchDistance;
         }
     } else {
-    const uint8_t *spEnd2 = spEnd - 128;
-    while (sp < spEnd2) {
-        if (g_aes_hash_fill_prefetch && sp + 4096 < spEnd) {
-            _mm_prefetch((const char *)sp + 4096, _MM_HINT_T0);
-            _mm_prefetch((const char *)sp + 4160, _MM_HINT_T0);
+        const uint8_t *spEnd2 = spEnd - 128;
+        while (sp <= spEnd2) {
+            if (g_aes_hash_fill_prefetch && sp + 4096 < spEnd) {
+                _mm_prefetch((const char *)sp + 4096, _MM_HINT_T0);
+                _mm_prefetch((const char *)sp + 4160, _MM_HINT_T0);
+            }
+            rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
+            rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
+            rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
+            rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
+            rx_vec_i128 l4 = rx_load_i128((const rx_vec_i128 *)sp + 4);
+            rx_vec_i128 l5 = rx_load_i128((const rx_vec_i128 *)sp + 5);
+            rx_vec_i128 l6 = rx_load_i128((const rx_vec_i128 *)sp + 6);
+            rx_vec_i128 l7 = rx_load_i128((const rx_vec_i128 *)sp + 7);
+            hs0 = rx_aesenc_i128(hs0, l0);
+            hs1 = rx_aesdec_i128(hs1, l1);
+            hs2 = rx_aesenc_i128(hs2, l2);
+            hs3 = rx_aesdec_i128(hs3, l3);
+            fs0 = rx_aesdec_i128(fs0, fk0);
+            fs1 = rx_aesenc_i128(fs1, fk1);
+            fs2 = rx_aesdec_i128(fs2, fk2);
+            fs3 = rx_aesenc_i128(fs3, fk3);
+            _mm_store_si128((__m128i *)sp + 0, fs0);
+            _mm_store_si128((__m128i *)sp + 1, fs1);
+            _mm_store_si128((__m128i *)sp + 2, fs2);
+            _mm_store_si128((__m128i *)sp + 3, fs3);
+            hs0 = rx_aesenc_i128(hs0, l4);
+            hs1 = rx_aesdec_i128(hs1, l5);
+            hs2 = rx_aesenc_i128(hs2, l6);
+            hs3 = rx_aesdec_i128(hs3, l7);
+            fs0 = rx_aesdec_i128(fs0, fk0);
+            fs1 = rx_aesenc_i128(fs1, fk1);
+            fs2 = rx_aesdec_i128(fs2, fk2);
+            fs3 = rx_aesenc_i128(fs3, fk3);
+            _mm_store_si128((__m128i *)sp + 4, fs0);
+            _mm_store_si128((__m128i *)sp + 5, fs1);
+            _mm_store_si128((__m128i *)sp + 6, fs2);
+            _mm_store_si128((__m128i *)sp + 7, fs3);
+            sp += 128;
         }
-        rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
-        rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
-        rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
-        rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
-        rx_vec_i128 l4 = rx_load_i128((const rx_vec_i128 *)sp + 4);
-        rx_vec_i128 l5 = rx_load_i128((const rx_vec_i128 *)sp + 5);
-        rx_vec_i128 l6 = rx_load_i128((const rx_vec_i128 *)sp + 6);
-        rx_vec_i128 l7 = rx_load_i128((const rx_vec_i128 *)sp + 7);
-        hs0 = rx_aesenc_i128(hs0, l0);
-        hs1 = rx_aesdec_i128(hs1, l1);
-        hs2 = rx_aesenc_i128(hs2, l2);
-        hs3 = rx_aesdec_i128(hs3, l3);
-        fs0 = rx_aesdec_i128(fs0, fk0);
-        fs1 = rx_aesenc_i128(fs1, fk1);
-        fs2 = rx_aesdec_i128(fs2, fk2);
-        fs3 = rx_aesenc_i128(fs3, fk3);
-        _mm_store_si128((__m128i *)sp + 0, fs0);
-        _mm_store_si128((__m128i *)sp + 1, fs1);
-        _mm_store_si128((__m128i *)sp + 2, fs2);
-        _mm_store_si128((__m128i *)sp + 3, fs3);
-        hs0 = rx_aesenc_i128(hs0, l4);
-        hs1 = rx_aesdec_i128(hs1, l5);
-        hs2 = rx_aesenc_i128(hs2, l6);
-        hs3 = rx_aesdec_i128(hs3, l7);
-        fs0 = rx_aesdec_i128(fs0, fk0);
-        fs1 = rx_aesenc_i128(fs1, fk1);
-        fs2 = rx_aesdec_i128(fs2, fk2);
-        fs3 = rx_aesenc_i128(fs3, fk3);
-        _mm_store_si128((__m128i *)sp + 4, fs0);
-        _mm_store_si128((__m128i *)sp + 5, fs1);
-        _mm_store_si128((__m128i *)sp + 6, fs2);
-        _mm_store_si128((__m128i *)sp + 7, fs3);
-        sp += 128;
-    }
-    while (sp < spEnd) {
-        rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
-        rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
-        rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
-        rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
-        hs0 = rx_aesenc_i128(hs0, l0);
-        hs1 = rx_aesdec_i128(hs1, l1);
-        hs2 = rx_aesenc_i128(hs2, l2);
-        hs3 = rx_aesdec_i128(hs3, l3);
-        fs0 = rx_aesdec_i128(fs0, fk0);
-        fs1 = rx_aesenc_i128(fs1, fk1);
-        fs2 = rx_aesdec_i128(fs2, fk2);
-        fs3 = rx_aesenc_i128(fs3, fk3);
-        _mm_store_si128((__m128i *)sp + 0, fs0);
-        _mm_store_si128((__m128i *)sp + 1, fs1);
-        _mm_store_si128((__m128i *)sp + 2, fs2);
-        _mm_store_si128((__m128i *)sp + 3, fs3);
-        sp += 64;
-    }
+        while (sp < spEnd) {
+            rx_vec_i128 l0 = rx_load_i128((const rx_vec_i128 *)sp + 0);
+            rx_vec_i128 l1 = rx_load_i128((const rx_vec_i128 *)sp + 1);
+            rx_vec_i128 l2 = rx_load_i128((const rx_vec_i128 *)sp + 2);
+            rx_vec_i128 l3 = rx_load_i128((const rx_vec_i128 *)sp + 3);
+            hs0 = rx_aesenc_i128(hs0, l0);
+            hs1 = rx_aesdec_i128(hs1, l1);
+            hs2 = rx_aesenc_i128(hs2, l2);
+            hs3 = rx_aesdec_i128(hs3, l3);
+            fs0 = rx_aesdec_i128(fs0, fk0);
+            fs1 = rx_aesenc_i128(fs1, fk1);
+            fs2 = rx_aesdec_i128(fs2, fk2);
+            fs3 = rx_aesenc_i128(fs3, fk3);
+            _mm_store_si128((__m128i *)sp + 0, fs0);
+            _mm_store_si128((__m128i *)sp + 1, fs1);
+            _mm_store_si128((__m128i *)sp + 2, fs2);
+            _mm_store_si128((__m128i *)sp + 3, fs3);
+            sp += 64;
+        }
     }
 
     rx_store_i128((rx_vec_i128 *)fill_state + 0, fs0);

@@ -82,16 +82,22 @@ struct miner_ctx {
     uint64_t original_power_limit;
     int power_limit_set;
     int lanes;
+    volatile LONG pause_req;
+    volatile LONG paused_count;
+    char plan_desc[64];
 };
 
 void miner_set_lanes(miner_ctx_t *ctx, int lanes) { if (ctx) ctx->lanes = lanes; }
 void *miner_get_cache(miner_ctx_t *ctx) { return ctx->cache; }
 void *miner_get_dataset(miner_ctx_t *ctx) { return ctx->dataset; }
 
-/* auto: 3 lanes with AVX-512 register banks, 2 lanes otherwise (FP spill) */
-static int resolve_lanes(int lanes) {
-    if (lanes > 0) return lanes > 4 ? 4 : lanes;
-    return rx_cpu_has_avx512_lanes() ? 3 : 2;
+void miner_check_pause(miner_ctx_t *ctx) {
+    if (!ctx || !InterlockedCompareExchange(&ctx->pause_req, 0, 0)) return;
+    InterlockedIncrement(&ctx->paused_count);
+    while (InterlockedCompareExchange(&ctx->pause_req, 0, 0) && ctx->running) {
+        Sleep(5);
+    }
+    InterlockedDecrement(&ctx->paused_count);
 }
 
 miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores,
@@ -150,17 +156,19 @@ void miner_report_performance(miner_ctx_t *ctx) {
         double hashrate = (double)(total_hashes - ctx->perf_last_hashes) / seconds;
         if (power_ok && ctx->perf_power_ready) {
             double delta_energy = energy - ctx->perf_last_energy;
-            if (delta_energy < 0.0) delta_energy += 4294967296.0 / 16384.0;
+            if (delta_energy < 0.0) delta_energy += msr_get_energy_wrap_joules();
             double watts = delta_energy / seconds;
             if (watts > 0.1) {
-                LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %d threads | %s",
+                LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %dT | %s",
                          hashrate, watts, hashrate / watts, ctx->num_threads,
-                         g_best_mode == MODE_DUAL ? "dual" : "single");
+                         ctx->plan_desc[0] ? ctx->plan_desc : (g_best_mode == MODE_DUAL ? "dual" : "single"));
             } else {
-                LOG_INFO("[PERF] %.1f H/s | power unavailable", hashrate);
+                LOG_INFO("[PERF] %.1f H/s | power unavailable | %dT | %s",
+                         hashrate, ctx->num_threads, ctx->plan_desc[0] ? ctx->plan_desc : "single");
             }
         } else {
-            LOG_INFO("[PERF] %.1f H/s | power unavailable (RAPL/MSR)", hashrate);
+            LOG_INFO("[PERF] %.1f H/s | power unavailable (RAPL/MSR) | %dT | %s",
+                     hashrate, ctx->num_threads, ctx->plan_desc[0] ? ctx->plan_desc : "single");
         }
     }
 
@@ -351,17 +359,33 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
     if (strcmp(new_hex, ctx->current_seed_hex) != 0) {
         need_reinit = 1;
         strncpy(ctx->current_seed_hex, new_hex, sizeof(ctx->current_seed_hex) - 1);
+        /* Raise pause gate under cache_lock so any second worker observing !need_reinit
+           immediately parks at miner_check_pause until the rebuild completes. */
+        InterlockedExchange(&ctx->pause_req, 1);
     }
     LeaveCriticalSection(&ctx->cache_lock);
 
-    if (!need_reinit) return;
+    if (!need_reinit) {
+        miner_check_pause(ctx);
+        return;
+    }
 
-    LOG_INFO("[MINER] Initializing cache with new seed: %.16s...", new_hex);
+    LOG_INFO("[MINER] Seed changed (%.16s...) - pausing workers for safe dataset reinit...", new_hex);
+    while (ctx->num_threads > 1 &&
+           InterlockedCompareExchange(&ctx->paused_count, 0, 0) < (LONG)(ctx->num_threads - 1) &&
+           ctx->running) {
+        Sleep(5);
+    }
+    if (!ctx->running) {
+        InterlockedExchange(&ctx->pause_req, 0);
+        return;
+    }
 
     if (!ctx->cache) {
         ctx->cache = rx_alloc_cache(ctx->huge_pages);
         if (!ctx->cache) {
             LOG_ERR("[MINER] Failed to allocate cache");
+            InterlockedExchange(&ctx->pause_req, 0);
             return;
         }
     }
@@ -370,31 +394,20 @@ void miner_reinit_cache(miner_ctx_t *ctx, const uint8_t *seed, int seed_len) {
     ctx->cache_initialized = 1;
 
     if (ctx->dataset) {
-        LOG_INFO("[MINER] Reinitializing dataset with new seed...");
-        rx_init_dataset_cached(ctx->dataset, ctx->cache, 0, RX_DATASET_ITEMS + RX_DATASET_EXTRA_ITEMS, ctx->num_threads, ctx->physical_cores);
+        int init_threads = cpu_count_logical();
+        if (init_threads > 2) init_threads -= 2;
+        if (init_threads < 1) init_threads = 1;
+        LOG_INFO("[MINER] Reinitializing dataset with %d threads...", init_threads);
+        rx_init_dataset_cached(ctx->dataset, ctx->cache, 0, RX_DATASET_ITEMS + RX_DATASET_EXTRA_ITEMS,
+                               init_threads, ctx->physical_cores);
         LOG_INFO("[MINER] Dataset reinitialized");
     }
 
-    EnterCriticalSection(&ctx->cache_lock);
     for (int i = 0; i < ctx->num_threads; i++) {
-        if (ctx->workers[i].vm) {
-            rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
-            ctx->workers[i].vm = NULL;
-        }
-        if (ctx->workers[i].vm2) {
-            rx_destroy_vm((rx_vm *)ctx->workers[i].vm2);
-            ctx->workers[i].vm2 = NULL;
-        }
-        int flags = ctx->workers[i].current_rx_flags ? ctx->workers[i].current_rx_flags : RX_FLAG_DEFAULT;
-        flags |= RX_FLAG_JIT;
-        ctx->workers[i].vm = rx_create_vm(flags, ctx->cache, ctx->dataset);
-        if (ctx->mode == MODE_DUAL) {
-            ctx->workers[i].vm2 = rx_create_vm(flags, ctx->cache, ctx->dataset);
-        }
+        ctx->workers[i].batch_active = 0;
     }
-    LeaveCriticalSection(&ctx->cache_lock);
-
-    LOG_INFO("[MINER] Cache reinitialized with seed: %.16s...", new_hex);
+    InterlockedExchange(&ctx->pause_req, 0);
+    LOG_INFO("[MINER] Cache/dataset reinitialized with seed: %.16s..., workers resumed", new_hex);
 }
 
 void *miner_get_vm(miner_ctx_t *ctx, int worker_id) {
@@ -409,8 +422,15 @@ void *miner_get_vm2(miner_ctx_t *ctx, int worker_id) {
 
 void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags) {
     EnterCriticalSection(&ctx->cache_lock);
+    InterlockedExchange(&ctx->pause_req, 1);
+    while (ctx->num_threads > 1 &&
+           InterlockedCompareExchange(&ctx->paused_count, 0, 0) < (LONG)(ctx->num_threads - 1) &&
+           ctx->running) {
+        Sleep(5);
+    }
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].current_rx_flags = rx_flags;
+        ctx->workers[i].batch_active = 0;
         if (ctx->workers[i].vm) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm);
             ctx->workers[i].vm = NULL;
@@ -419,11 +439,16 @@ void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags) {
             rx_destroy_vm((rx_vm *)ctx->workers[i].vm2);
             ctx->workers[i].vm2 = NULL;
         }
-        ctx->workers[i].vm = rx_create_vm(RX_FLAG_JIT | rx_flags, ctx->cache, ctx->dataset);
-        if (ctx->workers[i].use_dual) {
-            ctx->workers[i].vm2 = rx_create_vm(RX_FLAG_JIT | rx_flags, ctx->cache, ctx->dataset);
+        int need_single_vm = (ctx->workers[i].lanes <= 1) || ((rx_flags & RX_FLAG_V2) != 0);
+        if (need_single_vm) {
+            int f = RX_FLAG_JIT | rx_flags | (!ctx->workers[i].is_pcore ? RX_FLAG_CFROUND_GUARD : 0);
+            ctx->workers[i].vm = rx_create_vm(f, ctx->cache, ctx->dataset);
+            if (ctx->workers[i].use_dual) {
+                ctx->workers[i].vm2 = rx_create_vm(f, ctx->cache, ctx->dataset);
+            }
         }
     }
+    InterlockedExchange(&ctx->pause_req, 0);
     LeaveCriticalSection(&ctx->cache_lock);
     LOG_INFO("[MINER] VMs recreated with flags=0x%x", rx_flags);
 }
@@ -470,21 +495,104 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         LOG_ERR("[MINER] Failed to allocate dataset");
         return -1;
     }
-    LOG_INFO("[MINER] Dataset allocated, initializing items...");
-    rx_init_dataset_cached(ctx->dataset, ctx->cache, 0, RX_DATASET_ITEMS + RX_DATASET_EXTRA_ITEMS, ctx->num_threads, ctx->physical_cores);
+    int init_threads = cpu_count_logical();
+    if (init_threads > 2) init_threads -= 2;
+    if (init_threads < 1) init_threads = 1;
+    LOG_INFO("[MINER] Dataset allocated, initializing items with %d threads...", init_threads);
+    rx_init_dataset_cached(ctx->dataset, ctx->cache, 0, RX_DATASET_ITEMS + RX_DATASET_EXTRA_ITEMS, init_threads, ctx->physical_cores);
     LOG_INFO("[MINER] Dataset initialized");
 
-    if (ctx->mode == MINER_MODE_SINGLE) g_best_mode = MODE_SINGLE;
-    else if (ctx->mode == MINER_MODE_DUAL) g_best_mode = MODE_DUAL;
-    else g_best_mode = select_best_mode(ctx->num_threads, ctx->cache, ctx->dataset);
+    core_list_t cores;
+    memset(&cores, 0, sizeof(cores));
+    int num_physical = affinity_detect_cores(&cores);
+    affinity_sort_pcore_first(&cores);
+    core_slot_t slots[AFFINITY_MAX_CORES * 2];
+    int slot_count = (num_physical > 0) ? affinity_build_slots(&cores, slots, AFFINITY_MAX_CORES * 2) : 0;
+
+    /* Track which physical P-cores have an active HT sibling assigned */
+    uint8_t core_has_ht[AFFINITY_MAX_CORES];
+    memset(core_has_ht, 0, sizeof(core_has_ht));
+    for (int i = 0; i < ctx->num_threads && slot_count > 0; i++) {
+        const core_slot_t *sl = &slots[i % slot_count];
+        if (sl->is_ht_sibling && sl->core_idx >= 0 && sl->core_idx < AFFINITY_MAX_CORES)
+            core_has_ht[sl->core_idx] = 1;
+    }
+
+    int has_avx512 = rx_cpu_has_avx512_lanes();
+    int p_workers = 0, e_workers = 0, ht_workers = 0, p_lanes_sum = 0, total_scratchpads = 0;
+    int any_multilane = 0;
+
+    /* Count how many E-cores are active in this thread plan so we can respect
+       the chip-wide L2+L3 scratchpad budget:
+       - P-cores only (<= 4T): 3 lanes per P-core (up to 24 MB, +28-35% vs 1L)
+       - P-cores only (5..8T): 2 lanes per P-core (up to 32 MB, fits P-L2 + L3, +28% vs 1L)
+       - Hybrid P+E (> 8T, e_active > 0): 1 lane per P-core keeps all P-core
+         scratchpads inside private 2 MB P-L2, leaving the full shared L3 + E-L2
+         for E-cores (with RX_FLAG_CFROUND_GUARD on E-cores = +7.7% per E-core).
+         No scratchpad evictions to DDR4! */
+    int active_ecores = 0;
+    for (int i = 0; i < ctx->num_threads && slot_count > 0; i++) {
+        if (!slots[i % slot_count].is_pcore) active_ecores++;
+    }
+
+    for (int i = 0; i < ctx->num_threads; i++) {
+        int is_pcore = 1, is_ht = 0, os_cpu = -1, core_idx = -1;
+        if (slot_count > 0) {
+            const core_slot_t *sl = &slots[i % slot_count];
+            is_pcore = sl->is_pcore;
+            is_ht = sl->is_ht_sibling;
+            os_cpu = sl->os_cpu;
+            core_idx = sl->core_idx;
+        }
+        int w_lanes;
+        if (ctx->lanes > 0) {
+            w_lanes = ctx->lanes > 4 ? 4 : ctx->lanes;
+        } else {
+            if (!is_pcore) {
+                w_lanes = 1;
+            } else if (is_ht || (core_idx >= 0 && core_has_ht[core_idx])) {
+                w_lanes = 1;
+            } else if (active_ecores > 0) {
+                /* Hybrid P+E mode: keep P-cores 1L inside private L2 so L3 stays clean for E-cores */
+                w_lanes = 1;
+            } else if (has_avx512) {
+                w_lanes = 3;
+            } else {
+                w_lanes = (ctx->num_threads <= 4) ? 3 : 2;
+            }
+        }
+        ctx->workers[i].lanes = w_lanes;
+        ctx->workers[i].is_pcore = is_pcore;
+        ctx->workers[i].is_ht_sibling = is_ht;
+        ctx->workers[i].os_cpu = os_cpu;
+        if (w_lanes > 1) any_multilane = 1;
+        total_scratchpads += w_lanes;
+        if (is_ht) ht_workers++;
+        else if (is_pcore) { p_workers++; p_lanes_sum += w_lanes; }
+        else e_workers++;
+    }
+
+    if (any_multilane) {
+        g_best_mode = MODE_SINGLE;
+        /* AVX-512 register banks prefer gran=64; AVX2 (Raptor Lake) prefers gran=256 */
+        extern int g_mjit_granularity;
+        if (has_avx512 && g_mjit_granularity == 256) g_mjit_granularity = 64;
+    } else if (ctx->mode == MINER_MODE_SINGLE) {
+        g_best_mode = MODE_SINGLE;
+    } else if (ctx->mode == MINER_MODE_DUAL) {
+        g_best_mode = MODE_DUAL;
+    } else {
+        g_best_mode = select_best_mode(ctx->num_threads, ctx->cache, ctx->dataset);
+    }
 
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].id = i;
-        ctx->workers[i].vm = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
+        int base_flags = RX_FLAG_JIT | RX_FLAG_DEFAULT | (!ctx->workers[i].is_pcore ? RX_FLAG_CFROUND_GUARD : 0);
+        ctx->workers[i].vm = (ctx->workers[i].lanes <= 1) ? rx_create_vm(base_flags, ctx->cache, ctx->dataset) : NULL;
         ctx->workers[i].vm2 = NULL;
-        ctx->workers[i].use_dual = (g_best_mode == MODE_DUAL) ? 1 : 0;
+        ctx->workers[i].use_dual = (ctx->workers[i].lanes <= 1 && g_best_mode == MODE_DUAL) ? 1 : 0;
         if (ctx->workers[i].use_dual) {
-            ctx->workers[i].vm2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_DEFAULT, ctx->cache, ctx->dataset);
+            ctx->workers[i].vm2 = rx_create_vm(base_flags, ctx->cache, ctx->dataset);
         }
         ctx->workers[i].stratum = ctx->stratum;
         ctx->workers[i].miner = ctx;
@@ -496,17 +604,26 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
         ctx->workers[i].loop_count = 0;
         ctx->workers[i].extranonce2_counter = 0;
         ctx->workers[i].current_rx_flags = RX_FLAG_DEFAULT;
-        ctx->workers[i].lanes = resolve_lanes(ctx->lanes);
         strncpy(ctx->workers[i].initial_seed, ctx->current_seed_hex, sizeof(ctx->workers[i].initial_seed) - 1);
     }
 
-    if (ctx->num_threads > 0 && ctx->workers[0].lanes > 1)
-        LOG_INFO("[MINER] Multi-lane JIT: %d hashes per thread (%s FP registers)",
-                 ctx->workers[0].lanes,
-                 (rx_cpu_has_avx512_lanes() && ctx->workers[0].lanes <= 3) ? "AVX-512 banked" : "spilled");
+    if (p_workers > 0 && e_workers > 0) {
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "hybrid %dP(%dL)+%dE(1L+cfg)%s",
+                 p_workers, p_lanes_sum / p_workers, e_workers, ht_workers ? "+HT" : "");
+    } else if (any_multilane && p_workers > 0) {
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "multi-lane %dL (%s)",
+                 p_lanes_sum / p_workers, has_avx512 ? "AVX512" : "AVX2-bank2");
+    } else {
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "%s", g_best_mode == MODE_DUAL ? "dual" : "single");
+    }
+
+    LOG_INFO("[MINER] Plan: %s | scratchpads=%d (%d MB) | VAES=%s",
+             ctx->plan_desc, total_scratchpads, total_scratchpads * 2,
+             cpu_has_vaes() ? "yes" : "no");
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
-    timeBeginPeriod(1);
+    /* Keep process at NORMAL priority and workers at IDLE priority (matching XMRig)
+       so Stratum I/O, Discord/audio, and desktop apps preempt workers instantly. */
+    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
     msr_init();
     if (ctx->power_limit > 0.0) {
         ctx->power_limit_set = msr_set_package_power_limit(
@@ -516,48 +633,10 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
                      ctx->power_limit);
     }
 
-    {
-        int msr_ok = 0;
-        typedef long (*NtSystemDebugControl_fn)(int, void*, void*, unsigned long, void*, unsigned long, unsigned long*);
-        static NtSystemDebugControl_fn pNtDbg = NULL;
-        struct { uint32_t msr; uint64_t value; } msr_in;
-        uint64_t msr_out = 0;
-        unsigned long ret_len = 0;
-        uint64_t val = 0, perf_ctl = 0, platform = 0, ratio = 0;
-        long status = 0;
-
-        if (!pNtDbg) pNtDbg = (NtSystemDebugControl_fn)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSystemDebugControl");
-        if (pNtDbg) {
-            __try {
-                val = __readmsr(0xCE);
-                if (val & 1) {
-                    perf_ctl = __readmsr(0x199);
-                    ratio = (perf_ctl >> 8) & 0xFF;
-                    if (ratio == 0) { platform = __readmsr(0x003); ratio = (platform >> 8) & 0xFF; }
-                    if (ratio > 0) { msr_in.msr = 0x199; msr_in.value = (ratio << 8) | (ratio & 0xFF); status = pNtDbg(0x13, &msr_in, sizeof(msr_in), &msr_out, sizeof(msr_out), &ret_len, 0); if (status >= 0) msr_ok = 1; }
-                }
-            } __except(EXCEPTION_EXECUTE_HANDLER) { msr_ok = 0; }
-        }
-        if (!msr_ok) {
-            __try {
-                val = __readmsr(0xCE);
-                if (val & 1) { perf_ctl = __readmsr(0x199); ratio = (perf_ctl >> 8) & 0xFF; if (ratio == 0) { platform = __readmsr(0x003); ratio = (platform >> 8) & 0xFF; } if (ratio > 0) { __writemsr(0x199, (ratio << 8) | (ratio & 0xFF)); msr_ok = 1; } }
-            } __except(EXCEPTION_EXECUTE_HANDLER) { msr_ok = 0; }
-        }
-        if (msr_ok) LOG_INFO("[MSR] IA32_PERF_CTL set to max performance");
-        else LOG_INFO("[MSR] MSR tuning not available (need admin/driver)");
-    }
-
-    core_list_t cores;
-    int num_physical = affinity_detect_cores(&cores);
-    affinity_sort_pcore_first(&cores);
-    int affinity_order[AFFINITY_MAX_CORES * 2];
-    int affinity_count = affinity_build_order(&cores, affinity_order, AFFINITY_MAX_CORES * 2);
-
     if (num_physical > 0) {
         int pcores = 0;
         for (int c = 0; c < cores.count; c++) if (cores.is_pcore[c]) pcores++;
-        LOG_INFO("[AFFINITY] Detected %d physical cores (%d P-core, %d E-core)",
+        LOG_INFO("[AFFINITY] Detected %d physical cores (%d P-core, %d E-core) [order: P -> E -> P-HT]",
                  num_physical, pcores, num_physical - pcores);
     }
 
@@ -567,23 +646,16 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
             LOG_ERR("[MINER] Failed to create thread %d", i);
             continue;
         }
-        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_HIGHEST);
-        {
-            static void *pFn = NULL;
-            if (!pFn) pFn = (void*)GetProcAddress(GetModuleHandleW(L"ntdll"), "NtSetInformationThread");
-            if (pFn) {
-                long (*fn)(HANDLE, long, void*, unsigned long) = (long (*)(HANDLE, long, void*, unsigned long))pFn;
-                LONG pt[3] = { 1, 2, 1 };
-                fn(ctx->thread_handles[i], 0x5C, pt, sizeof(pt));
-            }
-        }
-        if (num_physical > 0 && affinity_count > 0) {
+        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_IDLE);
+        if (ctx->workers[i].os_cpu >= 0) {
             GROUP_AFFINITY ga = {0};
-            int os_idx = affinity_order[i % affinity_count];
+            int os_idx = ctx->workers[i].os_cpu;
             ga.Group = (WORD)(os_idx / 64);
             ga.Mask = (KAFFINITY)(1ULL << (os_idx % 64));
             SetThreadGroupAffinity(ctx->thread_handles[i], &ga, NULL);
-            LOG_DEBUG("[AFFINITY] W%d -> CPU%d", i, os_idx);
+            LOG_DEBUG("[AFFINITY] W%d -> CPU%d (%s, %dL)", i, os_idx,
+                      ctx->workers[i].is_pcore ? (ctx->workers[i].is_ht_sibling ? "P-HT" : "P") : "E",
+                      ctx->workers[i].lanes);
         }
     }
 

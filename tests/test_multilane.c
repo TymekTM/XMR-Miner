@@ -10,6 +10,7 @@
  */
 #include "crypto/randomx/randomx.h"
 #include "crypto/randomx/randomx_internal.h"
+#include "common/cpu.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,7 +58,47 @@ int main(int argc, char **argv) {
     rx_init_dataset_cached(ds, cache, 0, RX_DATASET_ITEMS + RX_DATASET_EXTRA_ITEMS, 4, 4);
 
     rx_vm *ref = rx_create_vm(RX_FLAG_JIT, cache, ds);
+    rx_vm *ref_guard = rx_create_vm(RX_FLAG_JIT | RX_FLAG_CFROUND_GUARD, cache, ds);
+    rx_vm *ref_guard2 = rx_create_vm(RX_FLAG_JIT | RX_FLAG_CFROUND_GUARD, cache, ds);
     rx_vm *interp = rx_create_vm(RX_FLAG_DEFAULT, cache, ds);
+
+    /* Differential check (T1/T2/T4): VAES 256-bit vs AES-NI 128-bit,
+       RX_FLAG_CFROUND_GUARD single + batch + DUAL mode directly against interpreter */
+    printf("[INFO] VAES hardware path: %s\n", cpu_has_vaes() ? "ACTIVE (256-bit YMM)" : "unavailable (AES-NI fallback)");
+    {
+        uint8_t dblob[76], dblob2[76], h_aesni[32], h_vaes[32], h_guard[32], h_interp[32];
+        uint8_t h_d1[32], h_d2[32], h_i2[32];
+        for (int t = 0; t < 48; t++) {
+            fill(dblob, sizeof(dblob), (uint64_t)(0xCAFE0000ULL + t * 31));
+            g_aes_use_vaes = 0;
+            rx_calculate_hash(interp, dblob, sizeof(dblob), h_interp);
+            rx_calculate_hash(ref, dblob, sizeof(dblob), h_aesni);
+            g_aes_use_vaes = 1;
+            rx_calculate_hash(ref, dblob, sizeof(dblob), h_vaes);
+            rx_calculate_hash(ref_guard, dblob, sizeof(dblob), h_guard);
+            check(memcmp(h_aesni, h_interp, 32) == 0, "classic JIT (AES-NI) == interpreter");
+            check(memcmp(h_vaes, h_interp, 32) == 0, "classic JIT (VAES-256) == interpreter");
+            check(memcmp(h_guard, h_interp, 32) == 0, "classic JIT (RX_FLAG_CFROUND_GUARD) == interpreter");
+            if (t < 16) {
+                fill(dblob2, sizeof(dblob2), (uint64_t)(0xBEEF0000ULL + t * 47));
+                rx_calculate_hash(interp, dblob2, sizeof(dblob2), h_i2);
+                rx_calculate_hash_dual(ref_guard, ref_guard2, dblob, sizeof(dblob), dblob2, sizeof(dblob2), h_d1, h_d2);
+                check(memcmp(h_d1, h_interp, 32) == 0, "dual JIT (RX_FLAG_CFROUND_GUARD) lane 0 == interpreter");
+                check(memcmp(h_d2, h_i2, 32) == 0, "dual JIT (RX_FLAG_CFROUND_GUARD) lane 1 == interpreter");
+            }
+        }
+        /* Batch pipeline check with RX_FLAG_CFROUND_GUARD + VAES */
+        fill(dblob, sizeof(dblob), 0x12345678ULL);
+        rx_calculate_hash_first(ref_guard, dblob, sizeof(dblob));
+        for (int t = 1; t <= 16; t++) {
+            uint8_t prev[76];
+            memcpy(prev, dblob, sizeof(dblob));
+            fill(dblob, sizeof(dblob), (uint64_t)(0x12345678ULL + t));
+            rx_calculate_hash_next(ref_guard, dblob, sizeof(dblob), h_guard);
+            rx_calculate_hash(interp, prev, sizeof(prev), h_interp);
+            check(memcmp(h_guard, h_interp, 32) == 0, "batch pipeline (RX_FLAG_CFROUND_GUARD + VAES) == interpreter");
+        }
+    }
 
     if (!rx_cpu_has_avx512_lanes()) {
         printf("[SKIP] CPU lacks AVX-512F/VL/DQ: 2-lane group unavailable\n");
@@ -72,10 +113,15 @@ int main(int argc, char **argv) {
         rx_vm_group *g = rx_create_vm_group(lanes, RX_FLAG_DEFAULT, cache, ds);
         if (!g) { printf("[SKIP] lanes=%d group unavailable\n", lanes); continue; }
         for (size_t gi = 0; gi < sizeof(grans) / sizeof(grans[0]); gi++) {
-            for (int opt = 0; opt < 4; opt++) {
+            for (int opt = 0; opt < 8; opt++) {
                 g_mjit_granularity = grans[gi];
                 g_mjit_mxcsr_skip = opt & 1;
                 g_mjit_rcp_pool = (opt & 2) ? 0 : 1;
+                g_mjit_stagger = (opt >= 4) ? 1 : 0;
+                g_mjit_mxguard = (opt == 5) ? 1 : 0;
+                g_mjit_refresh_dspf = (opt == 4) ? 1 : 0;
+                g_mjit_bmi2 = (opt == 6) ? 0 : 1;
+                g_mjit_smart_mxcsr = (opt == 7) ? 0 : 1;
                 char label[160];
 
                 /* official vector on every lane */
@@ -142,6 +188,8 @@ int main(int argc, char **argv) {
     }
 
     rx_destroy_vm(ref);
+    rx_destroy_vm(ref_guard);
+    rx_destroy_vm(ref_guard2);
     rx_destroy_vm(interp);
     rx_free_dataset(ds);
     rx_free_cache(cache);

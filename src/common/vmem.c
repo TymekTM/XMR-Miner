@@ -45,9 +45,30 @@ void *vmem_alloc(size_t size, int flags, int *got_kind) {
         SIZE_T lp = GetLargePageMinimum();
         if (lp) {
             vmem_enable_large_page_privilege();
-            p = VirtualAlloc(NULL, round_up(size, lp),
-                             MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, prot);
-            if (p && got_kind) *got_kind = VMEM_KIND_2MB;
+            if (flags & VMEM_1GB_PAGES) {
+                typedef PVOID (WINAPI *PFN_VirtualAlloc2)(HANDLE, PVOID, SIZE_T, ULONG, ULONG, MEM_EXTENDED_PARAMETER *, ULONG);
+                static PFN_VirtualAlloc2 pVirtualAlloc2 = NULL;
+                static int va2_checked = 0;
+                if (!va2_checked) {
+                    va2_checked = 1;
+                    HMODULE hKb = GetModuleHandleA("kernelbase.dll");
+                    if (hKb) pVirtualAlloc2 = (PFN_VirtualAlloc2)GetProcAddress(hKb, "VirtualAlloc2");
+                }
+                if (pVirtualAlloc2) {
+                    MEM_EXTENDED_PARAMETER ep;
+                    memset(&ep, 0, sizeof(ep));
+                    ep.Type = MemExtendedParameterAttributeFlags;
+                    ep.ULong64 = 0x10ULL; /* MEM_EXTENDED_PARAMETER_NONPAGED_HUGE (1 GB pages) */
+                    p = pVirtualAlloc2(GetCurrentProcess(), NULL, round_up(size, VMEM_1GB),
+                                       MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, prot, &ep, 1);
+                    if (p && got_kind) *got_kind = VMEM_KIND_1GB;
+                }
+            }
+            if (!p) {
+                p = VirtualAlloc(NULL, round_up(size, lp),
+                                 MEM_RESERVE | MEM_COMMIT | MEM_LARGE_PAGES, prot);
+                if (p && got_kind) *got_kind = VMEM_KIND_2MB;
+            }
         }
     }
     if (!p) p = VirtualAlloc(NULL, size, MEM_RESERVE | MEM_COMMIT, prot);
