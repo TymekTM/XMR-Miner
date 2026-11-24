@@ -196,23 +196,196 @@ static int read_msr(uint32_t reg, uint64_t *value) {
 }
 
 static double g_energy_unit = 0.0;
+static int g_winring_energy_failed = 0;
+
+/* Windows Energy Meter Interface (EMI v1/v2) user-space Intel RAPL fallback.
+   Requires no Administrator privileges and no kernel driver. */
+#define IOCTL_EMI_GET_VERSION        0x00224000u
+#define IOCTL_EMI_GET_METADATA_SIZE  0x00224004u
+#define IOCTL_EMI_GET_METADATA       0x00224008u
+#define IOCTL_EMI_GET_MEASUREMENT    0x0022400Cu
+
+typedef struct {
+    DWORD cbSize;
+    GUID  InterfaceClassGuid;
+    DWORD Flags;
+    ULONG_PTR Reserved;
+} EMI_SP_DEVICE_INTERFACE_DATA;
+
+typedef HANDLE (WINAPI *PFN_SetupDiGetClassDevsW)(const GUID *, LPCWSTR, HWND, DWORD);
+typedef BOOL   (WINAPI *PFN_SetupDiEnumDeviceInterfaces)(HANDLE, PVOID, const GUID *, DWORD, EMI_SP_DEVICE_INTERFACE_DATA *);
+typedef BOOL   (WINAPI *PFN_SetupDiGetDeviceInterfaceDetailW)(HANDLE, EMI_SP_DEVICE_INTERFACE_DATA *, PVOID, DWORD, DWORD *, PVOID);
+typedef BOOL   (WINAPI *PFN_SetupDiDestroyDeviceInfoList)(HANDLE);
+
+static HANDLE g_hEmi = INVALID_HANDLE_VALUE;
+static int g_emi_tried = 0;
+static int g_emi_channel_count = 0;
+static int g_emi_pkg_channel = 0;
+static int g_emi_have_base = 0;
+static uint64_t g_emi_base_pwh = 0;
+
+static int emi_open(void) {
+    if (g_hEmi != INVALID_HANDLE_VALUE) return 1;
+    if (g_emi_tried) return 0;
+    g_emi_tried = 1;
+
+    HMODULE hSetup = LoadLibraryA("setupapi.dll");
+    if (!hSetup) return 0;
+    PFN_SetupDiGetClassDevsW pGetClassDevs = (PFN_SetupDiGetClassDevsW)GetProcAddress(hSetup, "SetupDiGetClassDevsW");
+    PFN_SetupDiEnumDeviceInterfaces pEnumIf = (PFN_SetupDiEnumDeviceInterfaces)GetProcAddress(hSetup, "SetupDiEnumDeviceInterfaces");
+    PFN_SetupDiGetDeviceInterfaceDetailW pGetDetail = (PFN_SetupDiGetDeviceInterfaceDetailW)GetProcAddress(hSetup, "SetupDiGetDeviceInterfaceDetailW");
+    PFN_SetupDiDestroyDeviceInfoList pDestroy = (PFN_SetupDiDestroyDeviceInfoList)GetProcAddress(hSetup, "SetupDiDestroyDeviceInfoList");
+    if (!pGetClassDevs || !pEnumIf || !pGetDetail || !pDestroy) {
+        FreeLibrary(hSetup);
+        return 0;
+    }
+
+    /* GUID_DEVICE_ENERGY_METER: {45bd8344-7ed6-49cf-a440-c276c933b053} */
+    static const GUID kEmiGuid = { 0x45bd8344, 0x7ed6, 0x49cf, { 0xa4, 0x40, 0xc2, 0x76, 0xc9, 0x33, 0xb0, 0x53 } };
+    HANDLE hDevInfo = pGetClassDevs(&kEmiGuid, NULL, NULL, 0x00000012u /* DIGCF_PRESENT | DIGCF_DEVICEINTERFACE */);
+    if (hDevInfo == INVALID_HANDLE_VALUE) {
+        FreeLibrary(hSetup);
+        return 0;
+    }
+
+    EMI_SP_DEVICE_INTERFACE_DATA ifData;
+    memset(&ifData, 0, sizeof(ifData));
+    ifData.cbSize = sizeof(ifData);
+    if (!pEnumIf(hDevInfo, NULL, &kEmiGuid, 0, &ifData)) {
+        pDestroy(hDevInfo);
+        FreeLibrary(hSetup);
+        return 0;
+    }
+
+    DWORD reqSize = 0;
+    pGetDetail(hDevInfo, &ifData, NULL, 0, &reqSize, NULL);
+    if (reqSize <= sizeof(DWORD)) {
+        pDestroy(hDevInfo);
+        FreeLibrary(hSetup);
+        return 0;
+    }
+    BYTE *detailBuf = (BYTE *)malloc(reqSize);
+    if (!detailBuf) {
+        pDestroy(hDevInfo);
+        FreeLibrary(hSetup);
+        return 0;
+    }
+    *(DWORD *)detailBuf = (sizeof(void *) == 8) ? 8 : 6;
+    if (!pGetDetail(hDevInfo, &ifData, detailBuf, reqSize, &reqSize, NULL)) {
+        free(detailBuf);
+        pDestroy(hDevInfo);
+        FreeLibrary(hSetup);
+        return 0;
+    }
+
+    LPCWSTR devPath = (LPCWSTR)(detailBuf + sizeof(DWORD));
+    HANDLE hDev = CreateFileW(devPath, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                              NULL, OPEN_EXISTING, 0, NULL);
+    free(detailBuf);
+    pDestroy(hDevInfo);
+    FreeLibrary(hSetup);
+    if (hDev == INVALID_HANDLE_VALUE) return 0;
+
+    DWORD bytes = 0;
+    uint16_t emiVer = 0;
+    if (!DeviceIoControl(hDev, IOCTL_EMI_GET_VERSION, NULL, 0, &emiVer, sizeof(emiVer), &bytes, NULL) ||
+        (emiVer != 1 && emiVer != 2)) {
+        CloseHandle(hDev);
+        return 0;
+    }
+
+    g_emi_channel_count = 1;
+    g_emi_pkg_channel = 0;
+    if (emiVer == 2) {
+        DWORD metaSize = 0;
+        if (DeviceIoControl(hDev, IOCTL_EMI_GET_METADATA_SIZE, NULL, 0, &metaSize, sizeof(metaSize), &bytes, NULL) &&
+            metaSize >= 68 && metaSize <= 65536) {
+            BYTE *meta = (BYTE *)malloc(metaSize);
+            if (meta) {
+                if (DeviceIoControl(hDev, IOCTL_EMI_GET_METADATA, NULL, 0, meta, metaSize, &bytes, NULL) && bytes >= 68) {
+                    uint16_t nch = *(uint16_t *)(meta + 66);
+                    if (nch >= 1 && nch <= 64) {
+                        g_emi_channel_count = (int)nch;
+                        DWORD off = 68;
+                        for (int c = 0; c < g_emi_channel_count && off + 6 <= bytes; c++) {
+                            uint16_t nameBytes = *(uint16_t *)(meta + off + 4);
+                            if (off + 6 + nameBytes <= bytes) {
+                                const WCHAR *wname = (const WCHAR *)(meta + off + 6);
+                                int wchars = (int)(nameBytes / 2);
+                                for (int k = 0; k + 3 < wchars; k++) {
+                                    if (wname[k] == L'_' && wname[k+1] == L'P' && wname[k+2] == L'K' && wname[k+3] == L'G') {
+                                        g_emi_pkg_channel = c;
+                                        break;
+                                    }
+                                }
+                            }
+                            off += 6 + nameBytes;
+                            while (c + 1 < g_emi_channel_count && off + 6 <= bytes && *(uint32_t *)(meta + off) != 0)
+                                off += 2;
+                        }
+                    }
+                }
+                free(meta);
+            }
+        }
+    }
+
+    g_hEmi = hDev;
+    g_emi_have_base = 0;
+    return 1;
+}
+
+static void emi_close(void) {
+    if (g_hEmi != INVALID_HANDLE_VALUE) {
+        CloseHandle(g_hEmi);
+        g_hEmi = INVALID_HANDLE_VALUE;
+    }
+    g_emi_tried = 0;
+    g_emi_have_base = 0;
+}
+
+static int emi_read_package_energy(double *joules) {
+    if (!emi_open()) return 0;
+    if (g_emi_channel_count < 1 || g_emi_channel_count > 64) return 0;
+    uint64_t data[64 * 2];
+    DWORD need = (DWORD)(g_emi_channel_count * 16);
+    DWORD bytes = 0;
+    if (!DeviceIoControl(g_hEmi, IOCTL_EMI_GET_MEASUREMENT, NULL, 0, data, need, &bytes, NULL) ||
+        bytes < (DWORD)((g_emi_pkg_channel + 1) * 16)) {
+        return 0;
+    }
+    uint64_t pwh = data[g_emi_pkg_channel * 2];
+    if (!g_emi_have_base) {
+        g_emi_base_pwh = pwh;
+        g_emi_have_base = 1;
+    }
+    /* 1 pWh = 3.6e-9 Joules */
+    *joules = (double)(pwh - g_emi_base_pwh) * 3.6e-9;
+    return 1;
+}
 
 int msr_read_package_energy(double *joules) {
     uint64_t units = 0;
     uint64_t energy = 0;
 
     if (!joules) return 0;
-    if (g_hDriver == INVALID_HANDLE_VALUE && open_driver() < 0) return 0;
-
-    if (g_energy_unit == 0.0) {
-        if (read_msr(0x606, &units) < 0) return 0;
-        unsigned shift = (unsigned)((units >> 8) & 0x1F);
-        g_energy_unit = 1.0 / (double)(1ULL << shift);
+    if (g_hDriver != INVALID_HANDLE_VALUE || (!g_winring_energy_failed && open_driver() == 0)) {
+        if (g_energy_unit == 0.0) {
+            if (read_msr(0x606, &units) == 0) {
+                unsigned shift = (unsigned)((units >> 8) & 0x1F);
+                g_energy_unit = 1.0 / (double)(1ULL << shift);
+            }
+        }
+        if (g_energy_unit > 0.0 && read_msr(0x611, &energy) == 0) {
+            *joules = (double)(uint32_t)energy * g_energy_unit;
+            return 1;
+        }
+        g_winring_energy_failed = 1;
+    } else {
+        g_winring_energy_failed = 1;
     }
 
-    if (read_msr(0x611, &energy) < 0) return 0;
-    *joules = (double)(uint32_t)energy * g_energy_unit;
-    return 1;
+    return emi_read_package_energy(joules);
 }
 
 double msr_get_energy_wrap_joules(void) {
@@ -359,6 +532,7 @@ void msr_destroy(void) {
         g_saved_cpu_count = 0;
     }
     close_driver();
+    emi_close();
 }
 #else
 /* MSR access via WinRing0 is Windows-only; on other OSes these are no-ops. */

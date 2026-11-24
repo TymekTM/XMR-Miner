@@ -113,6 +113,8 @@ static void test_config_file(void) {
     fprintf(f, "threads = 4\n");
     fprintf(f, "mode=single\n");
     fprintf(f, "password=hunter2\n");
+    fprintf(f, "efficiency=1\n");
+    fprintf(f, "eco=1\n");
     fclose(f);
 
     config_t cfg;
@@ -126,8 +128,19 @@ static void test_config_file(void) {
     CHECK(cfg.threads == 4);
     CHECK(cfg.mode == MINER_MODE_SINGLE);
     CHECK(strcmp(cfg.password, "hunter2") == 0);
+    CHECK(cfg.efficiency == 1);
+    CHECK(cfg.eco_qos == 1);
 
     remove(path);
+}
+
+static void test_efficiency_flags(void) {
+    config_t cfg;
+    char *argv[] = { "xmr-miner", "-u", "W", "--efficiency", "--eco", NULL };
+    int argc = 0; while (argv[argc]) argc++;
+    CHECK(config_parse_args(&cfg, argc, argv) == RX_SUCCESS);
+    CHECK(cfg.efficiency == 1);
+    CHECK(cfg.eco_qos == 1);
 }
 
 int main(void) {
@@ -141,6 +154,7 @@ int main(void) {
     test_no_huge_pages();
     test_unknown_option();
     test_config_file();
+    test_efficiency_flags();
 
     printf("[TEST] %d checks, %d failures\n", checks, failures);
     printf("[TEST] %s\n", failures == 0 ? "PASS" : "FAIL");

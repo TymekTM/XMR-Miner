@@ -78,16 +78,24 @@ struct miner_ctx {
     uint64_t perf_last_hashes;
     double perf_last_energy;
     int perf_power_ready;
+    double baseline_watts;
     double power_limit;
     uint64_t original_power_limit;
     int power_limit_set;
     int lanes;
+    int efficiency;
+    int eco_qos;
     volatile LONG pause_req;
     volatile LONG paused_count;
     char plan_desc[64];
 };
 
 void miner_set_lanes(miner_ctx_t *ctx, int lanes) { if (ctx) ctx->lanes = lanes; }
+void miner_set_efficiency(miner_ctx_t *ctx, int efficiency, int eco_qos) {
+    if (!ctx) return;
+    ctx->efficiency = efficiency ? 1 : 0;
+    ctx->eco_qos = eco_qos ? 1 : 0;
+}
 void *miner_get_cache(miner_ctx_t *ctx) { return ctx->cache; }
 void *miner_get_dataset(miner_ctx_t *ctx) { return ctx->dataset; }
 
@@ -159,9 +167,15 @@ void miner_report_performance(miner_ctx_t *ctx) {
             if (delta_energy < 0.0) delta_energy += msr_get_energy_wrap_joules();
             double watts = delta_energy / seconds;
             if (watts > 0.1) {
-                LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %dT | %s",
-                         hashrate, watts, hashrate / watts, ctx->num_threads,
-                         ctx->plan_desc[0] ? ctx->plan_desc : (g_best_mode == MODE_DUAL ? "dual" : "single"));
+                const char *plan = ctx->plan_desc[0] ? ctx->plan_desc : (g_best_mode == MODE_DUAL ? "dual" : "single");
+                double dw = (ctx->baseline_watts > 0.5) ? (watts - ctx->baseline_watts) : 0.0;
+                if (dw > 2.0) {
+                    LOG_INFO("[PERF] %.1f H/s | %.1f W pkg (+%.1f W) | %.2f H/W (%.1f H/dW) | %dT | %s",
+                             hashrate, watts, dw, hashrate / watts, hashrate / dw, ctx->num_threads, plan);
+                } else {
+                    LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %dT | %s",
+                             hashrate, watts, hashrate / watts, ctx->num_threads, plan);
+                }
             } else {
                 LOG_INFO("[PERF] %.1f H/s | power unavailable | %dT | %s",
                          hashrate, ctx->num_threads, ctx->plan_desc[0] ? ctx->plan_desc : "single");
@@ -490,7 +504,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     extern void rx_init_dataset(rx_dataset *, rx_cache *, uint32_t, uint32_t, int, int);
     extern void rx_init_dataset_cached(rx_dataset *, rx_cache *, uint32_t, uint32_t, int, int);
     LOG_INFO("[MINER] Initializing dataset (2 GB, this takes ~60 seconds)...");
-    ctx->dataset = rx_alloc_dataset(ctx->huge_pages);
+    ctx->dataset = rx_alloc_dataset(ctx->huge_pages ? 2 : 0);
     if (!ctx->dataset) {
         LOG_ERR("[MINER] Failed to allocate dataset");
         return -1;
@@ -507,7 +521,12 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     int num_physical = affinity_detect_cores(&cores);
     affinity_sort_pcore_first(&cores);
     core_slot_t slots[AFFINITY_MAX_CORES * 2];
-    int slot_count = (num_physical > 0) ? affinity_build_slots(&cores, slots, AFFINITY_MAX_CORES * 2) : 0;
+    int slot_count = 0;
+    if (num_physical > 0) {
+        slot_count = ctx->efficiency
+            ? affinity_build_slots_e_first(&cores, slots, AFFINITY_MAX_CORES * 2)
+            : affinity_build_slots(&cores, slots, AFFINITY_MAX_CORES * 2);
+    }
 
     /* Track which physical P-cores have an active HT sibling assigned */
     uint8_t core_has_ht[AFFINITY_MAX_CORES];
@@ -608,22 +627,31 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     }
 
     if (p_workers > 0 && e_workers > 0) {
-        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "hybrid %dP(%dL)+%dE(1L+cfg)%s",
-                 p_workers, p_lanes_sum / p_workers, e_workers, ht_workers ? "+HT" : "");
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "%s %dP(%dL)+%dE(1L+cfg)%s%s",
+                 ctx->efficiency ? "eco-hybrid" : "hybrid",
+                 p_workers, p_lanes_sum / p_workers, e_workers,
+                 ht_workers ? "+HT" : "", ctx->eco_qos ? " [EcoQoS]" : "");
+    } else if (e_workers > 0 && p_workers == 0) {
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "eco-only %dE(1L+cfg)%s",
+                 e_workers, ctx->eco_qos ? " [EcoQoS]" : "");
     } else if (any_multilane && p_workers > 0) {
-        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "multi-lane %dL (%s)",
-                 p_lanes_sum / p_workers, has_avx512 ? "AVX512" : "AVX2-bank2");
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "multi-lane %dL (%s)%s",
+                 p_lanes_sum / p_workers, has_avx512 ? "AVX512" : "AVX2-bank2",
+                 ctx->eco_qos ? " [EcoQoS]" : "");
     } else {
-        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "%s", g_best_mode == MODE_DUAL ? "dual" : "single");
+        snprintf(ctx->plan_desc, sizeof(ctx->plan_desc), "%s%s",
+                 g_best_mode == MODE_DUAL ? "dual" : "single",
+                 ctx->eco_qos ? " [EcoQoS]" : "");
     }
 
     LOG_INFO("[MINER] Plan: %s | scratchpads=%d (%d MB) | VAES=%s",
              ctx->plan_desc, total_scratchpads, total_scratchpads * 2,
              cpu_has_vaes() ? "yes" : "no");
     LOG_INFO("[MINER] Starting %d threads...", ctx->num_threads);
-    /* Keep process at NORMAL priority and workers at IDLE priority (matching XMRig)
-       so Stratum I/O, Discord/audio, and desktop apps preempt workers instantly. */
-    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
+    /* Use BELOW_NORMAL_PRIORITY_CLASS + THREAD_PRIORITY_LOWEST (priority 4) for workers
+       so Discord/audio/desktop apps (priority >= 8) preempt workers instantly while
+       avoiding Windows 11 Thread Director's aggressive P-core throttling on priority 1 (IDLE). */
+    SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
     msr_init();
     if (ctx->power_limit > 0.0) {
         ctx->power_limit_set = msr_set_package_power_limit(
@@ -636,8 +664,28 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     if (num_physical > 0) {
         int pcores = 0;
         for (int c = 0; c < cores.count; c++) if (cores.is_pcore[c]) pcores++;
-        LOG_INFO("[AFFINITY] Detected %d physical cores (%d P-core, %d E-core) [order: P -> E -> P-HT]",
-                 num_physical, pcores, num_physical - pcores);
+        LOG_INFO("[AFFINITY] Detected %d physical cores (%d P-core, %d E-core) [order: %s]",
+                 num_physical, pcores, num_physical - pcores,
+                 ctx->efficiency ? "E -> P -> P-HT" : "P -> E -> P-HT");
+    }
+
+    /* Sample 1.0s baseline package power (WinRing0 RAPL or user-space Windows EMI v2)
+       before starting workers so [PERF] reports both Total H/W and incremental H/dW. */
+    {
+        double e0 = 0.0, e1 = 0.0;
+        if (msr_read_package_energy(&e0)) {
+            uint64_t t0 = GetTickCount64();
+            Sleep(1000);
+            uint64_t t1 = GetTickCount64();
+            if (msr_read_package_energy(&e1) && t1 > t0) {
+                double de = e1 - e0;
+                if (de < 0.0) de += msr_get_energy_wrap_joules();
+                ctx->baseline_watts = de / ((double)(t1 - t0) / 1000.0);
+                if (ctx->baseline_watts > 0.5) {
+                    LOG_INFO("[POWER] Baseline package power: %.1f W (RAPL/EMI)", ctx->baseline_watts);
+                }
+            }
+        }
     }
 
     for (int i = 0; i < ctx->num_threads; i++) {
@@ -646,7 +694,15 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
             LOG_ERR("[MINER] Failed to create thread %d", i);
             continue;
         }
-        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_IDLE);
+        SetThreadPriority(ctx->thread_handles[i], THREAD_PRIORITY_LOWEST);
+        if (ctx->eco_qos) {
+            THREAD_POWER_THROTTLING_STATE pts;
+            memset(&pts, 0, sizeof(pts));
+            pts.Version = THREAD_POWER_THROTTLING_CURRENT_VERSION;
+            pts.ControlMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+            pts.StateMask = THREAD_POWER_THROTTLING_EXECUTION_SPEED;
+            SetThreadInformation(ctx->thread_handles[i], ThreadPowerThrottling, &pts, sizeof(pts));
+        }
         if (ctx->workers[i].os_cpu >= 0) {
             GROUP_AFFINITY ga = {0};
             int os_idx = ctx->workers[i].os_cpu;

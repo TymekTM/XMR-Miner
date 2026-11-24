@@ -16,6 +16,7 @@ void *miner_get_vm2(miner_ctx_t *ctx, int worker_id);
 void miner_recreate_vms(miner_ctx_t *ctx, int rx_flags);
 void miner_report_performance(miner_ctx_t *ctx);
 void miner_set_lanes(miner_ctx_t *ctx, int lanes);
+void miner_set_efficiency(miner_ctx_t *ctx, int efficiency, int eco_qos);
 void *miner_get_cache(miner_ctx_t *ctx);
 void *miner_get_dataset(miner_ctx_t *ctx);
 void miner_check_pause(miner_ctx_t *ctx);

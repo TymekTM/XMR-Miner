@@ -132,6 +132,61 @@ int affinity_build_slots(const core_list_t *cores, core_slot_t *slots, int max_c
     return n;
 }
 
+int affinity_count_ecores(const core_list_t *cores) {
+    int e = 0;
+    for (int i = 0; i < cores->count; i++) {
+        if (!cores->is_pcore[i]) e++;
+    }
+    return e;
+}
+
+int affinity_build_slots_e_first(const core_list_t *cores, core_slot_t *slots, int max_count) {
+    int n = 0;
+    /* 1. E-cores first (cluster-spread round-robin across 4-core L2 clusters) */
+    int e_idx[AFFINITY_MAX_CORES];
+    int e_count = 0;
+    for (int i = 0; i < cores->count && e_count < AFFINITY_MAX_CORES; i++) {
+        if (!cores->is_pcore[i]) e_idx[e_count++] = i;
+    }
+    if (e_count > 0) {
+        int cluster_size = (e_count >= 8 && (e_count % 4) == 0) ? 4 : 1;
+        int num_clusters = (e_count + cluster_size - 1) / cluster_size;
+        for (int pos = 0; pos < cluster_size && n < max_count; pos++) {
+            for (int cl = 0; cl < num_clusters && n < max_count; cl++) {
+                int idx = cl * cluster_size + pos;
+                if (idx >= e_count) continue;
+                int ci = e_idx[idx];
+                slots[n].os_cpu = cores->os_index[ci];
+                slots[n].is_pcore = 0;
+                slots[n].is_ht_sibling = 0;
+                slots[n].core_idx = ci;
+                n++;
+            }
+        }
+    }
+    /* 2. P-core primaries second */
+    for (int i = 0; i < cores->count && n < max_count; i++) {
+        if (cores->is_pcore[i]) {
+            slots[n].os_cpu = cores->os_index[i];
+            slots[n].is_pcore = 1;
+            slots[n].is_ht_sibling = 0;
+            slots[n].core_idx = i;
+            n++;
+        }
+    }
+    /* 3. P-core HT siblings last */
+    for (int i = 0; i < cores->count && n < max_count; i++) {
+        if (cores->is_pcore[i] && cores->sibling[i] >= 0) {
+            slots[n].os_cpu = cores->sibling[i];
+            slots[n].is_pcore = 1;
+            slots[n].is_ht_sibling = 1;
+            slots[n].core_idx = i;
+            n++;
+        }
+    }
+    return n;
+}
+
 int affinity_build_order(const core_list_t *cores, int *order, int max_count) {
     core_slot_t slots[AFFINITY_MAX_CORES * 2];
     int cap = max_count < (AFFINITY_MAX_CORES * 2) ? max_count : (AFFINITY_MAX_CORES * 2);

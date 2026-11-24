@@ -23,6 +23,8 @@ typedef struct {
     int  lanes;      /* hashes interleaved per thread: 0 = auto, 1 = off, 2..4 */
     int  use_tls;
     int  tls_allow;
+    int  efficiency; /* E-core-first placement for max H/s/W on hybrid Intel CPUs */
+    int  eco_qos;    /* Windows 11 EcoQoS (ThreadPowerThrottling) hint on workers */
     double power_limit;
     int  log_level;
     int  verbose;
