@@ -222,6 +222,22 @@ static void tray_update_icon_and_tip(tray_ctx_t *t) {
     t->last_icon_state = (int)st;
 }
 
+static void tray_open_logs_or_console(tray_ctx_t *t) {
+    HWND con = GetConsoleWindow();
+    if (con) {
+        t->console_visible = !t->console_visible;
+        ShowWindow(con, t->console_visible ? SW_SHOW : SW_HIDE);
+        if (t->console_visible) SetForegroundWindow(con);
+        return;
+    }
+    const char *logp = log_get_file_path();
+    if (logp && logp[0]) {
+        wchar_t logw[512];
+        MultiByteToWideChar(CP_UTF8, 0, logp, -1, logw, 512);
+        ShellExecuteW(NULL, L"open", L"notepad.exe", logw, NULL, SW_SHOWNORMAL);
+    }
+}
+
 static void tray_show_menu(tray_ctx_t *t) {
     POINT pt;
     GetCursorPos(&pt);
@@ -271,8 +287,12 @@ static void tray_show_menu(tray_ctx_t *t) {
                 IDM_PAUSE_MANUAL, L"Pauza (reczna)");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
 
-    AppendMenuW(menu, MF_STRING, IDM_TOGGLE_CON,
-                t->console_visible ? L"Ukryj konsole" : L"Pokaz konsole");
+    if (GetConsoleWindow()) {
+        AppendMenuW(menu, MF_STRING, IDM_TOGGLE_CON,
+                    t->console_visible ? L"Ukryj konsole" : L"Pokaz konsole");
+    } else {
+        AppendMenuW(menu, MF_STRING, IDM_TOGGLE_CON, L"Otworz logi (xmr-miner.log)");
+    }
     AppendMenuW(menu, MF_STRING | (autostart_is_installed() ? MF_CHECKED : 0),
                 IDM_AUTOSTART, L"Autostart z Windows");
     AppendMenuW(menu, MF_SEPARATOR, 0, NULL);
@@ -293,14 +313,7 @@ static LRESULT CALLBACK tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
         if (lParam == WM_RBUTTONUP || lParam == WM_CONTEXTMENU) {
             if (t) tray_show_menu(t);
         } else if (lParam == WM_LBUTTONDBLCLK) {
-            if (t) {
-                HWND con = GetConsoleWindow();
-                if (con) {
-                    t->console_visible = !t->console_visible;
-                    ShowWindow(con, t->console_visible ? SW_SHOW : SW_HIDE);
-                    if (t->console_visible) SetForegroundWindow(con);
-                }
-            }
+            if (t) tray_open_logs_or_console(t);
         }
         return 0;
 
@@ -337,15 +350,9 @@ static LRESULT CALLBACK tray_wnd_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM
             if (t->watchdog) watchdog_set_override(t->watchdog, YIELD_OVERRIDE_PAUSED, 0);
             tray_update_icon_and_tip(t);
             break;
-        case IDM_TOGGLE_CON: {
-            HWND con = GetConsoleWindow();
-            if (con) {
-                t->console_visible = !t->console_visible;
-                ShowWindow(con, t->console_visible ? SW_SHOW : SW_HIDE);
-                if (t->console_visible) SetForegroundWindow(con);
-            }
+        case IDM_TOGGLE_CON:
+            tray_open_logs_or_console(t);
             break;
-        }
         case IDM_AUTOSTART:
             if (autostart_is_installed()) autostart_uninstall();
             else autostart_install(t->config_path);

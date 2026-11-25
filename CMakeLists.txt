@@ -152,6 +152,15 @@ set_target_properties(xmr-miner PROPERTIES
     LINK_FLAGS "/LTCG /OPT:REF"
 )
 
+# Windowless GUI-subsystem tray executable (never spawns a console or Windows Terminal window)
+add_executable(xmr-miner-tray WIN32 ${SOURCES})
+target_compile_definitions(xmr-miner-tray PRIVATE XMR_TRAY_APP=1)
+target_include_directories(xmr-miner-tray PRIVATE src)
+target_link_libraries(xmr-miner-tray ws2_32 user32 gdi32 shell32 advapi32)
+set_target_properties(xmr-miner-tray PROPERTIES
+    LINK_FLAGS "/LTCG /OPT:REF /ENTRY:mainCRTStartup"
+)
+
 if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
     set(UPSTREAM_MINER_SOURCES
         src/main.c
