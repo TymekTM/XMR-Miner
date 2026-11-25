@@ -47,6 +47,23 @@ int main(int argc, char **argv) {
 
     log_init((log_level_t)cfg.log_level);
 
+#ifdef XMR_TRAY_APP
+    /* GUI-subsystem tray build: never spawns a console window; log to file instead */
+    cfg.tray = 1;
+    {
+        char log_path[512] = "xmr-miner.log";
+        if (cfg.config_path[0]) {
+            snprintf(log_path, sizeof(log_path), "%s", cfg.config_path);
+            char *slash = strrchr(log_path, '\\');
+            char *fslash = strrchr(log_path, '/');
+            if (fslash > slash) slash = fslash;
+            if (slash) snprintf(slash + 1, sizeof(log_path) - (size_t)(slash + 1 - log_path), "xmr-miner.log");
+            else snprintf(log_path, sizeof(log_path), "xmr-miner.log");
+        }
+        log_set_file(log_path);
+    }
+#endif
+
     if (cfg.uninstall_autostart) {
         int rc = autostart_uninstall();
         LOG_INFO("Autostart removal: %s", rc == 0 ? "OK" : "FAILED");
@@ -285,5 +302,6 @@ int main(int argc, char **argv) {
     if (instance_mutex) CloseHandle(instance_mutex);
 
     LOG_INFO("Goodbye!");
+    log_close_file();
     return 0;
 }

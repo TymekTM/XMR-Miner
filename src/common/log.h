@@ -11,6 +11,9 @@ typedef enum {
 } log_level_t;
 
 void log_init(log_level_t level);
+int  log_set_file(const char *path);
+const char *log_get_file_path(void);
+void log_close_file(void);
 void log_msg(log_level_t level, const char *fmt, ...);
 
 #define LOG_DEBUG(...) log_msg(LOG_DEBUG, __VA_ARGS__)
