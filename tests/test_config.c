@@ -143,6 +143,31 @@ static void test_efficiency_flags(void) {
     CHECK(cfg.eco_qos == 1);
 }
 
+static void test_background_and_tray_flags(void) {
+    config_t cfg;
+    char *argv[] = { "xmr-miner", "-u", "W", "--background", "--tray",
+                     "--yield-eco", "12", "--yield-pause", "28",
+                     "--resume-delay", "15", "--idle-full", "240",
+                     "--pause-gpu", "30", "--ram-pause-mb", "4096",
+                     "--pause-procs", "cs2.exe,cl.exe", NULL };
+    int argc = 0; while (argv[argc]) argc++;
+    CHECK(config_parse_args(&cfg, argc, argv) == RX_SUCCESS);
+    CHECK(cfg.auto_yield == 1);
+    CHECK(cfg.tray == 1);
+    CHECK(cfg.yield_cpu_eco == 12);
+    CHECK(cfg.yield_cpu_pause == 28);
+    CHECK(cfg.resume_delay_sec == 15);
+    CHECK(cfg.idle_full_sec == 240);
+    CHECK(cfg.pause_gpu_pct == 30);
+    CHECK(cfg.ram_pause_mb == 4096);
+    CHECK(strcmp(cfg.pause_processes, "cs2.exe,cl.exe") == 0);
+
+    /* --install-autostart allowed without wallet */
+    char *argv2[] = { "xmr-miner", "--install-autostart", NULL };
+    CHECK(config_parse_args(&cfg, 2, argv2) == RX_SUCCESS);
+    CHECK(cfg.install_autostart == 1);
+}
+
 int main(void) {
     printf("[TEST] config parser\n");
     test_defaults();
@@ -155,6 +180,7 @@ int main(void) {
     test_unknown_option();
     test_config_file();
     test_efficiency_flags();
+    test_background_and_tray_flags();
 
     printf("[TEST] %d checks, %d failures\n", checks, failures);
     printf("[TEST] %s\n", failures == 0 ? "PASS" : "FAIL");

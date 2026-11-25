@@ -20,3 +20,8 @@ void miner_set_efficiency(miner_ctx_t *ctx, int efficiency, int eco_qos);
 void *miner_get_cache(miner_ctx_t *ctx);
 void *miner_get_dataset(miner_ctx_t *ctx);
 void miner_check_pause(miner_ctx_t *ctx);
+void miner_check_worker_pause(miner_ctx_t *ctx, void *worker_ptr);
+void miner_set_yield_state(miner_ctx_t *ctx, int yield_state, const char *reason);
+void miner_update_yield_reason(miner_ctx_t *ctx, const char *reason);
+int  miner_get_yield_state(miner_ctx_t *ctx);
+void miner_get_live_stats(miner_ctx_t *ctx, double *hashrate_out, double *watts_out);

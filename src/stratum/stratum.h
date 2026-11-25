@@ -55,6 +55,7 @@ void stratum_free_job_copy(stratum_job_t *job);
 uint64_t stratum_get_job_generation(stratum_ctx_t *ctx);
 int stratum_get_protocol(stratum_ctx_t *ctx);
 int stratum_recv(stratum_ctx_t *ctx);
+int stratum_keepalive(stratum_ctx_t *ctx);
 int stratum_running(const stratum_ctx_t *ctx);
 void stratum_set_running(stratum_ctx_t *ctx, int val);
 uint64_t stratum_parse_target(const char *hex);

@@ -1,9 +1,11 @@
 #include "common/log.h"
 #include "common/config.h"
 #include "common/cpu.h"
+#include "common/tray.h"
 #include "stratum/stratum.h"
 #include "miner/miner.h"
 #include "miner/affinity.h"
+#include "miner/watchdog.h"
 #include <windows.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,15 +14,21 @@
 
 static volatile int g_running = 1;
 
+static void request_shutdown(void) {
+    g_running = 0;
+}
+
 static BOOL WINAPI ctrl_handler(DWORD type) {
-    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT) {
+    if (type == CTRL_C_EVENT || type == CTRL_BREAK_EVENT ||
+        type == CTRL_CLOSE_EVENT || type == CTRL_LOGOFF_EVENT ||
+        type == CTRL_SHUTDOWN_EVENT) {
         g_running = 0;
         return TRUE;
     }
     return FALSE;
 }
 
-/* Sleep that returns early if Ctrl-C was requested. */
+/* Sleep that returns early if shutdown was requested. */
 static void interruptible_sleep(DWORD ms) {
     DWORD step = 100;
     DWORD elapsed = 0;
@@ -39,6 +47,29 @@ int main(int argc, char **argv) {
 
     log_init((log_level_t)cfg.log_level);
 
+    if (cfg.uninstall_autostart) {
+        int rc = autostart_uninstall();
+        LOG_INFO("Autostart removal: %s", rc == 0 ? "OK" : "FAILED");
+        if (cfg.wallet[0] == '\0') return rc == 0 ? 0 : 1;
+    }
+    if (cfg.install_autostart) {
+        int rc = autostart_install(cfg.config_path);
+        LOG_INFO("Autostart install: %s", rc == 0 ? "OK" : "FAILED");
+        if (cfg.wallet[0] == '\0') return rc == 0 ? 0 : 1;
+    }
+
+    HANDLE instance_mutex = NULL;
+    if (cfg.tray) {
+        instance_mutex = CreateMutexW(NULL, TRUE, L"Local\\XMR-Miner-Background-Instance");
+        if (instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+            LOG_WARN("Another XMR-Miner tray instance is already running - exiting");
+            CloseHandle(instance_mutex);
+            return 0;
+        }
+        HWND con = GetConsoleWindow();
+        if (con) ShowWindow(con, SW_HIDE);
+    }
+
     LOG_INFO("XMR-Miner v0.2.0 - Custom Monero miner (C, Windows x64)");
     LOG_INFO("Monero stratum protocol (login + job + submit)");
     LOG_INFO("==============================================");
@@ -51,6 +82,7 @@ int main(int argc, char **argv) {
 
     if (!cpu.has_aes_ni) {
         LOG_ERR("AES-NI not available - RandomX requires AES-NI");
+        if (instance_mutex) CloseHandle(instance_mutex);
         return 1;
     }
 
@@ -91,19 +123,33 @@ int main(int argc, char **argv) {
     stratum_ctx_t *stratum = stratum_create(&scfg);
     if (!stratum) {
         LOG_ERR("Failed to create stratum context");
+        if (instance_mutex) CloseHandle(instance_mutex);
         return 1;
     }
 
-    if (stratum_connect(stratum) != 0) {
-        LOG_ERR("Failed to connect to pool");
-        stratum_destroy(stratum);
-        return 1;
-    }
-
-    if (stratum_login(stratum) != 0) {
-        LOG_ERR("Failed to login");
-        stratum_destroy(stratum);
-        return 1;
+    /* Retry initial connection gracefully (important at Windows boot before Wi-Fi/NIC is up) */
+    {
+        int backoff = 3;
+        while (g_running) {
+            if (stratum_connect(stratum) == 0 && stratum_login(stratum) == 0) {
+                break;
+            }
+            stratum_disconnect(stratum);
+            if (!cfg.tray && !cfg.auto_yield) {
+                LOG_ERR("Failed to connect/login to pool");
+                stratum_destroy(stratum);
+                if (instance_mutex) CloseHandle(instance_mutex);
+                return 1;
+            }
+            LOG_WARN("Initial pool connection failed, retrying in %d s...", backoff);
+            interruptible_sleep((DWORD)backoff * 1000);
+            if (backoff < 60) backoff = backoff * 2;
+        }
+        if (!g_running) {
+            stratum_destroy(stratum);
+            if (instance_mutex) CloseHandle(instance_mutex);
+            return 0;
+        }
     }
 
     miner_ctx_t *miner = miner_create(threads, cfg.huge_pages, cpu.physical_cores,
@@ -115,7 +161,33 @@ int main(int argc, char **argv) {
     if (!miner) {
         LOG_ERR("Failed to create miner");
         stratum_destroy(stratum);
+        if (instance_mutex) CloseHandle(instance_mutex);
         return 1;
+    }
+
+    /* Create watchdog before miner_start if auto_yield or tray is enabled so
+       tray manual pause/ECO works even when auto_yield=0. */
+    watchdog_ctx_t *watchdog = NULL;
+    if (cfg.auto_yield || cfg.tray) {
+        watchdog_config_t wcfg;
+        watchdog_config_defaults(&wcfg);
+        wcfg.enabled = cfg.auto_yield;
+        wcfg.cpu_eco_pct = cfg.yield_cpu_eco;
+        wcfg.cpu_pause_pct = cfg.yield_cpu_pause;
+        wcfg.resume_delay_sec = cfg.resume_delay_sec;
+        wcfg.idle_full_sec = cfg.idle_full_sec;
+        wcfg.pause_fullscreen = cfg.pause_fullscreen;
+        wcfg.pause_gpu_pct = cfg.pause_gpu_pct;
+        wcfg.ram_pause_mb = cfg.ram_pause_mb;
+        wcfg.pause_on_battery = cfg.pause_on_battery;
+        snprintf(wcfg.pause_processes, sizeof(wcfg.pause_processes), "%s", cfg.pause_processes);
+        watchdog = watchdog_create(&wcfg, miner);
+    }
+
+    tray_ctx_t *tray = NULL;
+    if (cfg.tray) {
+        tray = tray_create(miner, watchdog, cfg.config_path, request_shutdown);
+        if (tray) tray_start(tray, 1);
     }
 
     uint8_t initial_seed[32] = {0};
@@ -132,15 +204,49 @@ int main(int argc, char **argv) {
 
     if (miner_start(miner, initial_seed_len > 0 ? initial_seed : NULL, initial_seed_len) != 0) {
         LOG_ERR("Failed to start miner");
+        if (tray) tray_destroy(tray);
+        if (watchdog) watchdog_destroy(watchdog);
         miner_destroy(miner);
         stratum_destroy(stratum);
+        if (instance_mutex) CloseHandle(instance_mutex);
         return 1;
     }
 
+    if (watchdog) watchdog_start(watchdog);
+
+    uint64_t last_perf_ms = GetTickCount64();
+    uint64_t last_keepalive_ms = GetTickCount64();
+
     while (g_running && stratum_running(stratum)) {
+        uint64_t now_ms = GetTickCount64();
+        if (now_ms - last_perf_ms >= 10000ULL) {
+            miner_report_performance(miner);
+            last_perf_ms = now_ms;
+        }
+        if (now_ms - last_keepalive_ms >= 55000ULL) {
+            stratum_keepalive(stratum);
+            last_keepalive_ms = now_ms;
+        }
+
         if (stratum_recv(stratum) != 0) {
             LOG_WARN("Connection lost, reconnecting...");
             stratum_disconnect(stratum);
+
+            /* If fully paused (e.g. long gaming session), wait until mining resumes
+               before hammering the pool with reconnect attempts. */
+            if (miner_get_yield_state(miner) == YIELD_STATE_PAUSED) {
+                LOG_INFO("[STRATUM] Miner is PAUSED - deferring reconnect until resume");
+                while (g_running && stratum_running(stratum) &&
+                       miner_get_yield_state(miner) == YIELD_STATE_PAUSED) {
+                    uint64_t tnow = GetTickCount64();
+                    if (tnow - last_perf_ms >= 10000ULL) {
+                        miner_report_performance(miner);
+                        last_perf_ms = tnow;
+                    }
+                    interruptible_sleep(500);
+                }
+                if (!g_running || !stratum_running(stratum)) break;
+            }
 
             int backoff = 5;      /* seconds, grows on repeated failure */
             const int cap = 300;  /* 5 min max */
@@ -155,6 +261,7 @@ int main(int argc, char **argv) {
                 if (stratum_connect(stratum) == 0) {
                     if (stratum_login(stratum) == 0) {
                         LOG_INFO("Reconnected successfully");
+                        last_keepalive_ms = GetTickCount64();
                         backoff = 5;  /* reset after success */
                         break;
                     }
@@ -169,10 +276,13 @@ int main(int argc, char **argv) {
     }
 
     LOG_INFO("Shutting down...");
+    if (tray) tray_destroy(tray);
+    if (watchdog) watchdog_destroy(watchdog);
     miner_stop(miner);
     miner_destroy(miner);
     stratum_disconnect(stratum);
     stratum_destroy(stratum);
+    if (instance_mutex) CloseHandle(instance_mutex);
 
     LOG_INFO("Goodbye!");
     return 0;

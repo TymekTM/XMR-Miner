@@ -6,6 +6,7 @@
 #define MAX_WALLET_ADDR 128
 #define MAX_WORKER_NAME 64
 #define MAX_POOL_PASS   64
+#define MAX_PAUSE_PROCS 512
 
 #define MINER_MODE_AUTO   0
 #define MINER_MODE_SINGLE 1
@@ -28,6 +29,21 @@ typedef struct {
     double power_limit;
     int  log_level;
     int  verbose;
+    /* Background Auto-Yield & System Tray */
+    int  auto_yield;
+    int  yield_cpu_eco;
+    int  yield_cpu_pause;
+    int  resume_delay_sec;
+    int  idle_full_sec;
+    int  pause_fullscreen;
+    int  pause_gpu_pct;
+    int  ram_pause_mb;
+    int  pause_on_battery;
+    char pause_processes[MAX_PAUSE_PROCS];
+    int  tray;
+    int  install_autostart;
+    int  uninstall_autostart;
+    char config_path[512];
 } config_t;
 
 void config_set_defaults(config_t *cfg);
