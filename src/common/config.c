@@ -48,6 +48,28 @@ static void set_config_value(config_t *cfg, const char *key, const char *val) {
         cfg->eco_qos = (atoi(val) != 0);
     } else if (strcmp(key, "power_limit") == 0) {
         cfg->power_limit = atof(val);
+    } else if (strcmp(key, "auto_yield") == 0 || strcmp(key, "background") == 0) {
+        cfg->auto_yield = (atoi(val) != 0 || strcmp(val, "true") == 0);
+    } else if (strcmp(key, "yield_cpu_eco") == 0) {
+        cfg->yield_cpu_eco = atoi(val);
+    } else if (strcmp(key, "yield_cpu_pause") == 0) {
+        cfg->yield_cpu_pause = atoi(val);
+    } else if (strcmp(key, "resume_delay") == 0 || strcmp(key, "resume_delay_sec") == 0) {
+        cfg->resume_delay_sec = atoi(val);
+    } else if (strcmp(key, "idle_full_sec") == 0) {
+        cfg->idle_full_sec = atoi(val);
+    } else if (strcmp(key, "pause_fullscreen") == 0) {
+        cfg->pause_fullscreen = (atoi(val) != 0 || strcmp(val, "true") == 0);
+    } else if (strcmp(key, "pause_gpu_pct") == 0) {
+        cfg->pause_gpu_pct = atoi(val);
+    } else if (strcmp(key, "ram_pause_mb") == 0) {
+        cfg->ram_pause_mb = atoi(val);
+    } else if (strcmp(key, "pause_on_battery") == 0) {
+        cfg->pause_on_battery = (atoi(val) != 0 || strcmp(val, "true") == 0);
+    } else if (strcmp(key, "pause_processes") == 0) {
+        strncpy(cfg->pause_processes, val, MAX_PAUSE_PROCS - 1);
+    } else if (strcmp(key, "tray") == 0) {
+        cfg->tray = (atoi(val) != 0 || strcmp(val, "true") == 0);
     } else if (strcmp(key, "verbose") == 0 || strcmp(key, "v") == 0) {
         cfg->verbose = (atoi(val) != 0);
         cfg->log_level = LOG_DEBUG;
@@ -96,6 +118,16 @@ void config_set_defaults(config_t *cfg) {
     cfg->huge_pages = 1;
     cfg->mode = MINER_MODE_AUTO;
     cfg->log_level = LOG_INFO;
+    cfg->auto_yield = 0;
+    cfg->yield_cpu_eco = 15;
+    cfg->yield_cpu_pause = 30;
+    cfg->resume_delay_sec = 12;
+    cfg->idle_full_sec = 180;
+    cfg->pause_fullscreen = 1;
+    cfg->pause_gpu_pct = 45;
+    cfg->ram_pause_mb = 3072;
+    cfg->pause_on_battery = 1;
+    cfg->tray = 0;
 }
 
 static void print_usage(const char *prog) {
@@ -112,6 +144,18 @@ static void print_usage(const char *prog) {
     printf("  --power-limit <W>        Set package PL1/PL2 while mining (default: off)\n");
     printf("  --efficiency             E-core-first placement for max H/s/W (auto = all E-cores)\n");
     printf("  --eco                    Enable Windows 11 EcoQoS (ThreadPowerThrottling) on workers\n");
+    printf("  --background             Enable Auto-Yield background mode (FULL/ECO/PAUSED)\n");
+    printf("  --tray                   Run in Windows System Tray (hides console)\n");
+    printf("  --yield-eco <pct>        External CPU %% to step down to E-cores (default: 15)\n");
+    printf("  --yield-pause <pct>      External CPU %% for full pause (default: 30)\n");
+    printf("  --resume-delay <sec>     Quiet seconds before resuming (default: 12)\n");
+    printf("  --idle-full <sec>        AFK seconds before FULL P+E (default: 180; 0=always)\n");
+    printf("  --pause-gpu <pct>        GPU %% threshold for full pause (default: 45; 0=off)\n");
+    printf("  --no-pause-fullscreen    Do not pause on D3D fullscreen apps\n");
+    printf("  --ram-pause-mb <MB>      Pause if available RAM < MB (default: 3072; 0=off)\n");
+    printf("  --pause-procs <csv>      Comma-separated .exe names that trigger pause\n");
+    printf("  --install-autostart      Register HKCU Windows autostart entry and exit\n");
+    printf("  --uninstall-autostart    Remove HKCU Windows autostart entry and exit\n");
     printf("  --no-huge-pages          Disable huge pages\n");
     printf("  --tls                    Connect to pool over TLS\n");
     printf("  --tls-allow              Skip TLS certificate validation\n");
@@ -126,6 +170,7 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
     for (int i = 1; i < argc; i++) {
         if ((strcmp(argv[i], "-c") == 0 || strcmp(argv[i], "--config") == 0) && i + 1 < argc) {
             i++;
+            strncpy(cfg->config_path, argv[i], sizeof(cfg->config_path) - 1);
             if (config_parse_file(cfg, argv[i]) != 0) {
                 LOG_ERR("Cannot open config file: %s", argv[i]);
                 return RX_ERROR;
@@ -182,6 +227,30 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
             cfg->efficiency = 1;
         } else if (strcmp(argv[i], "--eco") == 0) {
             cfg->eco_qos = 1;
+        } else if (strcmp(argv[i], "--background") == 0 || strcmp(argv[i], "--auto-yield") == 0) {
+            cfg->auto_yield = 1;
+        } else if (strcmp(argv[i], "--tray") == 0) {
+            cfg->tray = 1;
+        } else if (strcmp(argv[i], "--yield-eco") == 0 && i + 1 < argc) {
+            cfg->yield_cpu_eco = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--yield-pause") == 0 && i + 1 < argc) {
+            cfg->yield_cpu_pause = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--resume-delay") == 0 && i + 1 < argc) {
+            cfg->resume_delay_sec = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--idle-full") == 0 && i + 1 < argc) {
+            cfg->idle_full_sec = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--pause-gpu") == 0 && i + 1 < argc) {
+            cfg->pause_gpu_pct = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--no-pause-fullscreen") == 0) {
+            cfg->pause_fullscreen = 0;
+        } else if (strcmp(argv[i], "--ram-pause-mb") == 0 && i + 1 < argc) {
+            cfg->ram_pause_mb = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--pause-procs") == 0 && i + 1 < argc) {
+            strncpy(cfg->pause_processes, argv[++i], MAX_PAUSE_PROCS - 1);
+        } else if (strcmp(argv[i], "--install-autostart") == 0) {
+            cfg->install_autostart = 1;
+        } else if (strcmp(argv[i], "--uninstall-autostart") == 0) {
+            cfg->uninstall_autostart = 1;
         } else if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             cfg->verbose = 1;
             cfg->log_level = LOG_DEBUG;
@@ -195,7 +264,7 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
         }
     }
 
-    if (cfg->wallet[0] == '\0') {
+    if (cfg->wallet[0] == '\0' && !cfg->install_autostart && !cfg->uninstall_autostart) {
         LOG_ERR("Wallet address required (-u or wallet= in config)");
         return RX_ERROR;
     }
@@ -205,7 +274,10 @@ int config_parse_args(config_t *cfg, int argc, char **argv) {
 
 void config_print(const config_t *cfg) {
     LOG_INFO("Pool: %s:%d", cfg->pool_url, cfg->pool_port);
-    LOG_INFO("Wallet: %s...%.4s", cfg->wallet, cfg->wallet + strlen(cfg->wallet) - 4);
+    if (strlen(cfg->wallet) >= 4)
+        LOG_INFO("Wallet: %.8s...%.4s", cfg->wallet, cfg->wallet + strlen(cfg->wallet) - 4);
+    else
+        LOG_INFO("Wallet: %s", cfg->wallet);
     if (cfg->threads <= 0)
         LOG_INFO("Threads: auto");
     else
@@ -221,6 +293,13 @@ void config_print(const config_t *cfg) {
     LOG_INFO("Efficiency: %s", cfg->efficiency ? "E-core-first" : "off");
     if (cfg->eco_qos)
         LOG_INFO("EcoQoS: enabled");
+    if (cfg->auto_yield)
+        LOG_INFO("Auto-Yield: ON (eco>=%d%% pause>=%d%% gpu>=%d%% idleFull=%ds resume=%ds fullscreen=%s)",
+                 cfg->yield_cpu_eco, cfg->yield_cpu_pause, cfg->pause_gpu_pct,
+                 cfg->idle_full_sec, cfg->resume_delay_sec,
+                 cfg->pause_fullscreen ? "yes" : "no");
+    if (cfg->tray)
+        LOG_INFO("System Tray: enabled");
     LOG_INFO("TLS: %s", cfg->use_tls ? "yes" : "no");
     if (cfg->use_tls)
         LOG_INFO("TLS verify: %s", cfg->tls_allow ? "disabled" : "enabled");

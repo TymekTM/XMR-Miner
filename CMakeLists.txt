@@ -106,6 +106,7 @@ set(SOURCES
     src/common/memory.c
     src/common/vmem.c
     src/common/config.c
+    src/common/tray.c
     src/crypto/blake2/blake2b.c
     src/crypto/blake2/blake2_generator.c
     src/crypto/aes/aes_ni.c
@@ -129,6 +130,7 @@ set(SOURCES
     src/miner/blob.c
     src/miner/affinity.c
     src/miner/worker.c
+    src/miner/watchdog.c
 )
 
 set_source_files_properties(
@@ -145,7 +147,7 @@ set_source_files_properties(
 
 add_executable(xmr-miner ${SOURCES})
 target_include_directories(xmr-miner PRIVATE src)
-target_link_libraries(xmr-miner ws2_32)
+target_link_libraries(xmr-miner ws2_32 user32 gdi32 shell32 advapi32)
 set_target_properties(xmr-miner PROPERTIES
     LINK_FLAGS "/LTCG /OPT:REF"
 )
@@ -157,6 +159,7 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
         src/common/cpu.c
         src/common/memory.c
         src/common/config.c
+        src/common/tray.c
         src/crypto/keccak/keccak.c
         src/crypto/randomx/upstream_adapter.cpp
         src/crypto/randomx/msr.c
@@ -168,6 +171,7 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
         src/miner/blob.c
         src/miner/affinity.c
         src/miner/worker.c
+        src/miner/watchdog.c
     )
     add_executable(xmr-miner-upstream ${UPSTREAM_MINER_SOURCES})
     target_include_directories(xmr-miner-upstream PRIVATE
@@ -176,6 +180,10 @@ if(XMR_BUILD_UPSTREAM_BACKEND AND TARGET randomx)
     )
     target_link_libraries(xmr-miner-upstream
         ws2_32
+        user32
+        gdi32
+        shell32
+        advapi32
         randomx
     )
     set_target_properties(xmr-miner-upstream PROPERTIES
@@ -274,6 +282,9 @@ add_bench_target(test_tls tests/test_tls.c "")
 target_sources(test_tls PRIVATE src/stratum/tls.c)
 add_bench_target(test_config tests/test_config.c "")
 target_sources(test_config PRIVATE src/common/config.c)
+add_executable(test_watchdog tests/test_watchdog.c src/miner/watchdog.c src/common/log.c)
+target_include_directories(test_watchdog PRIVATE src)
+target_link_libraries(test_watchdog shell32 user32)
 add_bench_target(test_blob tests/test_blob.c "")
 target_sources(test_blob PRIVATE src/miner/blob.c src/crypto/keccak/keccak.c)
 add_bench_target(test_multilane tests/test_multilane.c "")
@@ -309,6 +320,8 @@ add_test(NAME json_parser
     COMMAND test_json)
 add_test(NAME config_parser
     COMMAND test_config)
+add_test(NAME watchdog_fsm
+    COMMAND test_watchdog)
 add_test(NAME blob_helpers
     COMMAND test_blob)
 add_test(NAME multilane

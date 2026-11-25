@@ -1,6 +1,7 @@
 #include "miner.h"
 #include "worker.h"
 #include "affinity.h"
+#include "watchdog.h"
 #include "stratum/stratum.h"
 #include "crypto/randomx/randomx.h"
 #include "common/config.h"
@@ -87,6 +88,15 @@ struct miner_ctx {
     int eco_qos;
     volatile LONG pause_req;
     volatile LONG paused_count;
+    volatile LONG yield_pause_p;
+    volatile LONG yield_pause_e;
+    volatile LONG yield_state;
+    HANDLE resume_p_event;
+    HANDLE resume_e_event;
+    int has_ecores;
+    double last_hashrate;
+    double last_watts;
+    char yield_reason[64];
     char plan_desc[64];
 };
 
@@ -99,13 +109,97 @@ void miner_set_efficiency(miner_ctx_t *ctx, int efficiency, int eco_qos) {
 void *miner_get_cache(miner_ctx_t *ctx) { return ctx->cache; }
 void *miner_get_dataset(miner_ctx_t *ctx) { return ctx->dataset; }
 
-void miner_check_pause(miner_ctx_t *ctx) {
-    if (!ctx || !InterlockedCompareExchange(&ctx->pause_req, 0, 0)) return;
+void miner_set_yield_state(miner_ctx_t *ctx, int yield_state, const char *reason) {
+    if (!ctx) return;
+    LONG pause_p = 0, pause_e = 0;
+    if (yield_state == YIELD_STATE_PAUSED) {
+        pause_p = 1;
+        pause_e = 1;
+    } else if (yield_state == YIELD_STATE_ECO) {
+        pause_p = 1;
+        pause_e = 0;
+    }
+    InterlockedExchange(&ctx->yield_state, (LONG)yield_state);
+    InterlockedExchange(&ctx->yield_pause_p, pause_p);
+    InterlockedExchange(&ctx->yield_pause_e, pause_e);
+    if (ctx->resume_p_event) {
+        if (pause_p) ResetEvent(ctx->resume_p_event);
+        else SetEvent(ctx->resume_p_event);
+    }
+    if (ctx->resume_e_event) {
+        if (pause_e) ResetEvent(ctx->resume_e_event);
+        else SetEvent(ctx->resume_e_event);
+    }
+    if (reason) {
+        EnterCriticalSection(&ctx->perf_lock);
+        snprintf(ctx->yield_reason, sizeof(ctx->yield_reason), "%s", reason);
+        LeaveCriticalSection(&ctx->perf_lock);
+    }
+}
+
+void miner_update_yield_reason(miner_ctx_t *ctx, const char *reason) {
+    if (!ctx || !reason) return;
+    if (TryEnterCriticalSection(&ctx->perf_lock)) {
+        snprintf(ctx->yield_reason, sizeof(ctx->yield_reason), "%s", reason);
+        LeaveCriticalSection(&ctx->perf_lock);
+    }
+}
+
+int miner_get_yield_state(miner_ctx_t *ctx) {
+    if (!ctx) return YIELD_STATE_FULL;
+    return (int)InterlockedCompareExchange(&ctx->yield_state, 0, 0);
+}
+
+void miner_get_live_stats(miner_ctx_t *ctx, double *hashrate_out, double *watts_out) {
+    if (!ctx) {
+        if (hashrate_out) *hashrate_out = 0.0;
+        if (watts_out) *watts_out = 0.0;
+        return;
+    }
+    EnterCriticalSection(&ctx->perf_lock);
+    if (hashrate_out) *hashrate_out = ctx->last_hashrate;
+    if (watts_out) *watts_out = ctx->last_watts;
+    LeaveCriticalSection(&ctx->perf_lock);
+}
+
+void miner_check_worker_pause(miner_ctx_t *ctx, void *worker_ptr) {
+    if (!ctx) return;
+    worker_t *w = (worker_t *)worker_ptr;
+    /* On hybrid CPUs, ECO parks P-cores and leaves E-cores running.
+       On homogeneous CPUs without E-cores, ECO parks the first half of workers. */
+    int use_p_gate = 1;
+    if (w) {
+        if (ctx->has_ecores) use_p_gate = w->is_pcore ? 1 : 0;
+        else use_p_gate = (w->id < (ctx->num_threads + 1) / 2) ? 1 : 0;
+    }
+    LONG sys_pause = InterlockedCompareExchange(&ctx->pause_req, 0, 0);
+    LONG yld_pause = use_p_gate
+        ? InterlockedCompareExchange(&ctx->yield_pause_p, 0, 0)
+        : InterlockedCompareExchange(&ctx->yield_pause_e, 0, 0);
+    if (!sys_pause && !yld_pause) return;
+
     InterlockedIncrement(&ctx->paused_count);
-    while (InterlockedCompareExchange(&ctx->pause_req, 0, 0) && ctx->running) {
-        Sleep(5);
+    if (w) w->batch_active = 0; /* force fresh job on resume to prevent stale shares */
+    HANDLE ev = use_p_gate ? ctx->resume_p_event : ctx->resume_e_event;
+    while (ctx->running) {
+        sys_pause = InterlockedCompareExchange(&ctx->pause_req, 0, 0);
+        yld_pause = use_p_gate
+            ? InterlockedCompareExchange(&ctx->yield_pause_p, 0, 0)
+            : InterlockedCompareExchange(&ctx->yield_pause_e, 0, 0);
+        if (!sys_pause && !yld_pause) break;
+        if (sys_pause) {
+            Sleep(5);
+        } else if (ev) {
+            WaitForSingleObject(ev, 250);
+        } else {
+            Sleep(50);
+        }
     }
     InterlockedDecrement(&ctx->paused_count);
+}
+
+void miner_check_pause(miner_ctx_t *ctx) {
+    miner_check_worker_pause(ctx, NULL);
 }
 
 miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores,
@@ -122,12 +216,16 @@ miner_ctx_t *miner_create(int num_threads, int huge_pages, int physical_cores,
     ctx->cache_initialized = 0;
     InitializeCriticalSection(&ctx->cache_lock);
     InitializeCriticalSection(&ctx->perf_lock);
+    ctx->resume_p_event = CreateEventA(NULL, TRUE, TRUE, NULL);
+    ctx->resume_e_event = CreateEventA(NULL, TRUE, TRUE, NULL);
     return ctx;
 }
 
 void miner_destroy(miner_ctx_t *ctx) {
     if (!ctx) return;
     miner_stop(ctx);
+    if (ctx->resume_p_event) CloseHandle(ctx->resume_p_event);
+    if (ctx->resume_e_event) CloseHandle(ctx->resume_e_event);
     DeleteCriticalSection(&ctx->perf_lock);
     DeleteCriticalSection(&ctx->cache_lock);
     if (ctx->dataset) {
@@ -162,27 +260,33 @@ void miner_report_performance(miner_ctx_t *ctx) {
     if (ctx->perf_last_time != 0) {
         double seconds = (double)(now - ctx->perf_last_time) / 1000.0;
         double hashrate = (double)(total_hashes - ctx->perf_last_hashes) / seconds;
+        int ystate = (int)InterlockedCompareExchange(&ctx->yield_state, 0, 0);
+        const char *ystr = (ystate == YIELD_STATE_ECO) ? " [ECO]" :
+                           (ystate == YIELD_STATE_PAUSED) ? " [PAUSED]" : "";
+        double watts = 0.0;
         if (power_ok && ctx->perf_power_ready) {
             double delta_energy = energy - ctx->perf_last_energy;
             if (delta_energy < 0.0) delta_energy += msr_get_energy_wrap_joules();
-            double watts = delta_energy / seconds;
-            if (watts > 0.1) {
-                const char *plan = ctx->plan_desc[0] ? ctx->plan_desc : (g_best_mode == MODE_DUAL ? "dual" : "single");
-                double dw = (ctx->baseline_watts > 0.5) ? (watts - ctx->baseline_watts) : 0.0;
-                if (dw > 2.0) {
-                    LOG_INFO("[PERF] %.1f H/s | %.1f W pkg (+%.1f W) | %.2f H/W (%.1f H/dW) | %dT | %s",
-                             hashrate, watts, dw, hashrate / watts, hashrate / dw, ctx->num_threads, plan);
-                } else {
-                    LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %dT | %s",
-                             hashrate, watts, hashrate / watts, ctx->num_threads, plan);
-                }
+            watts = delta_energy / seconds;
+        }
+        ctx->last_hashrate = hashrate;
+        ctx->last_watts = watts;
+        if (ystate == YIELD_STATE_PAUSED) {
+            LOG_INFO("[PERF] PAUSED (%s) | %.1f W pkg",
+                     ctx->yield_reason[0] ? ctx->yield_reason : "yielding", watts);
+        } else if (power_ok && ctx->perf_power_ready && watts > 0.1) {
+            const char *plan = ctx->plan_desc[0] ? ctx->plan_desc : (g_best_mode == MODE_DUAL ? "dual" : "single");
+            double dw = (ctx->baseline_watts > 0.5) ? (watts - ctx->baseline_watts) : 0.0;
+            if (dw > 2.0) {
+                LOG_INFO("[PERF] %.1f H/s | %.1f W pkg (+%.1f W) | %.2f H/W (%.1f H/dW) | %dT%s | %s",
+                         hashrate, watts, dw, hashrate / watts, hashrate / dw, ctx->num_threads, ystr, plan);
             } else {
-                LOG_INFO("[PERF] %.1f H/s | power unavailable | %dT | %s",
-                         hashrate, ctx->num_threads, ctx->plan_desc[0] ? ctx->plan_desc : "single");
+                LOG_INFO("[PERF] %.1f H/s | %.1f W package | %.2f H/W | %dT%s | %s",
+                         hashrate, watts, hashrate / watts, ctx->num_threads, ystr, plan);
             }
         } else {
-            LOG_INFO("[PERF] %.1f H/s | power unavailable (RAPL/MSR) | %dT | %s",
-                     hashrate, ctx->num_threads, ctx->plan_desc[0] ? ctx->plan_desc : "single");
+            LOG_INFO("[PERF] %.1f H/s | power unavailable | %dT%s | %s",
+                     hashrate, ctx->num_threads, ystr, ctx->plan_desc[0] ? ctx->plan_desc : "single");
         }
     }
 
@@ -553,6 +657,7 @@ int miner_start(miner_ctx_t *ctx, const uint8_t *initial_seed, int initial_seed_
     for (int i = 0; i < ctx->num_threads && slot_count > 0; i++) {
         if (!slots[i % slot_count].is_pcore) active_ecores++;
     }
+    ctx->has_ecores = (active_ecores > 0) ? 1 : 0;
 
     for (int i = 0; i < ctx->num_threads; i++) {
         int is_pcore = 1, is_ht = 0, os_cpu = -1, core_idx = -1;
@@ -727,6 +832,11 @@ void miner_stop(miner_ctx_t *ctx) {
     for (int i = 0; i < ctx->num_threads; i++) {
         ctx->workers[i].should_stop = 1;
     }
+    /* Wake any workers parked by Auto-Yield so shutdown finishes immediately */
+    InterlockedExchange(&ctx->yield_pause_p, 0);
+    InterlockedExchange(&ctx->yield_pause_e, 0);
+    if (ctx->resume_p_event) SetEvent(ctx->resume_p_event);
+    if (ctx->resume_e_event) SetEvent(ctx->resume_e_event);
 
     WaitForMultipleObjects(ctx->num_threads, ctx->thread_handles, TRUE, 10000);
     for (int i = 0; i < ctx->num_threads; i++) {

@@ -79,7 +79,8 @@ void worker_run(worker_t *w) {
     if (w->lanes > POOL_MAX_LANES) w->lanes = POOL_MAX_LANES;
 
     while (!w->should_stop) {
-        miner_check_pause(miner);
+        miner_check_worker_pause(miner, w);
+        if (w->should_stop) break;
         {
             rx_vm *refreshed = (rx_vm *)w->vm;
             if (refreshed != vm) {

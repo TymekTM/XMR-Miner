@@ -837,6 +837,17 @@ int stratum_running(const stratum_ctx_t *ctx) {
     return ctx->running;
 }
 
+int stratum_keepalive(stratum_ctx_t *ctx) {
+    if (!ctx || ctx->protocol != STRATUM_PROTO_MONERO || ctx->session_id[0] == '\0')
+        return 0;
+    int id = InterlockedIncrement(&ctx->id_counter) - 1;
+    char msg[256];
+    snprintf(msg, sizeof(msg),
+        "{\"id\":%d,\"jsonrpc\":\"2.0\",\"method\":\"keepalived\",\"params\":{\"id\":\"%s\"}}",
+        id, ctx->session_id);
+    return send_line(ctx, msg);
+}
+
 void stratum_set_running(stratum_ctx_t *ctx, int val) {
     ctx->running = val;
 }
